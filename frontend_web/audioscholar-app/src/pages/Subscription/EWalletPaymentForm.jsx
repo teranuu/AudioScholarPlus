@@ -31,14 +31,11 @@ const EWalletPaymentForm = ({ onSubmit }) => {
     const handleSubmit = (e) => {
         e.preventDefault();
         if (validateForm()) {
-            const fullNumber = `${countryCode}${phoneNumber}`;
-            console.log('E-Wallet Number Submitted:', fullNumber);
-            // Pass relevant details up
+            const maskedNumber = `${countryCode}9******${phoneNumber.slice(-3)}`;
+            // Pass only masked display metadata; never expose the full e-wallet number.
             onSubmit({
                 type: 'ewallet',
-                number: fullNumber,
-                // Mask the number for display if needed later
-                maskedNumber: `${countryCode}9******${phoneNumber.slice(-3)}` 
+                displayName: `E-Wallet: ${maskedNumber}`
             });
         }
     };
