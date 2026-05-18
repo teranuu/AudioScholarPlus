@@ -35,7 +35,7 @@ const SignIn = () => {
                         console.log('Sending Firebase ID token to backend for verification...');
                         const backendResponse = await verifyFirebaseTokenWithBackend(idToken);
 
-                        console.log('Backend verification successful (Firebase Token):', backendResponse);
+                        console.log('Backend verification successful (Firebase Token); auth response payload omitted from logs.');
 
                         localStorage.setItem('AuthToken', backendResponse.token);
                         localStorage.setItem('userId', backendResponse.userId);
@@ -148,7 +148,7 @@ const SignIn = () => {
                         // if verifyGoogleTokenWithBackend is just a wrapper or deprecated.
                         // But following existing pattern:
                         const backendResponse = await verifyGoogleTokenWithBackend(googleIdToken);
-                        console.log('Backend verification successful (Google Token):', backendResponse);
+                        console.log('Backend verification successful (Google Token); auth response payload omitted from logs.');
 
                         localStorage.setItem('AuthToken', backendResponse.token);
                         localStorage.setItem('userId', backendResponse.userId);

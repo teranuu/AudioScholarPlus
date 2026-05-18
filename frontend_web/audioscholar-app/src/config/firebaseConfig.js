@@ -4,13 +4,14 @@ import { getAuth } from "firebase/auth";
 
 
 const firebaseConfig = {
-  apiKey: "AIzaSyC-FRGSjiwzANRuSYxIY7Zm_1coY8viajc",
-  authDomain: "audioscholar-39b22.firebaseapp.com",
-  databaseURL: "https://audioscholar-39b22-default-rtdb.firebaseio.com",
-  projectId: "audioscholar-39b22",
-  messagingSenderId: "94663253748",
-  appId: "1:94663253748:web:049c1293085af7caff48a1",
-  measurementId: "G-EQ3EMB4GB8"
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
+  appId: import.meta.env.VITE_FIREBASE_APP_ID,
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
 };
 
 export const firebaseApp = initializeApp(firebaseConfig);

@@ -32,7 +32,7 @@ const AdminUserList = () => {
       setActionLoading(`${uid}-status`);
       await adminService.updateUserStatus(uid, !currentStatus);
       setUsers(users.map(u => u.uid === uid ? { ...u, disabled: !currentStatus } : u));
-    } catch (err) {
+    } catch {
       alert("Failed to update user status.");
     } finally {
       setActionLoading(null);
@@ -55,7 +55,7 @@ const AdminUserList = () => {
       
       await adminService.updateUserRoles(user.uid, newRoles);
       setUsers(users.map(u => u.uid === user.uid ? { ...u, roles: newRoles } : u));
-    } catch (err) {
+    } catch {
       alert("Failed to update user roles.");
     } finally {
       setActionLoading(null);
