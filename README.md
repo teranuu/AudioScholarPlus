@@ -1,13 +1,15 @@
 # 🎓 AudioScholar: Transforming Audio into Actionable Insights for Learners
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen)
+[![CI](https://github.com/MasuRii/AudioScholar/actions/workflows/ci.yml/badge.svg)](https://github.com/MasuRii/AudioScholar/actions/workflows/ci.yml)
 ![License](https://img.shields.io/badge/license-MIT-blue)
-![Version](https://img.shields.io/badge/version-1.0.0-orange)
+![Backend Version](https://img.shields.io/badge/backend-0.0.1--SNAPSHOT-orange)
 
 AudioScholar is an intelligent, multi-user platform designed to record lecture audio and leverage AI-driven summarization techniques to produce structured insights for learners. As a dual-platform solution comprising an Android mobile application and a comprehensive web interface, it allows users to capture, summarize, and receive personalized learning material recommendations based on audio recordings. By transforming lengthy lectures into digestible key points, AudioScholar enhances note-taking efficiency and content comprehension.
 
+For the most detailed product overview, see [`docs/README-AudioScholar.md`](docs/README-AudioScholar.md). This root README is the contributor setup and validation entry point.
+
 <p align="center">
-<img src="logo\AudioScholarLogoNoBG.png" alt="AudioScholar Logo" width="250"/>
+<img src="logo/AudioScholarLogoNoBG.png" alt="AudioScholar Logo" width="250"/>
    <br>
   <img src="https://cit.edu/wp-content/uploads/2023/07/cit-logo.png" alt="CITU Logo" width="350"/>
 </p>
@@ -45,7 +47,7 @@ AudioScholar is an intelligent, multi-user platform designed to record lecture a
 Ensure the following tools are installed on your system:
 
 - **Java Development Kit (JDK) 24**
-- **Node.js** (v16+)
+- **Node.js** (v18+)
 - **npm** or **yarn**
 - **Git**
 - **Maven** (for backend)
@@ -57,7 +59,7 @@ Ensure the following tools are installed on your system:
 
 ### 📁 Cloning the Repository
 ```bash
-git clone https://github.com/IT342-G3-AudioScholar/AudioScholar.git
+git clone https://github.com/MasuRii/AudioScholar.git
 cd AudioScholar
 ```
 
@@ -77,29 +79,36 @@ cd AudioScholar
 3. **Set up `.env` content:**
    Create the `.env` file in `backend/audioscholar/` with the following variables:
    ```dotenv
-   # Nhost Storage Configuration
-   NHOST_ADMIN_SECRET=your-nhost-admin-secret # Used by Spring Boot to access Nhost Storage
+   # Copy from backend/audioscholar/.env.example and fill deployment-specific values.
+   SPRING_PROFILES_ACTIVE=local
+   APP_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://localhost:8080,capacitor://localhost
 
-   # API Keys
-   GEMINI_API_KEY=your-gemini-api-key
+   FIREBASE_WEB_API_KEY=your-firebase-web-api-key
+   FIREBASE_DATABASE_URL=https://your-project.firebaseio.com
+   GOOGLE_CLIENT_ID=your-google-oauth-client-id
+   GOOGLE_CLIENT_SECRET=your-google-oauth-client-secret
+   GOOGLE_ANDROID_CLIENT_ID=your-google-android-client-id
+   GOOGLE_AI_API_KEY=your-gemini-api-key
+   GEMINI_API_KEYS=your-gemini-api-key-or-comma-separated-keys
    YOUTUBE_API_KEY=your-youtube-api-key
-   # Other secrets as needed
-   # CONVERTAPI_SECRET=your-convertapi-secret
-   # UPTIME_ROBOT_API=your-uptime-robot-api-key
+
+   NHOST_STORAGE_URL=https://your-nhost-project.storage.region.nhost.run/v1/files
+   NHOST_ADMIN_SECRET=your-nhost-admin-secret
+   GITHUB_CLIENT_ID=your-github-oauth-client-id
+   GITHUB_CLIENT_SECRET=your-github-oauth-client-secret
+   JWT_SECRET=your-strong-jwt-secret
+   CONVERTAPI_SECRET=your-convertapi-secret
+   CONVERTAPI_SECRETS=your-convertapi-secret-or-comma-separated-secrets
+   UPTIME_ROBOT_API=your-uptime-robot-api-key
+   NVD_API_KEY=your-nvd-api-key
    ```
 
 4. **Configure Application Properties:**
-   In `backend/audioscholar/src/main/resources/application.properties`:
-   - Ensure `nhost.storage.url` is correctly set.
-   - Configure Firebase properties:
-     ```properties
-     spring.cloud.gcp.project-id=your-firebase-project-id
-     firebase.service-account.file=firebase-service-account.json
-     ```
+   Keep secrets and deployment identifiers in `.env` or environment variables. `application.properties` reads Firebase, Nhost, CORS, OAuth, JWT, Gemini, YouTube, ConvertAPI, and UptimeRobot values from those variables.
 
 5. Run the backend:
    ```bash
-   mvn spring-boot:run
+   ./mvnw spring-boot:run -Dspring-boot.run.profiles=local
    ```
    Or run `AudioscholarApplication.java` from your IDE. (Spring Boot version `3.5.8`)
 
@@ -112,7 +121,7 @@ cd AudioScholar
    ```
 2. Install dependencies:
    ```bash
-   npm install
+   npm ci
    ```
 3. Create a `.env` file in `frontend_web/audioscholar-app`:
    ```dotenv
@@ -122,17 +131,20 @@ cd AudioScholar
    # Firebase Frontend Configuration
    VITE_FIREBASE_API_KEY=your-firebase-api-key
    VITE_FIREBASE_AUTH_DOMAIN=your-firebase-auth-domain
+   VITE_FIREBASE_DATABASE_URL=your-firebase-database-url
    VITE_FIREBASE_PROJECT_ID=your-firebase-project-id
    VITE_FIREBASE_STORAGE_BUCKET=your-firebase-storage-bucket
    VITE_FIREBASE_MESSAGING_SENDER_ID=your-firebase-messaging-sender-id
    VITE_FIREBASE_APP_ID=your-firebase-app-id
+   VITE_FIREBASE_MEASUREMENT_ID=your-firebase-measurement-id
+   VITE_GITHUB_CLIENT_ID=your-github-oauth-client-id
    ```
 4. Run the development server:
    ```bash
    npm run dev
    ```
    (Uses Vite `6.4.1`, React `19`)
-   Open at: `http://localhost:3000`
+   Open at: `http://localhost:5173`
 
 ---
 
@@ -148,11 +160,46 @@ cd AudioScholar
 5. **Configure API Base URL:**
    In `frontend_mobile/AudioScholar/local.properties`:
    ```properties
-   API_BASE_URL=http://your-local-network-ip:8080
+   # Debug builds may use the Android emulator loopback URL.
+   BASE_URL=http://10.0.2.2:8080/
    ```
+   Release builds default to the HTTPS Render backend and should be overridden only with an HTTPS `BASE_URL`. Cleartext HTTP is disabled for release and permitted only by the debug network security config for local emulator hosts.
 6. Run on an emulator or physical device.
 
 ---
+
+## ✅ Validation Matrix
+
+Run the smallest target-native checks for the component you changed:
+
+```bash
+# Backend
+cd backend/audioscholar
+./mvnw -B test
+./mvnw -B spotless:check
+# Optional security gate when NVD_API_KEY is configured: ./mvnw -B dependency-check:check
+
+# Web frontend
+cd frontend_web/audioscholar-app
+npm ci
+npm run lint
+npm run test
+npm run build
+npm audit --audit-level=high
+
+# Mobile frontend
+cd frontend_mobile/AudioScholar
+./gradlew test
+./gradlew lint
+./gradlew assembleDebug
+# connectedAndroidTest requires an emulator or physical device
+```
+
+## 🔒 Security Notes
+
+- Do not commit `.env`, Firebase service account JSON, `google-services.json`, API keys, OAuth secrets, or JWT secrets.
+- Backend bearer/JWT values must never be logged; logs should contain user IDs and event metadata only.
+- Dependency/security gates are defined in GitHub Actions and can be run locally with the commands above.
 
 ## 🧭 Example Workflow
 

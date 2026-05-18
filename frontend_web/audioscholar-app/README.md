@@ -21,7 +21,7 @@ Follow these steps to get the application running on your local machine.
 
 ### Prerequisites
 
-*   Node.js (v16 or higher)
+*   Node.js (v18 or higher)
 *   npm (usually comes with Node.js)
 
 ### Installation
@@ -29,17 +29,33 @@ Follow these steps to get the application running on your local machine.
 1.  **Install dependencies:**
 
     ```bash
-    npm install
+    npm ci
     ```
 
-2.  **Start the development server:**
+2.  **Copy environment template:**
+
+    ```bash
+    cp .env.example .env
+    ```
+
+3.  **Start the development server:**
 
     ```bash
     npm run dev
     ```
 
-3.  **Open the application:**
+4.  **Open the application:**
     Open your browser and navigate to `http://localhost:5173` (or the port shown in your terminal).
+
+
+### Validation
+
+```bash
+npm run lint
+npm run test
+npm run build
+npm audit --audit-level=high
+```
 
 ## 🛠️ Tech Stack
 
@@ -51,4 +67,4 @@ Follow these steps to get the application running on your local machine.
 
 ## 📄 License
 
-[Add License Information Here]
+Distributed under the MIT License. See `../../LICENSE` for details.

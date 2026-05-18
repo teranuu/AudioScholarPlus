@@ -45,7 +45,7 @@ This is handled in the `getAuthHeaders` helper function within service files (e.
 ## Data Protection
 
 - **HTTPS:** All API communication is performed over HTTPS (in production).
-- **Sensitive Data:** No sensitive user data (passwords, private keys) is stored in the frontend codebase. Configuration secrets are managed via environment variables (though currently hardcoded in `src/config/firebaseConfig.js` - **Recommendation:** Move to `.env` files).
+- **Sensitive Data:** No sensitive user data (passwords, private keys) is stored in the frontend codebase. Firebase project identifiers and OAuth client IDs are loaded from `VITE_*` environment variables documented in `.env.example`; do not place server-side secrets in frontend environment files.
 
 ## Cross-Origin Resource Sharing (CORS)
 

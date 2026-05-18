@@ -6,21 +6,21 @@ This guide will help you set up the AudioScholar frontend development environmen
 
 Before you begin, ensure you have the following installed:
 
-- **Node.js**: The application is built with React and Vite. You need Node.js to manage dependencies and run the development server. We recommend the latest LTS version.
+- **Node.js v18+**: The application is built with React and Vite. Use the current LTS release or newer.
 - **npm** (or yarn/pnpm): The package manager comes with Node.js.
 
 ## Installation
 
 1.  **Clone the repository** (if you haven't already):
     ```bash
-    git clone https://github.com/your-org/audioscholar-frontend.git
-    cd audioscholar-frontend
+    git clone https://github.com/MasuRii/AudioScholar.git
+    cd AudioScholar/frontend_web/audioscholar-app
     ```
 
 2.  **Install dependencies**:
     Navigate to the project directory and run:
     ```bash
-    npm install
+    npm ci
     ```
     This command reads `package.json` and installs all necessary packages, including:
     - React & React DOM
@@ -68,3 +68,11 @@ npm run lint
 ```
 
 This command runs `eslint .` to analyze your code based on the rules defined in `eslint.config.js`.
+
+
+## Testing and audit
+
+```bash
+npm run test
+npm audit --audit-level=high
+```
