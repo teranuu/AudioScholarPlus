@@ -408,3 +408,15 @@ FodyWeavers.xsd
 .firebase/
 backend/audioscholar/springbootbackend-test.log.2025-11-25.0.gz
 frontend_web/audioscholar-app/.env
+
+# AudioScholar multi-platform build outputs and local secrets
+backend/audioscholar/target/
+backend/audioscholar/.env
+backend/audioscholar/src/main/resources/firebase-service-account.json
+frontend_web/audioscholar-app/dist/
+frontend_mobile/AudioScholar/.gradle/
+frontend_mobile/AudioScholar/local.properties
+frontend_mobile/AudioScholar/app/build/
+frontend_mobile/AudioScholar/app/google-services.json
+*.apk
+*.aab

@@ -75,32 +75,26 @@
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-context</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-netty-shaded</artifactId>
-			<version>1.75.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-core</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-api</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-protobuf</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-stub</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>com.google.http-client</groupId>
@@ -241,7 +235,7 @@
 		<dependency>
 		          <groupId>org.projectlombok</groupId>
 		          <artifactId>lombok</artifactId>
-		          <scope>compile</scope>
+		          <scope>provided</scope>
 		      </dependency>
 
 		<!-- Dotenv for .env file support -->
@@ -323,16 +317,7 @@
 				</configuration>
 				
 				<executions>
-					<!-- Format during compile phase (before spring-boot:run) -->
-					<execution>
-						<id>format</id>
-						<goals>
-							<goal>apply</goal>
-						</goals>
-						<phase>compile</phase>
-					</execution>
-					
-					<!-- Validate during verify phase (for CI/CD) -->
+					<!-- Validate formatting during verify/CI without mutating source files -->
 					<execution>
 						<id>check</id>
 						<goals>
