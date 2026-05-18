@@ -151,8 +151,8 @@ public class UserService {
 			}
 
 			Map<String, Object> userMap = user.toMap();
-			log.debug("User object map being sent to Firestore during creation for UID {}: {}", user.getUserId(),
-					userMap);
+			log.debug("User profile Firestore payload prepared during creation for UID {} with {} fields",
+					user.getUserId(), userMap.size());
 			firebaseService.saveData(COLLECTION_NAME, user.getUserId(), userMap);
 			log.info("Successfully created user profile in Firestore for UID: {}", user.getUserId());
 			log.debug("User object added/updated in cache '{}' with key: {}", USER_CACHE, user.getUserId());
@@ -337,9 +337,10 @@ public class UserService {
 			}
 
 			Map<String, Object> userMap = user.toMap();
-			log.debug("User object map being sent to Firestore during update for UID {}: {}", user.getUserId(),
-					userMap);
-			log.debug("Profile Image URL in map for UID {}: {}", user.getUserId(), userMap.get("profileImageUrl"));
+			log.debug("User profile Firestore payload prepared during update for UID {} with {} fields",
+					user.getUserId(), userMap.size());
+			log.debug("Profile image URL present in update payload for UID {}: {}", user.getUserId(),
+					StringUtils.hasText(user.getProfileImageUrl()));
 			firebaseService.saveData(COLLECTION_NAME, user.getUserId(), userMap);
 			log.info("Successfully updated user profile in Firestore for UID: {}", user.getUserId());
 			log.debug("User object updated in cache '{}' with key: {}", USER_CACHE, user.getUserId());
@@ -533,7 +534,7 @@ public class UserService {
 			throw new IllegalArgumentException("User ID and FCM token must be provided.");
 		}
 
-		log.debug("Attempting to add FCM token {} for user {}", fcmToken, userId);
+		log.debug("Attempting to add FCM token for user {} (token omitted)", userId);
 
 		User user = getUserById(userId);
 		if (user == null) {
@@ -575,8 +576,9 @@ public class UserService {
 	@SuppressWarnings("null")
 	public void removeFcmTokens(String userId, List<String> tokensToRemove) {
 		if (userId == null || userId.isBlank() || tokensToRemove == null || tokensToRemove.isEmpty()) {
-			log.warn("Attempted to remove FCM tokens with invalid userId or empty token list. userId={}, tokens={}",
-					userId, tokensToRemove);
+			int tokenCount = tokensToRemove == null ? 0 : tokensToRemove.size();
+			log.warn("Attempted to remove FCM tokens with invalid userId or empty token list. userId={}, tokenCount={}",
+					userId, tokenCount);
 			return;
 		}
 

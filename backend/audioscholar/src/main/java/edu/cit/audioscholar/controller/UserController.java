@@ -153,8 +153,7 @@ public class UserController {
 			logger.error("FcmTokenRequest object is NULL inside addFcmToken.");
 			return ResponseEntity.status(HttpStatus.BAD_REQUEST).body("Request body is missing.");
 		}
-		logger.debug("Received FcmTokenRequest object: {}", request);
-		logger.debug("Token from request: {}", request.getToken());
+		logger.debug("Received FCM token registration request (token omitted from logs).");
 
 		if (authentication == null || !authentication.isAuthenticated()) {
 			logger.warn("Attempt to add FCM token without authentication.");
@@ -195,7 +194,7 @@ public class UserController {
 	}
 
 	@PutMapping("/{userId}/role")
-	@PreAuthorize("#userId == authentication.name")
+	@PreAuthorize("hasRole('ADMIN')")
 	public ResponseEntity<?> updateUserRole(@PathVariable String userId,
 			@Valid @RequestBody UpdateUserRoleRequest request) {
 		logger.info("Request to update role for user ID: {} to {}", userId, request.role());

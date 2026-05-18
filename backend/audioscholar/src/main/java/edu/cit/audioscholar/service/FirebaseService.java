@@ -989,17 +989,19 @@ public class FirebaseService {
 							String failedToken = tokens.get(i);
 							FirebaseMessagingException e = responses.get(i).getException();
 							if (e != null) {
-								log.warn("FCM message failed for token {} (user {}): ErrorCode={}, Message={}",
-										failedToken, userId, e.getMessagingErrorCode(), e.getMessage());
+								log.warn(
+										"FCM message failed for recipient index {} of {} (user {}, token omitted): ErrorCode={}, Message={}",
+										i + 1, tokens.size(), userId, e.getMessagingErrorCode(), e.getMessage());
 								if (e.getMessagingErrorCode() == MessagingErrorCode.UNREGISTERED) {
 									unregisteredTokens.add(failedToken);
-									log.info("Identified unregistered token {} for user {} for cleanup.", failedToken,
+									log.info(
+											"Identified unregistered FCM token for user {} for cleanup (token omitted).",
 											userId);
 								}
 							} else {
 								log.warn(
-										"FCM message failed for token {} (user {}), but no exception details available.",
-										failedToken, userId);
+										"FCM message failed for recipient index {} of {} (user {}, token omitted), but no exception details available.",
+										i + 1, tokens.size(), userId);
 							}
 						} else {
 							log.error(

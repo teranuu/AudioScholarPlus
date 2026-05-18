@@ -218,7 +218,7 @@ public class AuthController {
 			Authentication authentication = new UsernamePasswordAuthenticationToken(uid, null, authorities);
 			String jwt = jwtTokenProvider.generateToken(authentication);
 
-			log.info("Generated API JWT for user UID {}: {}", uid, jwt);
+			log.info("Generated API JWT for user UID {} (token omitted from logs)", uid);
 
 			AuthResponse response = new AuthResponse(true, "Firebase token verified successfully.");
 			response.setToken(jwt);
@@ -340,8 +340,7 @@ public class AuthController {
 
 			String customToken = firebaseService.createCustomToken(firebaseUid);
 
-			log.info("Authorization Bearer Token: {}", jwt);
-			log.info("Generated API JWT for user UID {} (Google)", firebaseUid);
+			log.info("Generated API JWT for user UID {} (Google, token omitted from logs)", firebaseUid);
 
 			AuthResponse response = new AuthResponse(true, "Google token verified successfully.");
 			response.setToken(jwt);
@@ -457,9 +456,9 @@ public class AuthController {
 								Instant jwtEnd = Instant.now();
 								String customToken = firebaseService.createCustomToken(firebaseUid);
 
-								log.info("Authorization Bearer Token: {}", jwt);
-								log.info("Generated API JWT for user UID {} (GitHub). Duration: {}ms", firebaseUid,
-										Duration.between(jwtStart, jwtEnd).toMillis());
+								log.info(
+										"Generated API JWT for user UID {} (GitHub, token omitted from logs). Duration: {}ms",
+										firebaseUid, Duration.between(jwtStart, jwtEnd).toMillis());
 
 								AuthResponse response = new AuthResponse(true, "GitHub login successful.");
 								response.setToken(jwt);
