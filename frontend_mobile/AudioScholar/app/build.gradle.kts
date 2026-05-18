@@ -16,6 +16,11 @@ if (localPropertiesFile.exists()) {
     localProperties.load(FileInputStream(localPropertiesFile))
 }
 
+fun buildConfigString(name: String, defaultValue: String): String {
+    val value = localProperties.getProperty(name) ?: System.getenv(name) ?: defaultValue
+    return "\"${value.trim().trim('\"')}\""
+}
+
 android {
     kotlinOptions {
         jvmTarget = "17"
@@ -39,16 +44,26 @@ android {
             useSupportLibrary = true
         }
 
-        val baseUrl = localProperties.getProperty("BASE_URL") ?: "\"https://mastodon-balanced-randomly.ngrok-free.app/\""
-        val githubClientId = localProperties.getProperty("GITHUB_CLIENT_ID") ?: "\"Iv23liMzUNGL8JuXu40i\""
+        val baseUrl = buildConfigString("BASE_URL", "https://it342-g3-audioscholar.onrender.com/")
+        val githubClientId = buildConfigString("GITHUB_CLIENT_ID", "")
 
         buildConfigField("String", "BASE_URL", baseUrl)
         buildConfigField("String", "GITHUB_CLIENT_ID", githubClientId)
+        manifestPlaceholders["usesCleartextTraffic"] = "false"
+        manifestPlaceholders["networkSecurityConfig"] = "@xml/network_security_config"
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "BASE_URL", buildConfigString("BASE_URL", "http://10.0.2.2:8080/"))
+            manifestPlaceholders["usesCleartextTraffic"] = "true"
+            manifestPlaceholders["networkSecurityConfig"] = "@xml/network_security_config_debug"
+        }
         release {
             isMinifyEnabled = false
+            buildConfigField("String", "BASE_URL", buildConfigString("BASE_URL", "https://it342-g3-audioscholar.onrender.com/"))
+            manifestPlaceholders["usesCleartextTraffic"] = "false"
+            manifestPlaceholders["networkSecurityConfig"] = "@xml/network_security_config"
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }

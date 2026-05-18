@@ -158,7 +158,7 @@ class LoginViewModel @Inject constructor(
             val token = FcmTokenProvider.getCurrentToken()
 
             if (token != null) {
-                Log.d(TAG, "[registerDeviceToken] Initial token retrieved: $token")
+                Log.d(TAG, "[registerDeviceToken] Initial FCM token retrieved; token value omitted from logs.")
                 Log.d(TAG, "[registerDeviceToken] Calling NotificationRepository to register initial FCM token.")
                 val result = notificationRepository.registerFcmToken(token)
                 when (result) {

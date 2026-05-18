@@ -100,7 +100,7 @@ class FcmService : FirebaseMessagingService() {
 
     override fun onNewToken(token: String) {
         super.onNewToken(token)
-        Log.i(tag, "FCM Registration Token Refreshed: $token")
+        Log.i(tag, "FCM registration token refreshed; token value omitted from logs.")
 
         TokenEventBus.postNewToken(token)
         Log.d(tag, "Posted refreshed token to TokenEventBus flow.")

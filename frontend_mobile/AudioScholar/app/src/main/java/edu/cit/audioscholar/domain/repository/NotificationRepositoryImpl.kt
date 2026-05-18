@@ -29,7 +29,7 @@ class NotificationRepositoryImpl @Inject constructor(
 
     override suspend fun registerFcmToken(token: String): Resource<Unit> = withContext(Dispatchers.IO) {
         try {
-            Log.d(tag, "Attempting to register FCM token: $token")
+            Log.d(tag, "Attempting to register FCM token (token omitted).")
             val requestDto = FcmTokenRequestDto(token)
 
             val authToken = prefs.getString("auth_token", null)

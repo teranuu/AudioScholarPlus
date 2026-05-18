@@ -1,6 +1,7 @@
 package edu.cit.audioscholar.network
 
 import android.util.Log
+import edu.cit.audioscholar.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -11,11 +12,9 @@ import java.util.concurrent.TimeUnit
 object ServerConnectionManager {
     private const val TIMEOUT_MS = 3000L
 
-    private const val DEV_URL = "https://mastodon-balanced-randomly.ngrok-free.app/"
-    private const val LOCAL_URL = "http://192.168.137.1:8080/"
-    private const val PROD_URL = "https://it342-g3-audioscholar-onrender-com.onrender.com/"
+    private val CONFIGURED_URL = BuildConfig.BASE_URL.ensureTrailingSlash()
 
-    var currentBaseUrl: String = PROD_URL
+    var currentBaseUrl: String = CONFIGURED_URL
         private set
 
     private var isInitialized = false
@@ -33,38 +32,16 @@ object ServerConnectionManager {
             .followSslRedirects(false)
             .build()
 
-        // Use Dispatchers.IO to avoid NetworkOnMainThreadException
-        // Start all checks concurrently
-        val prodCheck = async(Dispatchers.IO) { checkHealth(client, PROD_URL, "PROD") }
-        val devCheck = async(Dispatchers.IO) { checkHealth(client, DEV_URL, "DEV") }
-        val localCheck = async(Dispatchers.IO) { checkHealth(client, LOCAL_URL, "LOCAL") }
+        val configuredCheck = async(Dispatchers.IO) { checkHealth(client, CONFIGURED_URL, "CONFIGURED") }
 
-        // Priority 1: DEV
-        if (devCheck.await()) {
-            currentBaseUrl = DEV_URL
+        if (configuredCheck.await()) {
+            currentBaseUrl = CONFIGURED_URL
             isInitialized = true
-            Log.d("ServerCheck", "Initialized. Selected: $currentBaseUrl (Priority: DEV)")
-            return@coroutineScope DEV_URL
+            Log.d("ServerCheck", "Initialized. Selected configured BASE_URL: $currentBaseUrl")
+            return@coroutineScope CONFIGURED_URL
         }
 
-        // Priority 2: LOCAL
-        if (localCheck.await()) {
-            currentBaseUrl = LOCAL_URL
-            isInitialized = true
-            Log.d("ServerCheck", "Initialized. Selected: $currentBaseUrl (Priority: LOCAL)")
-            return@coroutineScope LOCAL_URL
-        }
-
-        // Priority 3: PROD
-        if (prodCheck.await()) {
-            currentBaseUrl = PROD_URL
-            isInitialized = true
-            Log.d("ServerCheck", "Initialized. Selected: $currentBaseUrl (Priority: PROD)")
-            return@coroutineScope PROD_URL
-        }
-
-        // If all fail
-        Log.e("ServerCheck", "All server checks failed. Returning Error.")
+        Log.e("ServerCheck", "Configured BASE_URL is unreachable: $CONFIGURED_URL")
         return@coroutineScope "Error"
     }
 
@@ -72,7 +49,6 @@ object ServerConnectionManager {
         return try {
             val request = Request.Builder()
                 .url(url)
-                .header("ngrok-skip-browser-warning", "true")
                 .get()
                 .build()
 
@@ -92,4 +68,6 @@ object ServerConnectionManager {
             false
         }
     }
+
+    private fun String.ensureTrailingSlash(): String = if (endsWith("/")) this else "$this/"
 }

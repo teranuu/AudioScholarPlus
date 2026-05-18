@@ -23,7 +23,8 @@
         android:roundIcon="@mipmap/ic_audioscholar"
         android:supportsRtl="true"
         android:theme="@style/Theme.AudioScholar"
-        android:usesCleartextTraffic="true"
+        android:networkSecurityConfig="${networkSecurityConfig}"
+        android:usesCleartextTraffic="${usesCleartextTraffic}"
         tools:targetApi="31">
 
         <activity

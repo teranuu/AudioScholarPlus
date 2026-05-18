@@ -25,6 +25,7 @@ import io.ktor.client.plugins.auth.providers.bearer
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.plugins.defaultRequest
 import io.ktor.client.plugins.logging.*
+import io.ktor.http.HttpHeaders
 import io.ktor.http.encodedPath
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.json.Json
@@ -68,7 +69,13 @@ object NetworkModule {
     @Singleton
     fun provideHttpLoggingInterceptor(): HttpLoggingInterceptor {
         return HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            redactHeader("Authorization")
+            redactHeader("Cookie")
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.HEADERS
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
         }
     }
 
@@ -208,8 +215,10 @@ object NetworkModule {
                         Log.v("$TAG-Ktor-Logger", message)
                     }
                 }
-                level = LogLevel.ALL
-                 Log.d("$TAG-Ktor", "Installed Ktor Logging plugin.")
+                level = if (BuildConfig.DEBUG) LogLevel.HEADERS else LogLevel.NONE
+                sanitizeHeader { header -> header.equals(HttpHeaders.Authorization, ignoreCase = true) }
+                sanitizeHeader { header -> header.equals(HttpHeaders.Cookie, ignoreCase = true) }
+                Log.d("$TAG-Ktor", "Installed Ktor Logging plugin with sensitive headers sanitized.")
             }
 
             install(Auth) {
