@@ -181,7 +181,8 @@ public class AudioTranscriptionListenerService {
 
 					log.info("[{}] Calling Gemini API for transcription... Original Filename: {}, ContentType: {}",
 							metadataId, originalFileName, metadata.getContentType());
-					String transcript = geminiService.callGeminiTranscriptionAPIWithFallback(tempFilePath, originalFileName);
+					String transcript = geminiService.callGeminiTranscriptionAPIWithFallback(tempFilePath,
+							originalFileName);
 
 					metadataMap = firebaseService.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
 					metadata = AudioMetadata.fromMap(metadataMap);

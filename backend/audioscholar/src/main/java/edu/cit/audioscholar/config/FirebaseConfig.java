@@ -3,12 +3,16 @@ package edu.cit.audioscholar.config;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.Arrays;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.Environment;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.util.StringUtils;
 
 import com.google.auth.oauth2.GoogleCredentials;
 import com.google.firebase.FirebaseApp;
@@ -18,34 +22,70 @@ import com.google.firebase.FirebaseOptions;
 public class FirebaseConfig {
 
 	private static final Logger logger = LoggerFactory.getLogger(FirebaseConfig.class);
-
 	private static final String GAC_ENV_VAR = "GOOGLE_APPLICATION_CREDENTIALS";
+
+	private final Environment environment;
+
+	public FirebaseConfig(Environment environment) {
+		this.environment = environment;
+	}
+
+	@Value("${firebase.database.url:}")
+	private String databaseUrl;
+
+	@Value("${firebase.project-id:}")
+	private String projectId;
+
+	@Value("${firebase.service-account.file:firebase-service-account.json}")
+	private String serviceAccountFile;
+
+	@Value("${firebase.test-mode:false}")
+	private boolean firebaseTestMode;
 
 	@Bean
 	FirebaseApp firebaseApp() throws IOException {
-		if (FirebaseApp.getApps().isEmpty()) {
+		if (!FirebaseApp.getApps().isEmpty()) {
+			logger.info("FirebaseApp already initialized. Returning existing instance.");
+			return FirebaseApp.getInstance();
+		}
+
+		FirebaseOptions.Builder optionsBuilder = FirebaseOptions.builder();
+		if (firebaseTestMode) {
+			boolean testProfileActive = Arrays.asList(environment.getActiveProfiles()).contains("test");
+			if (!testProfileActive) {
+				throw new IllegalStateException(
+						"firebase.test-mode=true is allowed only when the active Spring profile includes 'test'.");
+			}
+			logger.warn(
+					"Firebase test mode enabled for test profile; initializing FirebaseApp without external credentials.");
+			optionsBuilder.setCredentials(GoogleCredentials.newBuilder().build());
+		} else {
 			InputStream serviceAccountStream = getCredentialsStream();
 
 			if (serviceAccountStream == null) {
 				throw new IOException("Could not find Firebase service account credentials via " + GAC_ENV_VAR
-						+ " environment variable or classpath:firebase-service-account.json");
+						+ " environment variable or configured classpath resource: " + serviceAccountFile);
 			}
 
-			FirebaseOptions options;
 			try (InputStream stream = serviceAccountStream) {
-				options = FirebaseOptions.builder().setCredentials(GoogleCredentials.fromStream(stream))
-						.setDatabaseUrl("https://audioscholar-39b22-default-rtdb.firebaseio.com").build();
-				logger.info("Successfully configured FirebaseApp.");
+				optionsBuilder.setCredentials(GoogleCredentials.fromStream(stream));
+				logger.info("Successfully configured Firebase credentials.");
 			} catch (IOException e) {
 				logger.error("Error processing Firebase credentials stream.", e);
 				throw e;
 			}
-
-			return FirebaseApp.initializeApp(options);
-		} else {
-			logger.info("FirebaseApp already initialized. Returning existing instance.");
-			return FirebaseApp.getInstance();
 		}
+
+		if (StringUtils.hasText(databaseUrl)) {
+			optionsBuilder.setDatabaseUrl(databaseUrl);
+		}
+		if (StringUtils.hasText(projectId)) {
+			optionsBuilder.setProjectId(projectId);
+		}
+
+		FirebaseOptions options = optionsBuilder.build();
+		logger.info("Successfully configured FirebaseApp.");
+		return FirebaseApp.initializeApp(options);
 	}
 
 	private InputStream getCredentialsStream() throws IOException {
@@ -62,7 +102,12 @@ public class FirebaseConfig {
 			}
 		}
 
-		String classpathResource = "firebase-service-account.json";
+		String classpathResource = StringUtils.hasText(serviceAccountFile)
+				? serviceAccountFile
+				: "firebase-service-account.json";
+		if (classpathResource.startsWith("classpath:")) {
+			classpathResource = classpathResource.substring("classpath:".length());
+		}
 		source = "classpath:" + classpathResource;
 		try {
 			logger.info("Attempting to load Firebase credentials from {}", source);
