@@ -385,7 +385,7 @@ FodyWeavers.xsd
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
-!.vscode/launch.json
+#!.vscode/launch.json
 !.vscode/extensions.json
 *.code-workspace
 
@@ -420,3 +420,7 @@ frontend_mobile/AudioScholar/app/build/
 frontend_mobile/AudioScholar/app/google-services.json
 *.apk
 *.aab
+
+# Supabase CLI link artifacts
+supabase/
+**/.vscode/launch.json

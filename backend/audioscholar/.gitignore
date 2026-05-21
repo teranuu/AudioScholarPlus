@@ -45,3 +45,6 @@ logs/
 .logs/
 **/*.log
 springboot.log.*
+
+### Supabase ###
+supabase/
