@@ -21,6 +21,7 @@ import org.jaudiotagger.audio.exceptions.ReadOnlyFileException;
 import org.jaudiotagger.tag.TagException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
@@ -42,6 +43,7 @@ import edu.cit.audioscholar.model.Recording;
 import edu.cit.audioscholar.util.RobustTaskExecutor;
 
 @Service
+@ConditionalOnProperty(name = "app.rabbitmq.enabled", havingValue = "true")
 public class AudioTranscriptionListenerService {
 	private static final Logger log = LoggerFactory.getLogger(AudioTranscriptionListenerService.class);
 	private static final String CACHE_METADATA_BY_USER = "audioMetadataByUser";

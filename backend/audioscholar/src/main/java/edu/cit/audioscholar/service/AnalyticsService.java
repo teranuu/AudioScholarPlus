@@ -7,15 +7,10 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-
-import com.google.api.core.ApiFuture;
-import com.google.cloud.firestore.QueryDocumentSnapshot;
-import com.google.cloud.firestore.QuerySnapshot;
 
 import edu.cit.audioscholar.dto.analytics.ActivityStatsDto;
 import edu.cit.audioscholar.dto.analytics.AnalyticsOverviewDto;
@@ -108,40 +103,36 @@ public class AnalyticsService {
 		Date thirtyDaysAgoDate = Date
 				.from(LocalDate.now().minusDays(30).atStartOfDay(ZoneId.systemDefault()).toInstant());
 
-		ApiFuture<QuerySnapshot> usersFuture = firebaseService.getDocumentsSince(USERS_COLLECTION, "createdAt",
+		List<Map<String, Object>> users = firebaseService.getDocumentsSince(USERS_COLLECTION, "createdAt",
 				thirtyDaysAgoDate);
-		ApiFuture<QuerySnapshot> recordingsFuture = firebaseService.getDocumentsSince(RECORDINGS_COLLECTION,
-				"createdAt", thirtyDaysAgoDate);
+		List<Map<String, Object>> recordings = firebaseService.getDocumentsSince(RECORDINGS_COLLECTION, "createdAt",
+				thirtyDaysAgoDate);
 
 		Map<String, Long> newUsers = new HashMap<>();
 		Map<String, Long> newRecordings = new HashMap<>();
 
-		try {
-			List<QueryDocumentSnapshot> users = usersFuture.get().getDocuments();
-			List<QueryDocumentSnapshot> recordings = recordingsFuture.get().getDocuments();
+		for (Map<String, Object> userDoc : users) {
+			mergeActivityDate(newUsers, userDoc.get("createdAt"));
+		}
 
-			for (QueryDocumentSnapshot userDoc : users) {
-				Date createdAt = userDoc.getDate("createdAt");
-				if (createdAt != null) {
-					LocalDate createdDate = createdAt.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
-					newUsers.merge(createdDate.toString(), 1L, Long::sum);
-				}
-			}
-
-			for (QueryDocumentSnapshot recDoc : recordings) {
-				Date createdAt = recDoc.getDate("createdAt");
-				if (createdAt != null) {
-					LocalDate createdDate = createdAt.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
-					newRecordings.merge(createdDate.toString(), 1L, Long::sum);
-				}
-			}
-
-		} catch (InterruptedException | ExecutionException e) {
-			Thread.currentThread().interrupt();
-			log.error("Error fetching activity stats", e);
+		for (Map<String, Object> recDoc : recordings) {
+			mergeActivityDate(newRecordings, recDoc.get("createdAt"));
 		}
 
 		return new ActivityStatsDto(newUsers, newRecordings);
+	}
+
+	private void mergeActivityDate(Map<String, Long> target, Object createdAtObj) {
+		Date createdAt = null;
+		if (createdAtObj instanceof Date date) {
+			createdAt = date;
+		} else if (createdAtObj instanceof com.google.cloud.Timestamp timestamp) {
+			createdAt = timestamp.toDate();
+		}
+		if (createdAt != null) {
+			LocalDate createdDate = createdAt.toInstant().atZone(ZoneId.systemDefault()).toLocalDate();
+			target.merge(createdDate.toString(), 1L, Long::sum);
+		}
 	}
 
 	/**
