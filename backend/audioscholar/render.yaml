@@ -1,0 +1,29 @@
+services:
+  - type: web
+    name: audioscholar-backend
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /actuator/health
+    envVars:
+      - key: SPRING_PROFILES_ACTIVE
+        value: prod
+      - key: DATABASE_URL
+        sync: false
+      - key: DATABASE_USERNAME
+        sync: false
+      - key: DATABASE_PASSWORD
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: audioscholar
+      # Keep false for portfolio/demo deploys without RabbitMQ; true also re-enables Rabbit health.
+      - key: APP_RABBITMQ_ENABLED
+        value: "false"
+      - key: AI_PROVIDER
+        value: gemini
+      - key: APP_CORS_ALLOWED_ORIGINS
+        value: https://audioscholar.vercel.app
