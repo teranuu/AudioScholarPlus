@@ -37,7 +37,8 @@ class RemoteAudioRepositoryImpl @Inject constructor(
         audioFile: File,
         powerpointFile: File?,
         title: String?,
-        description: String?
+        description: String?,
+        outputType: String
     ): Flow<UploadResult> = callbackFlow<UploadResult> {
         trySend(UploadResult.Loading)
         Log.d(TAG_REMOTE_REPO, "Starting upload for File: ${audioFile.absolutePath}. PowerPoint: ${powerpointFile?.absolutePath}, Title: '$title', Desc: '$description'")
@@ -129,6 +130,7 @@ class RemoteAudioRepositoryImpl @Inject constructor(
 
         val titlePart: RequestBody? = title?.takeIf { it.isNotBlank() }?.toRequestBody("text/plain".toMediaTypeOrNull())
         val descriptionPart: RequestBody? = description?.takeIf { it.isNotBlank() }?.toRequestBody("text/plain".toMediaTypeOrNull())
+        val outputTypePart: RequestBody = outputType.toRequestBody("text/plain".toMediaTypeOrNull())
 
         Log.d(TAG_REMOTE_REPO, "Multipart parts created. Filename: '$fileName', MIME Type: '$mimeType'")
         Log.d(TAG_REMOTE_REPO, "PowerPoint part created: ${pptxPart != null}")
@@ -141,7 +143,8 @@ class RemoteAudioRepositoryImpl @Inject constructor(
                 file = filePart,
                 powerpointFile = pptxPart,
                 title = titlePart,
-                description = descriptionPart
+                description = descriptionPart,
+                outputType = outputTypePart
             )
             Log.d(TAG_REMOTE_REPO, "API call finished. Response code: ${response.code()}")
 
@@ -191,6 +194,66 @@ class RemoteAudioRepositoryImpl @Inject constructor(
             Log.d(TAG_REMOTE_REPO, "Upload flow channel closed.")
         }
 
+    }.flowOn(Dispatchers.IO)
+
+    override fun uploadMultiSourceFiles(
+        files: List<File>,
+        title: String?,
+        description: String?,
+        outputType: String
+    ): Flow<Result<MultiSourceJobDto>> = flow {
+        try {
+            val parts = files.map { file ->
+                if (!file.exists() || !file.canRead()) {
+                    throw IOException("File not found or cannot be read: ${file.name}")
+                }
+                val extension = file.name.substringAfterLast('.', "").lowercase()
+                val mimeType = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+                    ?: if (extension in setOf("mp4", "mov", "mkv", "webm")) "video/mp4" else "audio/mpeg"
+                MultipartBody.Part.createFormData(
+                    "files",
+                    file.name,
+                    file.asRequestBody(mimeType.toMediaTypeOrNull())
+                )
+            }
+            val response = apiService.uploadMultiSource(
+                files = parts,
+                title = title?.takeIf { it.isNotBlank() }?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                description = description?.takeIf { it.isNotBlank() }?.toRequestBody("text/plain".toMediaTypeOrNull()),
+                outputType = outputType.toRequestBody("text/plain".toMediaTypeOrNull())
+            )
+
+            if (response.isSuccessful && response.body() != null) {
+                emit(Result.success(response.body()!!))
+            } else {
+                val errorBody = response.errorBody()?.string() ?: application.getString(R.string.upload_error_server_generic)
+                emit(Result.failure(mapHttpException("upload multi-source", response.code(), errorBody, HttpException(response))))
+            }
+        } catch (e: IOException) {
+            emit(Result.failure(IOException(application.getString(R.string.upload_error_network_connection), e)))
+        } catch (e: HttpException) {
+            emit(Result.failure(mapHttpException("upload multi-source", e.code(), e.message(), e)))
+        } catch (e: Exception) {
+            emit(Result.failure(IOException(application.getString(R.string.upload_error_unexpected, e.message ?: "Unknown error"), e)))
+        }
+    }.flowOn(Dispatchers.IO)
+
+    override fun getMultiSourceJob(jobId: String): Flow<Result<MultiSourceJobDto>> = flow {
+        try {
+            val response = apiService.getMultiSourceJob(jobId)
+            if (response.isSuccessful && response.body() != null) {
+                emit(Result.success(response.body()!!))
+            } else {
+                val errorBody = response.errorBody()?.string() ?: application.getString(R.string.upload_error_server_generic)
+                emit(Result.failure(mapHttpException("fetch multi-source job", response.code(), errorBody, HttpException(response))))
+            }
+        } catch (e: IOException) {
+            emit(Result.failure(IOException(application.getString(R.string.upload_error_network_connection), e)))
+        } catch (e: HttpException) {
+            emit(Result.failure(mapHttpException("fetch multi-source job", e.code(), e.message(), e)))
+        } catch (e: Exception) {
+            emit(Result.failure(IOException(application.getString(R.string.upload_error_unexpected, e.message ?: "Unknown error"), e)))
+        }
     }.flowOn(Dispatchers.IO)
 
 
@@ -308,6 +371,26 @@ class RemoteAudioRepositoryImpl @Inject constructor(
             emit(Result.failure(exception))
         } catch (e: Exception) {
             Log.e(TAG_REMOTE_REPO, "Unexpected exception fetching summary: ${e.message}", e)
+            emit(Result.failure(IOException(application.getString(R.string.upload_error_unexpected, e.message ?: "Unknown error"), e)))
+        }
+    }.flowOn(Dispatchers.IO)
+
+    override fun getQualityReport(recordingId: String): Flow<Result<QualityReportDto>> = flow {
+        try {
+            Log.d(TAG_REMOTE_REPO, "Fetching quality report for recordingId: $recordingId")
+            val response: Response<QualityReportDto> = apiService.getQualityReport(recordingId)
+            if (response.isSuccessful && response.body() != null) {
+                emit(Result.success(response.body()!!))
+            } else {
+                val errorBody = response.errorBody()?.string()
+                val exception = mapHttpException("fetch quality report", response.code(), errorBody, HttpException(response))
+                emit(Result.failure(exception))
+            }
+        } catch (e: IOException) {
+            emit(Result.failure(IOException(application.getString(R.string.upload_error_network_connection), e)))
+        } catch (e: HttpException) {
+            emit(Result.failure(mapHttpException("fetch quality report", e.code(), e.message(), e)))
+        } catch (e: Exception) {
             emit(Result.failure(IOException(application.getString(R.string.upload_error_unexpected, e.message ?: "Unknown error"), e)))
         }
     }.flowOn(Dispatchers.IO)

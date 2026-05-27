@@ -12,6 +12,7 @@ import edu.cit.audioscholar.R
 import edu.cit.audioscholar.data.local.model.RecordingMetadata
 import edu.cit.audioscholar.data.local.model.UserNoteEntity
 import edu.cit.audioscholar.data.remote.dto.GlossaryItemDto
+import edu.cit.audioscholar.data.remote.dto.QualityReportDto
 import edu.cit.audioscholar.data.remote.dto.RecommendationDto
 import edu.cit.audioscholar.data.remote.dto.SummaryResponseDto
 import edu.cit.audioscholar.data.remote.dto.UserNoteDto
@@ -22,6 +23,7 @@ import edu.cit.audioscholar.ui.main.Screen
 import edu.cit.audioscholar.ui.details.RecordingDetailsUiState
 import edu.cit.audioscholar.ui.details.SummaryStatus
 import edu.cit.audioscholar.ui.details.RecommendationsStatus
+import edu.cit.audioscholar.ui.details.QualityReportStatus
 import edu.cit.audioscholar.util.ProcessingEventBus
 import edu.cit.audioscholar.util.onSuccess
 import edu.cit.audioscholar.util.onFailure
@@ -165,6 +167,7 @@ class RecordingDetailsViewModel @Inject constructor(
                         val cachedGlossary = metadata.cachedGlossaryItems
                         val cachedKeyPoints = metadata.cachedKeyPoints
                         val cachedRecs = metadata.cachedRecommendations
+                        val cachedQualityReport = metadata.cachedQualityReport
 
                         val isSummaryCacheValid = isCacheValid(cacheTimestamp) && (!cachedSummary.isNullOrBlank() || !cachedKeyPoints.isNullOrEmpty())
                         val areRecommendationsCacheValid = isCacheValid(cacheTimestamp) && !cachedRecs.isNullOrEmpty()
@@ -197,6 +200,8 @@ class RecordingDetailsViewModel @Inject constructor(
                                 cloudId = null,
                                 storageUrl = null,
                                 error = null,
+                                outputType = metadata.outputType,
+                                selectedOutputType = metadata.outputType,
                                 summaryStatus = nextSummaryStatus,
                                 recommendationsStatus = nextRecsStatus,
                                 summaryId = metadata.summaryId,
@@ -204,6 +209,12 @@ class RecordingDetailsViewModel @Inject constructor(
                                 keyPoints = if (isSummaryCacheValid) cachedKeyPoints ?: emptyList() else emptyList(),
                                 topics = if (isSummaryCacheValid) metadata.cachedTopics ?: emptyList() else emptyList(),
                                 glossaryItems = if (isSummaryCacheValid) cachedGlossary ?: emptyList() else emptyList(),
+                                qualityReportStatus = when {
+                                    cachedQualityReport != null -> QualityReportStatus.READY
+                                    remoteId != null -> QualityReportStatus.LOADING
+                                    else -> QualityReportStatus.IDLE
+                                },
+                                qualityReport = cachedQualityReport,
                                 youtubeRecommendations = if (areRecommendationsCacheValid) cachedRecs ?: emptyList() else emptyList(),
                                 attachedPowerPoint = metadata.attachmentUri,
                                 isCloudSource = false,
@@ -216,6 +227,9 @@ class RecordingDetailsViewModel @Inject constructor(
                         launch { loadUserNotes(remoteId ?: "") }
 
                         if (remoteId != null) {
+                            if (cachedQualityReport == null) {
+                                launch { fetchQualityReport(remoteId) }
+                            }
                             if (!isSummaryCacheValid || !areRecommendationsCacheValid) {
                                 Log.d("DetailsViewModel", "[Local Load] Remote ID exists and cache is invalid/incomplete. Starting listener and attempting immediate fetch.")
                                 listenForProcessingCompletion(remoteId, !isSummaryCacheValid, !areRecommendationsCacheValid)
@@ -320,8 +334,15 @@ class RecordingDetailsViewModel @Inject constructor(
                             description = dto.description ?: "",
                             title = dto.title ?: it.title,
                             editableTitle = TextFieldValue(dto.title ?: it.title, selection = TextRange((dto.title ?: it.title).length)),
+                            outputType = dto.outputType ?: it.outputType,
+                            selectedOutputType = dto.outputType ?: it.selectedOutputType,
+                            qualityReportStatus = if (dto.qualityReport != null) QualityReportStatus.READY else it.qualityReportStatus,
+                            qualityReport = dto.qualityReport ?: it.qualityReport,
                             isFavorite = dto.isFavorite ?: false
                         )
+                    }
+                    if (dto.qualityReport == null) {
+                        fetchQualityReport(remoteId)
                     }
                 }.onFailure { e ->
                     Log.w("DetailsViewModel", "Failed to fetch latest cloud details for $remoteId", e)
@@ -393,6 +414,7 @@ class RecordingDetailsViewModel @Inject constructor(
                         if (stillNeedsRecs) {
                             launch { fetchRecommendations(targetId) }
                         }
+                        launch { fetchQualityReport(targetId) }
                     } else {
                          Log.d("DetailsViewModel", "FCM signal received, but data seems already loaded. Ignoring signal.")
                     }
@@ -425,11 +447,18 @@ class RecordingDetailsViewModel @Inject constructor(
                     keyPoints = summaryDto.keyPoints ?: emptyList(),
                     topics = summaryDto.topics ?: emptyList(),
                     glossaryItems = summaryDto.glossary ?: emptyList(),
+                    outputType = summaryDto.outputType ?: it.outputType,
+                    selectedOutputType = summaryDto.outputType ?: it.selectedOutputType,
+                    qualityReportStatus = if (summaryDto.qualityReport != null) QualityReportStatus.READY else it.qualityReportStatus,
+                    qualityReport = summaryDto.qualityReport ?: it.qualityReport,
                     error = null
                 )
             }
                     Log.d("DetailsViewModel", "[DirectFetch SUCCESS] UI State updated. New status: ${updatedState.summaryStatus}")
                     cacheSummary(summaryDto)
+                    if (summaryDto.qualityReport == null) {
+                        fetchQualityReport(remoteId)
+                    }
                 }.onFailure { e ->
                      Log.e("DetailsViewModel", "[DirectFetch FAILURE] Summary fetch inner fail for $remoteId", e)
                     throw e
@@ -440,6 +469,29 @@ class RecordingDetailsViewModel @Inject constructor(
             val errorMsg = mapErrorToUserFriendlyMessage(e, default = "Failed to load summary.")
             _uiState.update { it.copy(summaryStatus = SummaryStatus.FAILED, error = errorMsg) }
             _errorEvent.trySend(errorMsg)
+        }
+    }
+
+    private suspend fun fetchQualityReport(remoteId: String) {
+        _uiState.update { it.copy(qualityReportStatus = QualityReportStatus.LOADING) }
+        try {
+            remoteAudioRepository.getQualityReport(remoteId).collect { result ->
+                result.onSuccess { report ->
+                    _uiState.update {
+                        it.copy(
+                            qualityReportStatus = if (report.status == "UNAVAILABLE") QualityReportStatus.UNAVAILABLE else QualityReportStatus.READY,
+                            qualityReport = report
+                        )
+                    }
+                    cacheQualityReport(report)
+                }.onFailure { e ->
+                    Log.w("DetailsViewModel", "Quality report unavailable for $remoteId", e)
+                    _uiState.update { it.copy(qualityReportStatus = QualityReportStatus.UNAVAILABLE) }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("DetailsViewModel", "Failed to fetch quality report for $remoteId", e)
+            _uiState.update { it.copy(qualityReportStatus = QualityReportStatus.UNAVAILABLE) }
         }
     }
 
@@ -483,6 +535,8 @@ class RecordingDetailsViewModel @Inject constructor(
                     cachedKeyPoints = summaryDto.keyPoints,
                     cachedTopics = summaryDto.topics,
                     summaryId = summaryDto.summaryId,
+                    outputType = summaryDto.outputType ?: localMeta.outputType,
+                    cachedQualityReport = summaryDto.qualityReport ?: localMeta.cachedQualityReport,
                     cacheTimestampMillis = cacheTimestamp
                 )
                 Log.d("DetailsViewModel", "[Cache] Saving fetched summary data to local cache for ${localMeta.filePath}")
@@ -496,6 +550,20 @@ class RecordingDetailsViewModel @Inject constructor(
                     }
                 }
             } ?: Log.w("DetailsViewModel", "[Cache] Summary fetched for local source, but currentMetadata is null!")
+        }
+    }
+
+    private fun cacheQualityReport(report: QualityReportDto) {
+        val currentState = uiState.value
+        if (!currentState.isCloudSource) {
+            currentMetadata?.let { localMeta ->
+                val updatedMeta = localMeta.copy(cachedQualityReport = report)
+                viewModelScope.launch(Dispatchers.IO) {
+                    if (localAudioRepository.saveMetadata(updatedMeta)) {
+                        currentMetadata = updatedMeta
+                    }
+                }
+            }
         }
     }
 
@@ -524,6 +592,43 @@ class RecordingDetailsViewModel @Inject constructor(
     }
 
     fun onProcessRecordingClicked() {
+        val meta = currentMetadata
+        val currentState = uiState.value
+        if (currentState.isProcessing) return
+        if (meta == null || meta.remoteRecordingId != null || meta.filePath.isEmpty()) {
+            val errorMsg = when {
+                meta?.remoteRecordingId != null -> "Recording has already been processed."
+                meta?.filePath.isNullOrEmpty() -> "Recording file path is missing."
+                else -> "Cannot process recording."
+            }
+            _uiState.update { it.copy(error = errorMsg) }
+            viewModelScope.launch { _errorEvent.trySend(errorMsg) }
+            return
+        }
+        _uiState.update { it.copy(showOutputTypeDialog = true, selectedOutputType = it.selectedOutputType ?: it.outputType) }
+    }
+
+    fun onOutputTypeSelected(outputType: String) {
+        _uiState.update { it.copy(selectedOutputType = outputType) }
+    }
+
+    fun dismissOutputTypeDialog() {
+        _uiState.update { it.copy(showOutputTypeDialog = false) }
+    }
+
+    fun confirmOutputTypeAndProcess() {
+        val outputType = uiState.value.selectedOutputType
+        if (outputType.isNullOrBlank()) {
+            val errorMsg = "Choose an output type before processing."
+            _uiState.update { it.copy(error = errorMsg) }
+            viewModelScope.launch { _errorEvent.trySend(errorMsg) }
+            return
+        }
+        _uiState.update { it.copy(showOutputTypeDialog = false) }
+        processRecording(outputType)
+    }
+
+    private fun processRecording(outputType: String) {
         Log.d("DetailsViewModel", "Process Recording button clicked for: ${uiState.value.filePath}")
         val currentState = uiState.value
         val meta = currentMetadata
@@ -553,6 +658,7 @@ class RecordingDetailsViewModel @Inject constructor(
         _uiState.update { it.copy(
             summaryStatus = SummaryStatus.PROCESSING,
             recommendationsStatus = RecommendationsStatus.LOADING,
+            qualityReportStatus = QualityReportStatus.LOADING,
             uploadProgressPercent = 0,
             error = null
         ) }
@@ -612,7 +718,8 @@ class RecordingDetailsViewModel @Inject constructor(
                 audioFile = fileToUpload,
                 powerpointFile = powerpointFile,
                 title = titleToUpload,
-                description = null
+                description = null,
+                outputType = outputType
             )
                 .catch { e ->
                     Log.e("DetailsViewModel", "Exception during upload flow collection", e)
@@ -667,13 +774,25 @@ class RecordingDetailsViewModel @Inject constructor(
                                 val newRemoteId = remoteMetadataDto.recordingId
                                 Log.i("DetailsViewModel", "Upload successful. Received remote recordingId: $newRemoteId")
 
-                                val updatedMetaWithId = meta.copy(remoteRecordingId = newRemoteId)
+                                val updatedMetaWithId = meta.copy(
+                                    remoteRecordingId = newRemoteId,
+                                    outputType = outputType,
+                                    cachedQualityReport = remoteMetadataDto.qualityReport
+                                )
                                 val idSaveSuccess = localAudioRepository.saveMetadata(updatedMetaWithId)
 
                                 if (idSaveSuccess) {
                                     currentMetadata = updatedMetaWithId
                                     Log.i("DetailsViewModel", "Successfully saved remoteRecordingId to local metadata.")
-                                    _uiState.update { it.copy(remoteRecordingId = newRemoteId) }
+                                    _uiState.update {
+                                        it.copy(
+                                            remoteRecordingId = newRemoteId,
+                                            outputType = outputType,
+                                            selectedOutputType = outputType,
+                                            qualityReport = remoteMetadataDto.qualityReport ?: it.qualityReport,
+                                            qualityReportStatus = if (remoteMetadataDto.qualityReport != null) QualityReportStatus.READY else QualityReportStatus.LOADING
+                                        )
+                                    }
                                     viewModelScope.launch { _recordingUpdatedEvent.trySend(Unit) }
                                     listenForProcessingCompletion(newRemoteId, fetchSummary = true, fetchRecs = true)
                                 } else {
@@ -926,6 +1045,7 @@ class RecordingDetailsViewModel @Inject constructor(
                     _uiState.update { it.copy(isLoading = true) }
                     fetchCloudDetails(idToFetch)
                     fetchSummary(idToFetch)
+                    fetchQualityReport(idToFetch)
                     fetchRecommendations(idToFetch)
                     loadUserNotes(idToFetch)
                     _uiState.update { it.copy(isLoading = false) }

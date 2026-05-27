@@ -17,12 +17,24 @@ interface RemoteAudioRepository {
         audioFile: File,
         powerpointFile: File? = null,
         title: String?,
-        description: String?
+        description: String?,
+        outputType: String
     ): Flow<UploadResult>
+
+    fun uploadMultiSourceFiles(
+        files: List<File>,
+        title: String?,
+        description: String?,
+        outputType: String
+    ): Flow<Result<MultiSourceJobDto>>
+
+    fun getMultiSourceJob(jobId: String): Flow<Result<MultiSourceJobDto>>
 
     fun getCloudRecordings(): Flow<Result<List<AudioMetadataDto>>>
 
     fun getSummary(recordingId: String): Flow<Result<SummaryResponseDto>>
+
+    fun getQualityReport(recordingId: String): Flow<Result<QualityReportDto>>
 
     fun getRecommendations(recordingId: String): Flow<Result<List<RecommendationDto>>>
 

@@ -45,6 +45,7 @@ import edu.cit.audioscholar.service.LIBRARY_CLOUD_DESTINATION
 import edu.cit.audioscholar.ui.about.AboutScreen
 import edu.cit.audioscholar.ui.auth.*
 import edu.cit.audioscholar.ui.details.RecordingDetailsScreen
+import edu.cit.audioscholar.ui.multisource.MultiSourceUploadScreen
 import edu.cit.audioscholar.ui.library.LibraryScreen
 import edu.cit.audioscholar.ui.onboarding.OnboardingScreen
 import edu.cit.audioscholar.ui.admin.AdminAnalyticsScreen
@@ -78,6 +79,7 @@ sealed class Screen(val route: String, val labelResId: Int, val icon: ImageVecto
     object Onboarding : Screen("onboarding", R.string.nav_onboarding, Icons.Filled.Info)
     object Record : Screen("record", R.string.nav_record, Icons.Filled.Mic)
     object Library : Screen("library", R.string.nav_library, Icons.AutoMirrored.Filled.List)
+    object MultiSourceUpload : Screen("multi_source_upload", R.string.nav_multi_source_upload, Icons.Filled.CloudUpload)
     object Settings : Screen("settings", R.string.nav_settings, Icons.Filled.Settings)
     object Profile : Screen("profile", R.string.nav_profile, Icons.Filled.AccountCircle)
     object EditProfile : Screen("edit_profile", R.string.nav_edit_profile, Icons.Filled.Edit)
@@ -198,6 +200,7 @@ sealed class Screen(val route: String, val labelResId: Int, val icon: ImageVecto
 val screensWithDrawer = listOf(
     Screen.Record.route,
     Screen.Library.route,
+    Screen.MultiSourceUpload.route,
     Screen.Settings.route,
     Screen.Profile.route,
     Screen.About.route,
@@ -739,6 +742,7 @@ fun MainAppScreen(
                     Screen.SubscriptionPricing,
                     Screen.Record,
                     Screen.Library,
+                    Screen.MultiSourceUpload,
                     Screen.Settings,
                     Screen.About
                 )
@@ -810,6 +814,12 @@ fun MainAppScreen(
                 LibraryScreen(
                     navController = navController,
                     drawerState = drawerState,
+                )
+            }
+            composable(Screen.MultiSourceUpload.route) {
+                MultiSourceUploadScreen(
+                    drawerState = drawerState,
+                    scope = scope
                 )
             }
             composable(Screen.Settings.route) {

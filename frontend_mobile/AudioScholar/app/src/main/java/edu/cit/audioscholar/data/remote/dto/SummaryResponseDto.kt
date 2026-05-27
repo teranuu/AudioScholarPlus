@@ -21,6 +21,12 @@ data class SummaryResponseDto(
     @SerializedName("formattedSummaryText")
     val formattedSummaryText: String? = null,
 
+    @SerializedName("outputType")
+    val outputType: String? = null,
+
+    @SerializedName("qualityReport")
+    val qualityReport: QualityReportDto? = null,
+
     @SerializedName("createdAt")
     val createdAt: String? = null
 )

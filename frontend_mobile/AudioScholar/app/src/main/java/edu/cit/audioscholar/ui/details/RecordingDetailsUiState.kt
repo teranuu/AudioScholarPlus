@@ -3,11 +3,13 @@ package edu.cit.audioscholar.ui.details
 import androidx.compose.runtime.Stable
 import androidx.compose.ui.text.input.TextFieldValue
 import edu.cit.audioscholar.data.remote.dto.GlossaryItemDto
+import edu.cit.audioscholar.data.remote.dto.QualityReportDto
 import edu.cit.audioscholar.data.remote.dto.RecommendationDto
 import edu.cit.audioscholar.data.remote.dto.UserNoteDto
 
 enum class SummaryStatus { IDLE, PROCESSING, READY, FAILED }
 enum class RecommendationsStatus { IDLE, LOADING, READY, FAILED }
+enum class QualityReportStatus { IDLE, LOADING, READY, UNAVAILABLE, FAILED }
 
 
 @Stable
@@ -29,6 +31,9 @@ data class RecordingDetailsUiState(
     val audioUrl: String? = null,
     val generatedPdfUrl: String? = null,
     val isCloudSource: Boolean = false,
+    val outputType: String? = null,
+    val selectedOutputType: String? = null,
+    val showOutputTypeDialog: Boolean = false,
 
     val isEditingTitle: Boolean = false,
     val editableTitle: TextFieldValue = TextFieldValue(""),
@@ -44,6 +49,8 @@ data class RecordingDetailsUiState(
     val keyPoints: List<String> = emptyList(),
     val topics: List<String> = emptyList(),
     val glossaryItems: List<GlossaryItemDto> = emptyList(),
+    val qualityReportStatus: QualityReportStatus = QualityReportStatus.IDLE,
+    val qualityReport: QualityReportDto? = null,
     val showSummaryEditDialog: Boolean = false,
     val showGlossaryEditDialog: Boolean = false,
 

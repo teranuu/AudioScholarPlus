@@ -4,6 +4,7 @@ import androidx.room.TypeConverter
 import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import edu.cit.audioscholar.data.remote.dto.GlossaryItemDto
+import edu.cit.audioscholar.data.remote.dto.QualityReportDto
 import edu.cit.audioscholar.data.remote.dto.RecommendationDto
 
 class Converters {
@@ -47,5 +48,15 @@ class Converters {
             val listType = object : TypeToken<List<String>>() {}.type
             gson.fromJson(it, listType)
         }
+    }
+
+    @TypeConverter
+    fun fromQualityReport(value: QualityReportDto?): String? {
+        return value?.let { gson.toJson(it) }
+    }
+
+    @TypeConverter
+    fun toQualityReport(value: String?): QualityReportDto? {
+        return value?.let { gson.fromJson(it, QualityReportDto::class.java) }
     }
 }

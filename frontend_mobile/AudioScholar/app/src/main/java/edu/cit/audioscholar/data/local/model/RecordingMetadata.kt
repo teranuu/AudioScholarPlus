@@ -3,6 +3,7 @@ package edu.cit.audioscholar.data.local.model
 import androidx.room.*
 import edu.cit.audioscholar.data.local.db.Converters
 import edu.cit.audioscholar.data.remote.dto.GlossaryItemDto
+import edu.cit.audioscholar.data.remote.dto.QualityReportDto
 import edu.cit.audioscholar.data.remote.dto.RecommendationDto
 
 @Entity(tableName = "recording_metadata")
@@ -19,6 +20,8 @@ data class RecordingMetadata(
     val timestampMillis: Long,
     val durationMillis: Long,
     val remoteRecordingId: String? = null,
+    val outputType: String? = null,
+    val cachedQualityReport: QualityReportDto? = null,
 
     val cachedSummaryText: String?,
     val cachedGlossaryItems: List<GlossaryItemDto>?,

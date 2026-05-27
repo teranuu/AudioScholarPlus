@@ -16,8 +16,28 @@ interface ApiService {
         @Part file: MultipartBody.Part,
         @Part powerpointFile: MultipartBody.Part?,
         @Part("title") title: RequestBody?,
-        @Part("description") description: RequestBody?
+        @Part("description") description: RequestBody?,
+        @Part("outputType") outputType: RequestBody?
     ): Response<AudioMetadataDto>
+
+    @Multipart
+    @POST("/api/audio/multi-source")
+    suspend fun uploadMultiSource(
+        @Part files: List<MultipartBody.Part>,
+        @Part("title") title: RequestBody?,
+        @Part("description") description: RequestBody?,
+        @Part("outputType") outputType: RequestBody?
+    ): Response<MultiSourceJobDto>
+
+    @GET("/api/audio/multi-source/{jobId}")
+    suspend fun getMultiSourceJob(
+        @Path("jobId") jobId: String
+    ): Response<MultiSourceJobDto>
+
+    @GET("/api/audio/multi-source/{jobId}/summary")
+    suspend fun getMultiSourceSummary(
+        @Path("jobId") jobId: String
+    ): Response<SummaryResponseDto>
 
     @Headers("Cache-Control: no-cache")
     @GET("/api/audio/metadata")
@@ -79,6 +99,11 @@ interface ApiService {
     suspend fun getRecordingSummary(
         @Path("recordingId") recordingId: String
     ): Response<SummaryResponseDto>
+
+    @GET("/api/recordings/{recordingId}/quality-report")
+    suspend fun getQualityReport(
+        @Path("recordingId") recordingId: String
+    ): Response<QualityReportDto>
 
     @GET("/api/v1/recommendations/recording/{recordingId}")
     suspend fun getRecordingRecommendations(

@@ -60,6 +60,9 @@ import edu.cit.audioscholar.ui.components.ModernButton
 import edu.cit.audioscholar.ui.components.ModernDialog
 import edu.cit.audioscholar.ui.components.ModernOutlinedButton
 import edu.cit.audioscholar.ui.components.ModernTextField
+import edu.cit.audioscholar.ui.components.OutputTypeBadge
+import edu.cit.audioscholar.ui.components.OutputTypeSelector
+import edu.cit.audioscholar.ui.components.QualityReportSection
 import edu.cit.audioscholar.ui.theme.AudioScholarTheme
 import edu.cit.audioscholar.util.Resource
 import kotlinx.coroutines.flow.collectLatest
@@ -271,6 +274,10 @@ fun RecordingDetailsScreen(
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = LocalContentColor.current.copy(alpha = 0.8f)
                                 )
+                            }
+                            if (!uiState.outputType.isNullOrBlank()) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                OutputTypeBadge(outputType = uiState.outputType)
                             }
                             
                             Spacer(modifier = Modifier.height(8.dp))
@@ -516,6 +523,35 @@ fun RecordingDetailsScreen(
                 },
                 dismissButton = {
                     ModernOutlinedButton(text = "Cancel", onClick = viewModel::closeEditDialog)
+                }
+            )
+        }
+
+        if (uiState.showOutputTypeDialog) {
+            ModernDialog(
+                onDismissRequest = viewModel::dismissOutputTypeDialog,
+                title = "Choose Output Type",
+                content = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text(
+                            text = "Select how AudioScholar should format this recording before processing.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        OutputTypeSelector(
+                            selectedValue = uiState.selectedOutputType,
+                            onSelected = viewModel::onOutputTypeSelected
+                        )
+                    }
+                },
+                confirmButton = {
+                    ModernButton(
+                        text = "Process",
+                        onClick = viewModel::confirmOutputTypeAndProcess,
+                        enabled = !uiState.selectedOutputType.isNullOrBlank()
+                    )
+                },
+                dismissButton = {
+                    ModernOutlinedButton(text = "Cancel", onClick = viewModel::dismissOutputTypeDialog)
                 }
             )
         }
@@ -875,6 +911,16 @@ fun InsightsTabContent(
             Spacer(modifier = Modifier.height(16.dp))
         }
 
+        if (uiState.showCloudInfo || uiState.qualityReportStatus != QualityReportStatus.IDLE) {
+            QualityReportSection(
+                report = uiState.qualityReport,
+                isLoading = uiState.qualityReportStatus == QualityReportStatus.LOADING,
+                modifier = Modifier.padding(bottom = 16.dp)
+            )
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
         // Summary Section
         if (uiState.showCloudInfo || uiState.summaryStatus != SummaryStatus.IDLE) {
             Row(
@@ -1006,6 +1052,25 @@ fun InsightsTabContent(
                         SummaryStatus.READY -> {
                             if (uiState.keyPoints.isNotEmpty()) {
                                 Column {
+                                    if (!uiState.qualityReport?.issues.isNullOrEmpty()) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            modifier = Modifier.padding(bottom = 8.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Warning,
+                                                contentDescription = null,
+                                                tint = Color(0xFFB26A00),
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                            Text(
+                                                text = "Some notes may be affected by audio quality issues.",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
+                                    }
                                     uiState.keyPoints.forEachIndexed { index, point ->
                                         Row(modifier = Modifier.fillMaxWidth()) {
                                             Text(
