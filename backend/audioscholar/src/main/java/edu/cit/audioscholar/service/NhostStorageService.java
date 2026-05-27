@@ -36,13 +36,16 @@ public class NhostStorageService {
 	private final RestTemplate restTemplate;
 	private final String nhostStorageUrl;
 	private final String nhostAdminSecret;
+	private final String nhostBucketId;
 	private final ObjectMapper objectMapper;
 
 	public NhostStorageService(RestTemplate restTemplate, @Value("${nhost.storage.url}") String nhostStorageUrl,
-			@Value("${nhost.storage.admin-secret}") String nhostAdminSecret, ObjectMapper objectMapper) {
+			@Value("${nhost.storage.admin-secret}") String nhostAdminSecret,
+			@Value("${nhost.storage.bucket-id:default}") String nhostBucketId, ObjectMapper objectMapper) {
 		this.restTemplate = restTemplate;
 		this.nhostStorageUrl = nhostStorageUrl.endsWith("/v1/files") ? nhostStorageUrl : nhostStorageUrl + "/v1/files";
 		this.nhostAdminSecret = nhostAdminSecret;
+		this.nhostBucketId = StringUtils.hasText(nhostBucketId) ? nhostBucketId : "default";
 		this.objectMapper = objectMapper;
 
 		if (this.nhostAdminSecret == null || this.nhostAdminSecret.isEmpty()
@@ -54,6 +57,12 @@ public class NhostStorageService {
 
 	@JsonIgnoreProperties(ignoreUnknown = true)
 	private static class NhostFileUploadResponse {
+		public String id;
+		public List<NhostProcessedFile> processedFiles;
+	}
+
+	@JsonIgnoreProperties(ignoreUnknown = true)
+	private static class NhostProcessedFile {
 		public String id;
 	}
 
@@ -74,7 +83,14 @@ public class NhostStorageService {
 
 		MultiValueMap<String, Object> body = new LinkedMultiValueMap<>();
 		FileSystemResource resource = new FileSystemResource(file);
-		body.add("file", resource);
+		HttpHeaders fileHeaders = new HttpHeaders();
+		fileHeaders.setContentDisposition(ContentDisposition.formData().name("file[]")
+				.filename(StringUtils.hasText(originalFilename) ? originalFilename : file.getName()).build());
+		if (StringUtils.hasText(contentType)) {
+			fileHeaders.setContentType(MediaType.parseMediaType(contentType));
+		}
+		body.add("file[]", new HttpEntity<>(resource, fileHeaders));
+		body.add("bucket-id", nhostBucketId);
 
 		HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(body, headers);
 
@@ -113,9 +129,10 @@ public class NhostStorageService {
 			try {
 				NhostFileUploadResponse parsedResponse = objectMapper.readValue(responseBody,
 						NhostFileUploadResponse.class);
-				if (parsedResponse != null && parsedResponse.id != null && !parsedResponse.id.isEmpty()) {
-					LOGGER.log(Level.INFO, "Successfully parsed Nhost response. File ID: {0}", parsedResponse.id);
-					return parsedResponse.id;
+				String fileId = extractUploadedFileId(parsedResponse);
+				if (StringUtils.hasText(fileId)) {
+					LOGGER.log(Level.INFO, "Successfully parsed Nhost response. File ID: {0}", fileId);
+					return fileId;
 				} else {
 					LOGGER.log(Level.SEVERE,
 							"Parsed Nhost 201 response, but the 'id' field is missing, null, or empty. Parsed object: {0}",
@@ -133,6 +150,22 @@ public class NhostStorageService {
 					new Object[]{rawResponse.getStatusCode(), rawResponse.getBody()});
 			throw new RuntimeException("Failed to upload file to Nhost. Status: " + rawResponse.getStatusCode());
 		}
+	}
+
+	private String extractUploadedFileId(NhostFileUploadResponse parsedResponse) {
+		if (parsedResponse == null) {
+			return null;
+		}
+		if (StringUtils.hasText(parsedResponse.id)) {
+			return parsedResponse.id;
+		}
+		if (parsedResponse.processedFiles != null && !parsedResponse.processedFiles.isEmpty()) {
+			NhostProcessedFile processedFile = parsedResponse.processedFiles.get(0);
+			if (processedFile != null && StringUtils.hasText(processedFile.id)) {
+				return processedFile.id;
+			}
+		}
+		return null;
 	}
 
 	private void handleNhostError(HttpStatusCodeException e) {
@@ -160,32 +193,37 @@ public class NhostStorageService {
 		}
 
 		String downloadUrl = getPublicUrl(fileId);
-		LOGGER.log(Level.INFO, "Attempting to stream download PUBLIC file from Nhost URL: {0} to path: {1}",
+		LOGGER.log(Level.INFO, "Attempting to stream download file from Nhost URL: {0} to path: {1}",
 				new Object[]{downloadUrl, targetPath.toAbsolutePath()});
 
 		try {
-			restTemplate.execute(new URI(downloadUrl), HttpMethod.GET, null, clientHttpResponse -> {
-				HttpStatusCode statusCode = clientHttpResponse.getStatusCode();
-				if (statusCode == HttpStatus.OK) {
-					try (InputStream inputStream = clientHttpResponse.getBody()) {
-						if (inputStream == null) {
-							throw new IOException(
-									"Received null input stream from Nhost response for file ID: " + fileId);
+			restTemplate.execute(new URI(downloadUrl), HttpMethod.GET,
+					clientHttpRequest -> clientHttpRequest.getHeaders().set("x-hasura-admin-secret", nhostAdminSecret),
+					clientHttpResponse -> {
+						HttpStatusCode statusCode = clientHttpResponse.getStatusCode();
+						if (statusCode == HttpStatus.OK) {
+							try (InputStream inputStream = clientHttpResponse.getBody()) {
+								if (inputStream == null) {
+									throw new IOException(
+											"Received null input stream from Nhost response for file ID: " + fileId);
+								}
+								long bytesCopied = Files.copy(inputStream, targetPath,
+										StandardCopyOption.REPLACE_EXISTING);
+								LOGGER.log(Level.INFO,
+										"Successfully downloaded and saved {0} bytes to {1} for file ID: {2}",
+										new Object[]{bytesCopied, targetPath.toAbsolutePath(), fileId});
+								return bytesCopied;
+							} catch (IOException e) {
+								LOGGER.log(Level.SEVERE,
+										"Failed to save downloaded stream to path " + targetPath.toAbsolutePath(), e);
+								throw new IOException(
+										"Failed to save downloaded file to " + targetPath.toAbsolutePath(), e);
+							}
+						} else {
+							handleDownloadErrorResponse(statusCode, fileId);
+							return null;
 						}
-						long bytesCopied = Files.copy(inputStream, targetPath, StandardCopyOption.REPLACE_EXISTING);
-						LOGGER.log(Level.INFO, "Successfully downloaded and saved {0} bytes to {1} for file ID: {2}",
-								new Object[]{bytesCopied, targetPath.toAbsolutePath(), fileId});
-						return bytesCopied;
-					} catch (IOException e) {
-						LOGGER.log(Level.SEVERE,
-								"Failed to save downloaded stream to path " + targetPath.toAbsolutePath(), e);
-						throw new IOException("Failed to save downloaded file to " + targetPath.toAbsolutePath(), e);
-					}
-				} else {
-					handleDownloadErrorResponse(statusCode, fileId);
-					return null;
-				}
-			});
+					});
 		} catch (URISyntaxException e) {
 			LOGGER.log(Level.SEVERE, "Invalid URI syntax for download URL: " + downloadUrl, e);
 			throw new RuntimeException("Failed to create download URI.", e);
@@ -209,10 +247,10 @@ public class NhostStorageService {
 			throw new IllegalArgumentException("File ID cannot be null or empty.");
 		}
 		String downloadUrl = getPublicUrl(fileId);
-		LOGGER.log(Level.INFO, "[Deprecated Method] Attempting to download PUBLIC file from Nhost URL: {0}",
-				downloadUrl);
+		LOGGER.log(Level.INFO, "[Deprecated Method] Attempting to download file from Nhost URL: {0}", downloadUrl);
 		HttpHeaders headers = new HttpHeaders();
 		headers.setAccept(List.of(MediaType.APPLICATION_OCTET_STREAM));
+		headers.set("x-hasura-admin-secret", nhostAdminSecret);
 		RequestEntity<Void> requestEntity;
 		try {
 			requestEntity = RequestEntity.get(new URI(downloadUrl)).headers(headers).build();
@@ -247,7 +285,7 @@ public class NhostStorageService {
 	private void handleDownloadErrorResponse(HttpStatusCode statusCode, String fileId) {
 		String errorMessage;
 		if (statusCode == HttpStatus.FORBIDDEN) {
-			errorMessage = "Failed to download file from Nhost (Status: 403 FORBIDDEN). Ensure 'public' role has 'select' permission on storage.files table in Nhost for file ID: "
+			errorMessage = "Failed to download file from Nhost (Status: 403 FORBIDDEN). Check that NHOST_ADMIN_SECRET is valid for this Nhost project and available to the backend runtime. File ID: "
 					+ fileId;
 			LOGGER.log(Level.SEVERE, errorMessage);
 			throw new RuntimeException(errorMessage);

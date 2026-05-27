@@ -57,6 +57,11 @@
       "description": "Nhost storage admin secret key."
     },
     {
+      "name": "nhost.storage.bucket-id",
+      "type": "java.lang.String",
+      "description": "Nhost storage bucket used for backend uploads."
+    },
+    {
       "name": "youtube.api.key",
       "type": "java.lang.String",
       "description": "YouTube Data API Key."
