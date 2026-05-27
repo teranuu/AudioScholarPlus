@@ -18,6 +18,7 @@ public class Recording {
 	private Date updatedAt;
 	private String duration;
 	private String summaryId;
+	private String outputType;
 	private String fileName;
 	private List<String> recommendationIds;
 	private Long fileSize;
@@ -110,6 +111,14 @@ public class Recording {
 		this.summaryId = summaryId;
 	}
 
+	public String getOutputType() {
+		return outputType;
+	}
+
+	public void setOutputType(String outputType) {
+		this.outputType = outputType;
+	}
+
 	public String getFileName() {
 		return fileName;
 	}
@@ -162,6 +171,8 @@ public class Recording {
 			map.put("duration", duration);
 		if (summaryId != null)
 			map.put("summaryId", summaryId);
+		if (outputType != null)
+			map.put("outputType", outputType);
 		if (fileName != null)
 			map.put("fileName", fileName);
 		if (recommendationIds != null && !recommendationIds.isEmpty()) {
@@ -201,6 +212,7 @@ public class Recording {
 
 		recording.duration = (String) map.get("duration");
 		recording.summaryId = (String) map.get("summaryId");
+		recording.outputType = (String) map.get("outputType");
 		recording.fileName = (String) map.get("fileName");
 
 		Object fileSizeObj = map.get("fileSize");
@@ -271,6 +283,7 @@ public class Recording {
 
 		recording.duration = (String) map.get("duration");
 		recording.summaryId = (String) map.get("summaryId");
+		recording.outputType = (String) map.get("outputType");
 		recording.fileName = (String) map.get("fileName");
 
 		Object fileSizeObj = map.get("fileSize");

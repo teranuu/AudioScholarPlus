@@ -8,6 +8,8 @@ import com.google.cloud.firestore.annotation.ServerTimestamp;
 public class Summary {
 	private String summaryId;
 	private String recordingId;
+	private String outputType;
+	private QualityReport qualityReport;
 	private List<String> keyPoints;
 	private List<String> topics;
 	private List<Map<String, String>> glossary;
@@ -43,6 +45,22 @@ public class Summary {
 
 	public void setRecordingId(String recordingId) {
 		this.recordingId = recordingId;
+	}
+
+	public String getOutputType() {
+		return outputType;
+	}
+
+	public void setOutputType(String outputType) {
+		this.outputType = outputType;
+	}
+
+	public QualityReport getQualityReport() {
+		return qualityReport;
+	}
+
+	public void setQualityReport(QualityReport qualityReport) {
+		this.qualityReport = qualityReport;
 	}
 
 	public List<String> getKeyPoints() {
@@ -89,6 +107,8 @@ public class Summary {
 		Map<String, Object> map = new HashMap<>();
 		map.put("summaryId", summaryId);
 		map.put("recordingId", recordingId);
+		map.put("outputType", outputType);
+		map.put("qualityReport", qualityReport != null ? qualityReport.toMap() : null);
 		map.put("keyPoints", keyPoints);
 		map.put("topics", topics);
 		map.put("glossary", glossary);
@@ -103,6 +123,13 @@ public class Summary {
 		Summary summary = new Summary();
 		summary.summaryId = (String) map.get("summaryId");
 		summary.recordingId = (String) map.get("recordingId");
+		summary.outputType = (String) map.get("outputType");
+		Object qualityReportObj = map.get("qualityReport");
+		if (qualityReportObj instanceof Map) {
+			@SuppressWarnings("unchecked")
+			Map<String, Object> qualityReportMap = (Map<String, Object>) qualityReportObj;
+			summary.qualityReport = QualityReport.fromMap(qualityReportMap);
+		}
 		summary.formattedSummaryText = (String) map.get("formattedSummaryText");
 
 		Object keyPointsObj = map.get("keyPoints");

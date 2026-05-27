@@ -11,6 +11,8 @@ public class SummaryDto {
 
 	private String summaryId;
 	private String recordingId;
+	private String outputType;
+	private Object qualityReport;
 	private List<String> keyPoints;
 	private List<String> topics;
 	private List<Map<String, String>> glossary;
@@ -26,6 +28,14 @@ public class SummaryDto {
 
 	public String getRecordingId() {
 		return recordingId;
+	}
+
+	public String getOutputType() {
+		return outputType;
+	}
+
+	public Object getQualityReport() {
+		return qualityReport;
 	}
 
 	public List<String> getKeyPoints() {
@@ -56,6 +66,8 @@ public class SummaryDto {
 		SummaryDto dto = new SummaryDto();
 		dto.summaryId = summary.getSummaryId();
 		dto.recordingId = summary.getRecordingId();
+		dto.outputType = summary.getOutputType();
+		dto.qualityReport = summary.getQualityReport();
 		dto.keyPoints = summary.getKeyPoints();
 		dto.topics = summary.getTopics();
 		dto.glossary = summary.getGlossary();

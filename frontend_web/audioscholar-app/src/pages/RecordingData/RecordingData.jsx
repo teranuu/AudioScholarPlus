@@ -44,6 +44,71 @@ const formatDuration = (seconds) => {
   return `${minutes}m ${remainingSeconds}s`;
 };
 
+const formatOutputType = (value) => {
+  const labels = {
+    NOTES: 'Notes',
+    STUDY_MATERIAL: 'Study Material',
+    REVIEW_MATERIAL: 'Review Material',
+  };
+  return labels[value] || value || 'Output';
+};
+
+const formatIssueType = (value) => {
+  const labels = {
+    HIGH_BACKGROUND_NOISE: 'High background noise',
+    INAUDIBLE_SPEECH: 'Inaudible speech',
+    UNCLEAR_AUDIO: 'Unclear audio',
+    AUDIO_CLIPPING: 'Audio clipping',
+    MISSING_AUDIO: 'Missing audio',
+  };
+  return labels[value] || value || 'Recording issue';
+};
+
+const QualityReportSection = ({ report }) => {
+  if (!report) {
+    return (
+      <div className="border border-yellow-200 bg-yellow-50 text-yellow-800 rounded-lg p-4 text-sm">
+        Quality report is not available for this recording.
+      </div>
+    );
+  }
+
+  const issues = report.issues || [];
+  if (report.status === 'ALL_CLEAR' || issues.length === 0) {
+    return (
+      <div className="border border-green-200 bg-green-50 text-green-800 rounded-lg p-4 text-sm flex items-start gap-2">
+        <FiCheckCircle className="mt-0.5 shrink-0" />
+        <div>
+          <div className="font-semibold">Recording quality all clear</div>
+          <p className="mt-1 text-green-700">No major quality issues were detected in the measurable audio.</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-yellow-200 bg-yellow-50 rounded-lg p-4">
+      <div className="flex items-center gap-2 text-yellow-900 font-semibold mb-3">
+        <FiAlertTriangle />
+        Quality Report
+      </div>
+      <div className="space-y-2">
+        {issues.map((issue, index) => (
+          <div key={issue.issueId || index} className="bg-white border border-yellow-100 rounded-md p-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <span className="font-semibold text-gray-900">{formatIssueType(issue.issueType)}</span>
+              <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded">{issue.severity || 'Notice'}</span>
+              <span className="text-xs text-gray-500">{issue.startTime} - {issue.endTime}</span>
+            </div>
+            <p className="text-gray-700">{issue.recommendedAction}</p>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-yellow-800 mt-3">Warnings describe recording conditions, not verified factual errors.</p>
+    </div>
+  );
+};
+
 const StatusBadge = ({ recording }) => {
   const { status, failureReason } = recording;
   const originalStatus = status;
@@ -908,6 +973,15 @@ const RecordingData = () => {
                 {!summaryLoading && !summaryError && summaryData && (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                     <div className="md:col-span-2 space-y-6 max-h-[600px] overflow-y-auto pr-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center rounded-full bg-teal-100 text-teal-800 text-xs font-semibold px-3 py-1">
+                          {formatOutputType(summaryData.outputType || recordingData?.outputType)}
+                        </span>
+                        {recordingData?.status && (
+                          <span className="text-xs text-gray-500">Status: {recordingData.status}</span>
+                        )}
+                      </div>
+                      <QualityReportSection report={summaryData.qualityReport || recordingData?.qualityReport} />
                       {summaryData.formattedSummaryText && (
                         <div>
                           <h3 className="font-semibold text-lg mb-2 text-gray-800">Summary Details</h3>

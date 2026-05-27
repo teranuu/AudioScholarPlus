@@ -27,6 +27,7 @@ import org.springframework.web.multipart.MultipartFile;
 import edu.cit.audioscholar.dto.FavoriteStatusDto;
 import edu.cit.audioscholar.dto.UpdateRecordingRequest;
 import edu.cit.audioscholar.model.AudioMetadata;
+import edu.cit.audioscholar.model.OutputType;
 import edu.cit.audioscholar.model.Recording;
 import edu.cit.audioscholar.model.User;
 import edu.cit.audioscholar.service.AudioProcessingService;
@@ -65,7 +66,8 @@ public class AudioController {
 	public ResponseEntity<?> uploadAudio(@RequestParam("audioFile") MultipartFile audioFile,
 			@RequestParam(value = "powerpointFile", required = false) MultipartFile powerpointFile,
 			@RequestParam(value = "title", required = false) String title,
-			@RequestParam(value = "description", required = false) String description) throws IOException {
+			@RequestParam(value = "description", required = false) String description,
+			@RequestParam(value = "outputType", required = false) String outputType) throws IOException {
 		log.info("Received request to /api/audio/upload with audio and potentially PowerPoint");
 		Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 		if (authentication == null || !authentication.isAuthenticated()) {
@@ -78,6 +80,12 @@ public class AudioController {
 		if (audioFile.isEmpty()) {
 			log.warn("Upload attempt failed for user {}: Audio file is empty.", userId);
 			return ResponseEntity.badRequest().body("Audio file cannot be empty.");
+		}
+		try {
+			OutputType.fromValue(outputType);
+		} catch (IllegalArgumentException e) {
+			return ResponseEntity.badRequest()
+					.body("Please select Notes, Study Material, or Review Material before processing.");
 		}
 		String audioContentType = audioFile.getContentType();
 		log.debug("Reported audio content type: {}", audioContentType);
@@ -110,7 +118,7 @@ public class AudioController {
 				userId);
 
 		AudioMetadata initialMetadata = audioProcessingService.queueFilesForUpload(audioFile, powerpointFile,
-				optTitle.orElse(null), optDescription.orElse(null), userId);
+				optTitle.orElse(null), optDescription.orElse(null), outputType, userId);
 
 		log.info("Successfully queued file(s) for upload. Metadata ID: {}, Status: {}, User ID: {}",
 				initialMetadata.getId(), initialMetadata.getStatus(), userId);
