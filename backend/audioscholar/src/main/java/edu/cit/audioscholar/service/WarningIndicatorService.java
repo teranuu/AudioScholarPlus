@@ -1,8 +1,10 @@
 package edu.cit.audioscholar.service;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -43,11 +45,17 @@ public class WarningIndicatorService {
 		}
 
 		List<SummaryKeyPoint> keyPoints = getSummaryKeyPoints(summary);
+		persistSummaryKeyPoints(summary.getSummaryId(), keyPoints);
 		List<WarningIndicator> warnings = new ArrayList<>();
+		Set<String> existingLinks = existingWarningLinks(keyPoints);
 		for (SummaryKeyPoint keyPoint : keyPoints) {
 			for (QualityIssue issue : report.getIssues()) {
 				if (checkTimestampOverlap(keyPoint.getSourceStartTime(), keyPoint.getSourceEndTime(),
 						issue.getStartTime(), issue.getEndTime())) {
+					String linkKey = keyPoint.getKeyPointId() + "::" + issue.getIssueId();
+					if (existingLinks.contains(linkKey)) {
+						continue;
+					}
 					WarningIndicator warning = new WarningIndicator();
 					warning.setKeyPointId(keyPoint.getKeyPointId());
 					warning.setIssueId(issue.getIssueId());
@@ -55,11 +63,32 @@ public class WarningIndicatorService {
 					warning.setSeverity(issue.getSeverity());
 					warning.setRecommendedAction(issue.getRecommendedAction());
 					firebaseService.saveData(WARNING_INDICATORS_COLLECTION, warning.getWarningId(), warning.toMap());
+					existingLinks.add(linkKey);
 					warnings.add(warning);
 				}
 			}
 		}
 		return warnings;
+	}
+
+	public List<WarningIndicator> getWarningIndicators(String summaryId) throws Exception {
+		Summary summary = summaryService.getSummaryById(summaryId);
+		if (summary == null) {
+			throw new IllegalArgumentException("Summary not found.");
+		}
+		List<SummaryKeyPoint> keyPoints = getSummaryKeyPoints(summary);
+		List<WarningIndicator> warnings = new ArrayList<>();
+		for (SummaryKeyPoint keyPoint : keyPoints) {
+			List<Map<String, Object>> stored = firebaseService.queryCollection(WARNING_INDICATORS_COLLECTION,
+					"keyPointId", keyPoint.getKeyPointId());
+			for (Map<String, Object> item : stored) {
+				WarningIndicator warning = WarningIndicator.fromMap(item);
+				if (warning != null) {
+					warnings.add(warning);
+				}
+			}
+		}
+		return warnings.isEmpty() ? generateWarningIndicators(summaryId) : warnings;
 	}
 
 	public boolean checkTimestampOverlap(String keyPointStart, String keyPointEnd, String issueStart, String issueEnd) {
@@ -90,6 +119,40 @@ public class WarningIndicatorService {
 			generated.add(keyPoint);
 		}
 		return generated;
+	}
+
+	private void persistSummaryKeyPoints(String summaryId, List<SummaryKeyPoint> keyPoints) {
+		if (keyPoints == null) {
+			return;
+		}
+		for (SummaryKeyPoint keyPoint : keyPoints) {
+			if (keyPoint == null || keyPoint.getKeyPointId() == null) {
+				continue;
+			}
+			keyPoint.setSummaryId(summaryId);
+			firebaseService.saveData(SUMMARY_KEY_POINTS_COLLECTION, keyPoint.getKeyPointId(), keyPoint.toMap());
+		}
+	}
+
+	private Set<String> existingWarningLinks(List<SummaryKeyPoint> keyPoints) {
+		Set<String> links = new HashSet<>();
+		if (keyPoints == null) {
+			return links;
+		}
+		for (SummaryKeyPoint keyPoint : keyPoints) {
+			if (keyPoint == null || keyPoint.getKeyPointId() == null) {
+				continue;
+			}
+			List<Map<String, Object>> stored = firebaseService.queryCollection(WARNING_INDICATORS_COLLECTION,
+					"keyPointId", keyPoint.getKeyPointId());
+			for (Map<String, Object> item : stored) {
+				WarningIndicator warning = WarningIndicator.fromMap(item);
+				if (warning != null && warning.getIssueId() != null) {
+					links.add(keyPoint.getKeyPointId() + "::" + warning.getIssueId());
+				}
+			}
+		}
+		return links;
 	}
 
 	private Integer parseTimestamp(String value) {

@@ -538,7 +538,9 @@ public class SummarizationListenerService {
 		Summary summary = new Summary();
 		summary.setSummaryId(UUID.randomUUID().toString());
 		summary.setRecordingId(metadataId);
+		summary.setUserId(userId);
 		summary.setFormattedSummaryText(summaryText);
+		summary.setStatus(ProcessingStatus.SUMMARY_COMPLETE.name());
 		if (keyPoints != null) {
 			summary.setKeyPoints(keyPoints);
 		}
@@ -549,6 +551,7 @@ public class SummarizationListenerService {
 			summary.setGlossary(glossary);
 		}
 		summary.setCreatedAt(new Date());
+		summary.setUpdatedAt(new Date());
 
 		try {
 			log.info("[{}] Saving summary with ID {} to Firestore", metadataId, summary.getSummaryId());

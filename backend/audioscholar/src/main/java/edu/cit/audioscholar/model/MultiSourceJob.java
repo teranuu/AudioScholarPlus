@@ -15,6 +15,7 @@ public class MultiSourceJob {
 	private String outputType;
 	private String status = ProcessingStatus.PROCESSING_QUEUED.name();
 	private String failureReason;
+	private Integer sourceCount;
 	private List<SourceFile> sourceFiles = new ArrayList<>();
 	private Summary mergedSummary;
 	private Date createdAt = new Date();
@@ -62,6 +63,14 @@ public class MultiSourceJob {
 	public void setFailureReason(String failureReason) {
 		this.failureReason = failureReason;
 	}
+
+	public Integer getSourceCount() {
+		return sourceCount;
+	}
+
+	public void setSourceCount(Integer sourceCount) {
+		this.sourceCount = sourceCount;
+	}
 	public List<SourceFile> getSourceFiles() {
 		return sourceFiles;
 	}
@@ -96,6 +105,7 @@ public class MultiSourceJob {
 		map.put("outputType", outputType);
 		map.put("status", status);
 		map.put("failureReason", failureReason);
+		map.put("sourceCount", sourceCount != null ? sourceCount : sourceFiles.size());
 		map.put("sourceFiles", sourceFiles.stream().map(SourceFile::toMap).toList());
 		map.put("mergedSummary", mergedSummary != null ? mergedSummary.toMap() : null);
 		map.put("createdAt", createdAt);

@@ -77,12 +77,14 @@ public class GeminiService {
 	private final KeyRotationManager keyRotationManager;
 	private final ObjectMapper objectMapper = new ObjectMapper();
 	private final GeminiSmartRotationService rotationService;
+	private final PromptTemplateService promptTemplateService;
 
 	public GeminiService(RestTemplate restTemplate, KeyRotationManager keyRotationManager,
-			GeminiSmartRotationService rotationService) {
+			GeminiSmartRotationService rotationService, PromptTemplateService promptTemplateService) {
 		this.restTemplate = restTemplate;
 		this.keyRotationManager = keyRotationManager;
 		this.rotationService = rotationService;
+		this.promptTemplateService = promptTemplateService;
 	}
 
 	/**
@@ -1377,7 +1379,14 @@ public class GeminiService {
 		String normalized = outputType == null
 				? "NOTES"
 				: outputType.trim().toUpperCase().replace('-', '_').replace(' ', '_');
-		return switch (normalized) {
+		if (promptTemplateService != null) {
+			return promptTemplateService.getTemplate(normalized);
+		}
+		return defaultOutputTypeInstruction(normalized);
+	}
+
+	private String defaultOutputTypeInstruction(String outputType) {
+		return switch (outputType) {
 			case "STUDY_MATERIAL" ->
 				"Format the generated material as Study Material: include organized lesson sections, clear explanations, important terms, examples where present in the source, and learner-friendly review structure.";
 			case "REVIEW_MATERIAL" ->

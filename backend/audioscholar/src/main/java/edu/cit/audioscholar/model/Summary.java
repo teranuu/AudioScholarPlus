@@ -8,7 +8,9 @@ import com.google.cloud.firestore.annotation.ServerTimestamp;
 public class Summary {
 	private String summaryId;
 	private String recordingId;
+	private String userId;
 	private String outputType;
+	private String status;
 	private QualityReport qualityReport;
 	private List<String> keyPoints;
 	private List<SummaryKeyPoint> summaryKeyPoints;
@@ -18,6 +20,7 @@ public class Summary {
 
 	@ServerTimestamp
 	private Date createdAt;
+	private Date updatedAt;
 
 	public Summary() {
 		this.keyPoints = new ArrayList<>();
@@ -49,12 +52,28 @@ public class Summary {
 		this.recordingId = recordingId;
 	}
 
+	public String getUserId() {
+		return userId;
+	}
+
+	public void setUserId(String userId) {
+		this.userId = userId;
+	}
+
 	public String getOutputType() {
 		return outputType;
 	}
 
 	public void setOutputType(String outputType) {
 		this.outputType = outputType;
+	}
+
+	public String getStatus() {
+		return status;
+	}
+
+	public void setStatus(String status) {
+		this.status = status;
 	}
 
 	public QualityReport getQualityReport() {
@@ -105,6 +124,14 @@ public class Summary {
 		this.formattedSummaryText = formattedSummaryText;
 	}
 
+	public String getContent() {
+		return formattedSummaryText;
+	}
+
+	public void setContent(String content) {
+		this.formattedSummaryText = content;
+	}
+
 	public Date getCreatedAt() {
 		return createdAt;
 	}
@@ -113,11 +140,22 @@ public class Summary {
 		this.createdAt = createdAt;
 	}
 
+	public Date getUpdatedAt() {
+		return updatedAt;
+	}
+
+	public void setUpdatedAt(Date updatedAt) {
+		this.updatedAt = updatedAt;
+	}
+
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
 		map.put("summaryId", summaryId);
 		map.put("recordingId", recordingId);
+		map.put("userId", userId);
 		map.put("outputType", outputType);
+		map.put("content", formattedSummaryText);
+		map.put("status", status);
 		map.put("qualityReport", qualityReport != null ? qualityReport.toMap() : null);
 		map.put("keyPoints", keyPoints);
 		map.put("summaryKeyPoints",
@@ -125,6 +163,8 @@ public class Summary {
 		map.put("topics", topics);
 		map.put("glossary", glossary);
 		map.put("formattedSummaryText", formattedSummaryText);
+		map.put("createdAt", createdAt);
+		map.put("updatedAt", updatedAt);
 		return map;
 	}
 
@@ -135,7 +175,9 @@ public class Summary {
 		Summary summary = new Summary();
 		summary.summaryId = (String) map.get("summaryId");
 		summary.recordingId = (String) map.get("recordingId");
+		summary.userId = (String) map.get("userId");
 		summary.outputType = (String) map.get("outputType");
+		summary.status = (String) map.get("status");
 		Object qualityReportObj = map.get("qualityReport");
 		if (qualityReportObj instanceof Map) {
 			@SuppressWarnings("unchecked")
@@ -143,6 +185,9 @@ public class Summary {
 			summary.qualityReport = QualityReport.fromMap(qualityReportMap);
 		}
 		summary.formattedSummaryText = (String) map.get("formattedSummaryText");
+		if (summary.formattedSummaryText == null) {
+			summary.formattedSummaryText = (String) map.get("content");
+		}
 
 		Object keyPointsObj = map.get("keyPoints");
 		if (keyPointsObj instanceof List) {
@@ -216,6 +261,13 @@ public class Summary {
 			summary.createdAt = ((Timestamp) createdAtObj).toDate();
 		} else if (createdAtObj instanceof Date) {
 			summary.createdAt = (Date) createdAtObj;
+		}
+
+		Object updatedAtObj = map.get("updatedAt");
+		if (updatedAtObj instanceof Timestamp) {
+			summary.updatedAt = ((Timestamp) updatedAtObj).toDate();
+		} else if (updatedAtObj instanceof Date) {
+			summary.updatedAt = (Date) updatedAtObj;
 		}
 
 		return summary;

@@ -7,7 +7,6 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -29,33 +28,37 @@ import edu.cit.audioscholar.model.Summary;
 
 @Service
 public class MultiSourceJobService {
-	private static final String COLLECTION_NAME = "multiSourceJobs";
 	private static final Set<String> ALLOWED_TYPES = Set.of("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
 			"audio/aac", "audio/x-aac", "audio/ogg", "application/ogg", "audio/flac", "audio/x-flac", "audio/aiff",
 			"audio/x-aiff", "audio/mp4", "audio/m4a", "video/mp4", "video/webm", "video/quicktime");
 
-	private final FirebaseService firebaseService;
 	private final GeminiService geminiService;
 	private final QualityReportService qualityReportService;
 	private final SummaryService summaryService;
 	private final DeduplicationService deduplicationService;
 	private final SourceAttributionService sourceAttributionService;
+	private final SourceFileService sourceFileService;
+	private final SourceTranscriptService sourceTranscriptService;
 	private final MergedSummaryRepository mergedSummaryRepository;
+	private final MultiSourceJobRepository multiSourceJobRepository;
 	private final Path tempDir;
 	private final String maxFileSizeValue;
 
-	public MultiSourceJobService(FirebaseService firebaseService, GeminiService geminiService,
-			QualityReportService qualityReportService, SummaryService summaryService,
-			DeduplicationService deduplicationService, SourceAttributionService sourceAttributionService,
-			MergedSummaryRepository mergedSummaryRepository, @Value("${app.temp-file-dir}") String tempDirStr,
+	public MultiSourceJobService(GeminiService geminiService, QualityReportService qualityReportService,
+			SummaryService summaryService, DeduplicationService deduplicationService,
+			SourceAttributionService sourceAttributionService, SourceFileService sourceFileService,
+			SourceTranscriptService sourceTranscriptService, MergedSummaryRepository mergedSummaryRepository,
+			MultiSourceJobRepository multiSourceJobRepository, @Value("${app.temp-file-dir}") String tempDirStr,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue) throws IOException {
-		this.firebaseService = firebaseService;
 		this.geminiService = geminiService;
 		this.qualityReportService = qualityReportService;
 		this.summaryService = summaryService;
 		this.deduplicationService = deduplicationService;
 		this.sourceAttributionService = sourceAttributionService;
+		this.sourceFileService = sourceFileService;
+		this.sourceTranscriptService = sourceTranscriptService;
 		this.mergedSummaryRepository = mergedSummaryRepository;
+		this.multiSourceJobRepository = multiSourceJobRepository;
 		this.tempDir = Path.of(tempDirStr);
 		this.maxFileSizeValue = maxFileSizeValue;
 		Files.createDirectories(this.tempDir);
@@ -72,6 +75,7 @@ public class MultiSourceJobService {
 		job.setDescription(description);
 		job.setOutputType(outputType.name());
 		job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
+		job.setSourceCount(files.size());
 		save(job);
 
 		List<Path> tempFiles = new ArrayList<>();
@@ -83,12 +87,7 @@ public class MultiSourceJobService {
 				Path tempFile = saveTemp(file);
 				tempFiles.add(tempFile);
 
-				SourceFile sourceFile = new SourceFile();
-				sourceFile.setSourceLabel(sourceLabel);
-				sourceFile.setFileName(file.getOriginalFilename());
-				sourceFile.setContentType(file.getContentType());
-				sourceFile.setFileSize(file.getSize());
-
+				SourceFile sourceFile = sourceFileService.createSourceFile(job.getJobId(), sourceLabel, file, tempFile);
 				QualityReport report = qualityReportService.analyze(job.getJobId() + "-" + sourceLabel, tempFile);
 				sourceFile.setQualityReport(report);
 
@@ -96,6 +95,8 @@ public class MultiSourceJobService {
 						file.getOriginalFilename());
 				sourceFile.setTranscriptText(transcript);
 				sourceFiles.add(sourceFile);
+				sourceFileService.save(sourceFile);
+				sourceTranscriptService.saveTranscript(job.getJobId(), sourceFile);
 			}
 
 			job.setSourceFiles(sourceFiles);
@@ -131,8 +132,8 @@ public class MultiSourceJobService {
 		}
 	}
 
-	public Map<String, Object> getJobMap(String jobId) {
-		return firebaseService.getData(COLLECTION_NAME, jobId);
+	public java.util.Map<String, Object> getJobMap(String jobId) {
+		return multiSourceJobRepository.findById(jobId);
 	}
 
 	private Summary parseMergedSummary(MultiSourceJob job, String summaryJson) throws IOException {
@@ -145,7 +146,9 @@ public class MultiSourceJobService {
 		Summary summary = new Summary();
 		summary.setSummaryId(UUID.randomUUID().toString());
 		summary.setRecordingId(job.getJobId());
+		summary.setUserId(job.getUserId());
 		summary.setOutputType(job.getOutputType());
+		summary.setStatus(ProcessingStatus.COMPLETE.name());
 		summary.setFormattedSummaryText(root.path("summaryText").asText(summaryJson));
 		List<String> keyPoints = new ArrayList<>();
 		if (root.path("keyPoints").isArray()) {
@@ -185,6 +188,8 @@ public class MultiSourceJobService {
 		}
 		List<SourceAttribution> attributions = deduplicationService.removeDuplicateKeyPoints(keyPoints).stream()
 				.map(sourceAttributionService::assignAttribution).toList();
+		attributions
+				.forEach(attribution -> sourceAttributionService.save(mergedSummary.getMergedSummaryId(), attribution));
 		mergedSummary.setSourceAttributions(attributions);
 		return mergedSummary;
 	}
@@ -235,6 +240,6 @@ public class MultiSourceJobService {
 	}
 
 	private void save(MultiSourceJob job) throws Exception {
-		firebaseService.saveData(COLLECTION_NAME, job.getJobId(), job.toMap());
+		multiSourceJobRepository.save(job);
 	}
 }

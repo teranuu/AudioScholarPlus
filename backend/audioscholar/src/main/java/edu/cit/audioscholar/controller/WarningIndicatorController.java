@@ -27,7 +27,16 @@ public class WarningIndicatorController {
 	@GetMapping("/{summaryId}/warning-indicators")
 	@PreAuthorize("isAuthenticated()")
 	public ResponseEntity<?> getWarningIndicators(@PathVariable String summaryId) {
-		return generateWarningIndicators(summaryId);
+		try {
+			List<WarningIndicatorDTO> warnings = warningIndicatorService.getWarningIndicators(summaryId).stream()
+					.map(WarningIndicatorDTO::fromModel).toList();
+			return ResponseEntity.ok(warnings);
+		} catch (IllegalArgumentException e) {
+			return ResponseEntity.badRequest().body(Map.of("status", "FAILED", "message", e.getMessage()));
+		} catch (Exception e) {
+			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+					.body(Map.of("status", "FAILED", "message", "Warning indicators could not be retrieved."));
+		}
 	}
 
 	@PostMapping("/{summaryId}/warning-indicators")

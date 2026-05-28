@@ -178,13 +178,19 @@ public class AudioProcessingService {
 			try {
 				Map<String, Object> recordingData = new HashMap<>();
 				recordingData.put("id", metadataId);
+				recordingData.put("recordingId", metadataId);
 				recordingData.put("userId", userId);
 				recordingData.put("title", initialMetadata.getTitle());
 				recordingData.put("description", initialMetadata.getDescription());
+				recordingData.put("fileUrl", initialMetadata.getStorageUrl());
 				recordingData.put("fileSize", initialMetadata.getFileSize());
+				recordingData.put("fileType", initialMetadata.getContentType());
 				recordingData.put("contentType", initialMetadata.getContentType());
 				recordingData.put("outputType", selectedOutputType.name());
+				recordingData.put("status",
+						initialMetadata.getStatus() != null ? initialMetadata.getStatus().name() : null);
 				recordingData.put("createdAt", Timestamp.now());
+				recordingData.put("updatedAt", Timestamp.now());
 
 				firebaseService.saveData("recordings", metadataId, recordingData);
 				log.info("Created Recording document with ID: {} for user: {}", metadataId, userId);

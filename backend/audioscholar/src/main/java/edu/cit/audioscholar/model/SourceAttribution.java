@@ -6,6 +6,7 @@ import java.util.UUID;
 
 public class SourceAttribution {
 	private String attributionId = UUID.randomUUID().toString();
+	private String mergedSummaryId;
 	private String keyPointId;
 	private String sourceLabel;
 	private String attributionType;
@@ -16,6 +17,14 @@ public class SourceAttribution {
 
 	public void setAttributionId(String attributionId) {
 		this.attributionId = attributionId;
+	}
+
+	public String getMergedSummaryId() {
+		return mergedSummaryId;
+	}
+
+	public void setMergedSummaryId(String mergedSummaryId) {
+		this.mergedSummaryId = mergedSummaryId;
 	}
 
 	public String getKeyPointId() {
@@ -45,6 +54,7 @@ public class SourceAttribution {
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
 		map.put("attributionId", attributionId);
+		map.put("mergedSummaryId", mergedSummaryId);
 		map.put("keyPointId", keyPointId);
 		map.put("sourceLabel", sourceLabel);
 		map.put("attributionType", attributionType);

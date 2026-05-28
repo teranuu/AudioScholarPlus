@@ -67,6 +67,7 @@ public class MergeService {
 				if (raw instanceof Map<?, ?> rawMap) {
 					SourceAttribution attribution = new SourceAttribution();
 					attribution.setAttributionId((String) ((Map<String, Object>) rawMap).get("attributionId"));
+					attribution.setMergedSummaryId((String) ((Map<String, Object>) rawMap).get("mergedSummaryId"));
 					attribution.setKeyPointId((String) ((Map<String, Object>) rawMap).get("keyPointId"));
 					attribution.setSourceLabel((String) ((Map<String, Object>) rawMap).get("sourceLabel"));
 					attribution.setAttributionType((String) ((Map<String, Object>) rawMap).get("attributionType"));

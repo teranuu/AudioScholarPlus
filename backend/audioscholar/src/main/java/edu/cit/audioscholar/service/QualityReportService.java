@@ -20,6 +20,7 @@ import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.audio.AudioHeader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import edu.cit.audioscholar.model.QualityIssue;
@@ -28,7 +29,6 @@ import edu.cit.audioscholar.model.QualityReport;
 @Service
 public class QualityReportService {
 	private static final Logger log = LoggerFactory.getLogger(QualityReportService.class);
-	private static final String COLLECTION_NAME = "qualityReports";
 	private static final int WINDOW_SECONDS = 15;
 	private static final int MIN_CLEAR_SAMPLE_RATE = 16_000;
 	private static final int LOW_BITRATE_MONO_KBPS = 32;
@@ -36,11 +36,17 @@ public class QualityReportService {
 	private static final double MIN_CLEAR_SNR_DB = 10.0;
 	private static final Pattern FIRST_NUMBER = Pattern.compile("\\d+(?:\\.\\d+)?");
 
-	private final FirebaseService firebaseService;
+	private final QualityReportRepository qualityReportRepository;
 	private final QualityIssueDetector qualityIssueDetector;
 
 	public QualityReportService(FirebaseService firebaseService, QualityIssueDetector qualityIssueDetector) {
-		this.firebaseService = firebaseService;
+		this(new QualityReportRepository(firebaseService), qualityIssueDetector);
+	}
+
+	@Autowired
+	public QualityReportService(QualityReportRepository qualityReportRepository,
+			QualityIssueDetector qualityIssueDetector) {
+		this.qualityReportRepository = qualityReportRepository;
 		this.qualityIssueDetector = qualityIssueDetector;
 	}
 
@@ -55,12 +61,11 @@ public class QualityReportService {
 	}
 
 	public QualityReport getReport(String recordingId) throws ExecutionException, InterruptedException {
-		List<Map<String, Object>> results = firebaseService.queryCollection(COLLECTION_NAME, "recordingId",
-				recordingId);
-		if (results.isEmpty()) {
+		Map<String, Object> reportData = qualityReportRepository.findByRecordingId(recordingId);
+		if (reportData == null) {
 			return null;
 		}
-		return QualityReport.fromMap(results.get(0));
+		return QualityReport.fromMap(reportData);
 	}
 
 	public QualityReport generateReport(String recordingId) throws ExecutionException, InterruptedException {
@@ -80,7 +85,7 @@ public class QualityReportService {
 	}
 
 	public void save(QualityReport report) throws ExecutionException, InterruptedException {
-		firebaseService.saveData(COLLECTION_NAME, report.getReportId(), report.toMap());
+		qualityReportRepository.save(report);
 	}
 
 	public QualityReport analyze(String recordingId, Path mediaPath) {

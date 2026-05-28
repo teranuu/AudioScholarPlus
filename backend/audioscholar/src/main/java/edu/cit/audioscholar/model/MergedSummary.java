@@ -15,6 +15,7 @@ public class MergedSummary {
 	private List<SourceAttribution> sourceAttributions = new ArrayList<>();
 	private String status;
 	private Date createdAt = new Date();
+	private Date updatedAt = new Date();
 
 	public String getMergedSummaryId() {
 		return mergedSummaryId;
@@ -72,6 +73,14 @@ public class MergedSummary {
 		this.createdAt = createdAt;
 	}
 
+	public Date getUpdatedAt() {
+		return updatedAt;
+	}
+
+	public void setUpdatedAt(Date updatedAt) {
+		this.updatedAt = updatedAt;
+	}
+
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
 		map.put("mergedSummaryId", mergedSummaryId);
@@ -81,6 +90,7 @@ public class MergedSummary {
 		map.put("sourceAttributions", sourceAttributions.stream().map(SourceAttribution::toMap).toList());
 		map.put("status", status);
 		map.put("createdAt", createdAt);
+		map.put("updatedAt", updatedAt);
 		return map;
 	}
 }
