@@ -237,6 +237,7 @@
     <string name="error_unauthorized">Unauthorized. Please log in again.</string>
     <string name="error_unexpected_profile_fetch">An unexpected error occurred while fetching your profile: %1$s</string>
     <string name="error_network_connection">Network error. Please check your connection.</string>
+    <string name="error_backend_unavailable">Could not reach the AudioScholar backend at %1$s. Make sure the server is running, Windows Firewall allows TCP 8080, and this phone is on the same network.</string>
     <string name="error_unexpected_registration">An unexpected error occurred during registration: %1$s</string>
     <string name="error_unexpected_login">An unexpected error occurred during login: %1$s</string>
     <string name="error_unexpected_profile_update">An unexpected error occurred while updating your profile: %1$s</string>

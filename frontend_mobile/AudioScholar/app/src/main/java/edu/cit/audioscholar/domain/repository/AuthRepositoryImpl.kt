@@ -20,6 +20,7 @@ import edu.cit.audioscholar.data.remote.dto.UpdateRoleRequest
 import edu.cit.audioscholar.data.remote.dto.UpdateUserProfileRequest
 import edu.cit.audioscholar.data.remote.dto.UserProfileDto
 import edu.cit.audioscholar.data.remote.service.ApiService
+import edu.cit.audioscholar.network.ServerConnectionManager
 import edu.cit.audioscholar.util.Resource
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.tasks.await
@@ -61,7 +62,20 @@ class AuthRepositoryImpl @Inject constructor(
         Log.d(TAG_AUTH_REPO, "Auth Token removed from SharedPreferences")
     }
 
+    private suspend fun backendUnavailableErrorIfNeeded(): AuthResult? {
+        if (ServerConnectionManager.ensureReachableServer()) return null
+
+        val message = application.getString(
+            R.string.error_backend_unavailable,
+            ServerConnectionManager.currentBaseUrl
+        )
+        Log.w(TAG_AUTH_REPO, "Backend unavailable before auth request: $message")
+        return Resource.Error(message)
+    }
+
     override suspend fun registerUser(request: RegistrationRequest): AuthResult {
+        backendUnavailableErrorIfNeeded()?.let { return it }
+
         return try {
             Log.d(TAG_AUTH_REPO, "Attempting registration for email: ${request.email}")
             val response = apiService.registerUser(request)
@@ -100,6 +114,8 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     override suspend fun loginUser(request: LoginRequest): AuthResult {
+        backendUnavailableErrorIfNeeded()?.let { return it }
+
         return try {
             Log.d(TAG_AUTH_REPO, "Attempting login for email: ${request.email}")
             val response = apiService.loginUser(request)
@@ -143,6 +159,8 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     override suspend fun verifyFirebaseToken(request: FirebaseTokenRequest): AuthResult {
+        backendUnavailableErrorIfNeeded()?.let { return it }
+
         return try {
             Log.d(TAG_AUTH_REPO, "Sending Firebase ID token to backend for verification.")
             val response = apiService.verifyFirebaseToken(request)
@@ -181,6 +199,8 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     override suspend fun verifyGoogleToken(request: FirebaseTokenRequest): AuthResult {
+        backendUnavailableErrorIfNeeded()?.let { return it }
+
         return try {
             Log.d(TAG_AUTH_REPO, "Sending Google ID token to backend for verification.")
             val response = apiService.verifyGoogleToken(request)
@@ -219,6 +239,8 @@ class AuthRepositoryImpl @Inject constructor(
     }
 
     override suspend fun verifyGitHubCode(request: GitHubCodeRequest): AuthResult {
+        backendUnavailableErrorIfNeeded()?.let { return it }
+
         return try {
             Log.d(TAG_AUTH_REPO, "Sending GitHub code to backend for verification.")
             val response = apiService.verifyGitHubCode(request)

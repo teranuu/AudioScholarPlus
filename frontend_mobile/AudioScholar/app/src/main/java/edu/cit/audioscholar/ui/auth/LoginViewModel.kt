@@ -200,6 +200,23 @@ class LoginViewModel @Inject constructor(
         _uiState.update { it.copy(password = password, errorMessage = null) }
     }
 
+    private fun backendAuthErrorText(message: String?): UiText {
+        return when {
+            message?.contains("disabled", ignoreCase = true) == true -> {
+                UiText.StringResource(R.string.login_error_account_disabled)
+            }
+            message?.contains("Could not reach the AudioScholar backend", ignoreCase = true) == true -> {
+                UiText.DynamicString(message)
+            }
+            message?.contains("Network error", ignoreCase = true) == true -> {
+                UiText.StringResource(R.string.error_network_connection)
+            }
+            else -> {
+                UiText.StringResource(R.string.login_error_server_validation)
+            }
+        }
+    }
+
     fun onLoginClick() {
         if (_uiState.value.isAnyLoading) return
         val email = _uiState.value.email.trim()
@@ -271,12 +288,7 @@ class LoginViewModel @Inject constructor(
                     }
                     is Resource.Error -> {
                         Log.w(TAG, "Backend verification failed: ${backendResult.message}")
-                        val errorText = if (backendResult.message?.contains("disabled", ignoreCase = true) == true) {
-                            UiText.StringResource(R.string.login_error_account_disabled)
-                        } else {
-                            UiText.StringResource(R.string.login_error_server_validation)
-                        }
-                        _uiState.update { it.copy(isEmailLoginLoading = false, errorMessage = errorText) }
+                        _uiState.update { it.copy(isEmailLoginLoading = false, errorMessage = backendAuthErrorText(backendResult.message)) }
                         firebaseAuth.signOut()
                     }
                     is Resource.Loading -> {}
@@ -370,12 +382,7 @@ class LoginViewModel @Inject constructor(
                     }
                     is Resource.Error -> {
                         Log.w(TAG, "[GoogleSignIn] Backend Error: ${backendResult.message}")
-                        val errorText = if (backendResult.message?.contains("disabled", ignoreCase = true) == true) {
-                            UiText.StringResource(R.string.login_error_account_disabled)
-                        } else {
-                            UiText.StringResource(R.string.login_error_server_validation)
-                        }
-                        _uiState.update { it.copy(isGoogleLoginLoading = false, errorMessage = errorText) }
+                        _uiState.update { it.copy(isGoogleLoginLoading = false, errorMessage = backendAuthErrorText(backendResult.message)) }
                     }
                     is Resource.Loading -> {}
                 }
@@ -495,12 +502,7 @@ class LoginViewModel @Inject constructor(
                 }
                 is Resource.Error -> {
                     Log.w(TAG, "[GitHubRedirect] Backend Error: ${backendResult.message}")
-                    val errorText = if (backendResult.message?.contains("disabled", ignoreCase = true) == true) {
-                        UiText.StringResource(R.string.login_error_account_disabled)
-                    } else {
-                        UiText.StringResource(R.string.login_error_server_validation)
-                    }
-                    finalState = finalState.copy(isGitHubLoginLoading = false, errorMessage = errorText)
+                    finalState = finalState.copy(isGitHubLoginLoading = false, errorMessage = backendAuthErrorText(backendResult.message))
                 }
                 is Resource.Loading -> {
                 }

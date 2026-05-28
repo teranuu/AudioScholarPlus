@@ -16,6 +16,14 @@ if (localPropertiesFile.exists()) {
     localProperties.load(FileInputStream(localPropertiesFile))
 }
 
+fun javaStringLiteral(value: String): String {
+    val trimmed = value.trim()
+    if (trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
+        return trimmed
+    }
+    return "\"${trimmed.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+}
+
 android {
     kotlinOptions {
         jvmTarget = "17"
@@ -39,8 +47,12 @@ android {
             useSupportLibrary = true
         }
 
-        val baseUrl = localProperties.getProperty("BASE_URL") ?: "\"https://mastodon-balanced-randomly.ngrok-free.app/\""
-        val githubClientId = localProperties.getProperty("GITHUB_CLIENT_ID") ?: "\"Iv23liMzUNGL8JuXu40i\""
+        val baseUrl = javaStringLiteral(
+            localProperties.getProperty("BASE_URL") ?: "https://mastodon-balanced-randomly.ngrok-free.app/"
+        )
+        val githubClientId = javaStringLiteral(
+            localProperties.getProperty("GITHUB_CLIENT_ID") ?: "Iv23liMzUNGL8JuXu40i"
+        )
 
         buildConfigField("String", "BASE_URL", baseUrl)
         buildConfigField("String", "GITHUB_CLIENT_ID", githubClientId)

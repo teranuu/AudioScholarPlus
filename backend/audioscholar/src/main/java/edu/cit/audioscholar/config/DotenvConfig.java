@@ -16,6 +16,7 @@ import jakarta.annotation.PostConstruct;
 public class DotenvConfig {
 
 	private static final Logger logger = LoggerFactory.getLogger(DotenvConfig.class);
+	private static final String REDACTED_VALUE = "<redacted>";
 
 	private final ConfigurableEnvironment environment;
 
@@ -36,7 +37,7 @@ public class DotenvConfig {
 				String key = entry.getKey();
 				String value = entry.getValue();
 				dotenvProperties.put(key, value);
-				logger.debug("Loaded .env property: {} = {}", key, value);
+				logger.debug("Loaded .env property: {} = {}", key, safeLogValue(key, value));
 			});
 
 			// Add to Spring Environment
@@ -49,5 +50,23 @@ public class DotenvConfig {
 			logger.warn("Could not load .env file: {}", e.getMessage());
 			logger.debug("Detailed error", e);
 		}
+	}
+
+	private String safeLogValue(String key, String value) {
+		if (value == null || value.isBlank()) {
+			return "<empty>";
+		}
+
+		String normalizedKey = key.toUpperCase();
+		if (normalizedKey.contains("KEY")
+				|| normalizedKey.contains("SECRET")
+				|| normalizedKey.contains("TOKEN")
+				|| normalizedKey.contains("PASSWORD")
+				|| normalizedKey.contains("CREDENTIAL")
+				|| normalizedKey.contains("ADMIN")) {
+			return REDACTED_VALUE;
+		}
+
+		return value;
 	}
 }
