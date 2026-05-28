@@ -240,6 +240,42 @@ public class NhostStorageService {
 		}
 	}
 
+	public byte[] downloadFileBytes(String fileId) {
+		if (fileId == null || fileId.isEmpty()) {
+			LOGGER.log(Level.SEVERE, "Cannot download file with null or empty fileId.");
+			throw new IllegalArgumentException("File ID cannot be null or empty.");
+		}
+
+		String downloadUrl = getPublicUrl(fileId);
+		LOGGER.log(Level.INFO, "Attempting to download file bytes from Nhost URL: {0}", downloadUrl);
+
+		HttpHeaders headers = new HttpHeaders();
+		headers.setAccept(List.of(MediaType.APPLICATION_OCTET_STREAM));
+		headers.set("x-hasura-admin-secret", nhostAdminSecret);
+
+		try {
+			RequestEntity<Void> requestEntity = RequestEntity.get(new URI(downloadUrl)).headers(headers).build();
+			ResponseEntity<byte[]> response = restTemplate.exchange(requestEntity, byte[].class);
+			if (response.getStatusCode() == HttpStatus.OK && response.getBody() != null) {
+				LOGGER.log(Level.INFO, "Successfully downloaded {0} bytes from Nhost for file ID: {1}",
+						new Object[]{response.getBody().length, fileId});
+				return response.getBody();
+			}
+			handleDownloadErrorResponse(response.getStatusCode(), fileId);
+			return new byte[0];
+		} catch (URISyntaxException e) {
+			LOGGER.log(Level.SEVERE, "Invalid URI syntax for download URL: " + downloadUrl, e);
+			throw new RuntimeException("Failed to create download URI.", e);
+		} catch (HttpClientErrorException | HttpServerErrorException e) {
+			handleDownloadErrorResponse(e.getStatusCode(), fileId);
+			return new byte[0];
+		} catch (Exception e) {
+			LOGGER.log(Level.SEVERE,
+					"An unexpected error occurred while downloading Nhost file bytes for file ID: " + fileId, e);
+			throw new RuntimeException("An unexpected error occurred during Nhost file download.", e);
+		}
+	}
+
 	@Deprecated
 	public String downloadFileAsBase64(String fileId) throws IOException {
 		if (fileId == null || fileId.isEmpty()) {

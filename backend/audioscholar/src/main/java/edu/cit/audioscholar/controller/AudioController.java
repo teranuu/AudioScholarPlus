@@ -8,7 +8,9 @@ import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
@@ -32,6 +34,7 @@ import edu.cit.audioscholar.model.Recording;
 import edu.cit.audioscholar.model.User;
 import edu.cit.audioscholar.service.AudioProcessingService;
 import edu.cit.audioscholar.service.FirebaseService;
+import edu.cit.audioscholar.service.NhostStorageService;
 import edu.cit.audioscholar.service.RecordingService;
 import edu.cit.audioscholar.service.UserService;
 
@@ -44,6 +47,7 @@ public class AudioController {
 	private final RecordingService recordingService;
 	private final FirebaseService firebaseService;
 	private final UserService userService;
+	private final NhostStorageService nhostStorageService;
 
 	private static final Set<String> ALLOWED_AUDIO_TYPES = Set.of("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
 			"audio/aac", "audio/x-aac", "audio/ogg", "audio/flac", "audio/x-flac", "audio/aiff", "audio/x-aiff",
@@ -54,11 +58,12 @@ public class AudioController {
 	private static final int DEFAULT_PAGE_SIZE = 20;
 
 	public AudioController(AudioProcessingService audioProcessingService, RecordingService recordingService,
-			FirebaseService firebaseService, UserService userService) {
+			FirebaseService firebaseService, UserService userService, NhostStorageService nhostStorageService) {
 		this.audioProcessingService = audioProcessingService;
 		this.recordingService = recordingService;
 		this.firebaseService = firebaseService;
 		this.userService = userService;
+		this.nhostStorageService = nhostStorageService;
 	}
 
 	@PostMapping("/upload")
@@ -225,6 +230,53 @@ public class AudioController {
 		copy.setFavorite(favorites.contains(metadata.getRecordingId()));
 
 		return ResponseEntity.ok(copy);
+	}
+
+	@GetMapping("/recordings/{recordingId}/audio")
+	@PreAuthorize("isAuthenticated()")
+	public ResponseEntity<?> streamRecordingAudio(@PathVariable String recordingId) {
+		log.info("Received request to GET /api/audio/recordings/{}/audio", recordingId);
+		Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+		String userId = authentication.getName();
+
+		AudioMetadata metadata = firebaseService.getAudioMetadataByRecordingId(recordingId);
+		if (metadata == null) {
+			log.warn("AudioMetadata not found for audio stream request: {}", recordingId);
+			return ResponseEntity.notFound().build();
+		}
+
+		if (!userId.equals(metadata.getUserId())) {
+			log.warn("User {} attempted to stream recording {} owned by user {}", userId, recordingId,
+					metadata.getUserId());
+			return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+		}
+
+		String nhostFileId = metadata.getNhostFileId();
+		if (nhostFileId == null || nhostFileId.isBlank()) {
+			log.warn("Recording {} has no Nhost audio file ID.", recordingId);
+			return ResponseEntity.notFound().build();
+		}
+
+		try {
+			byte[] audioBytes = nhostStorageService.downloadFileBytes(nhostFileId);
+			MediaType mediaType = MediaType.APPLICATION_OCTET_STREAM;
+			if (metadata.getContentType() != null && !metadata.getContentType().isBlank()) {
+				try {
+					mediaType = MediaType.parseMediaType(metadata.getContentType());
+				} catch (IllegalArgumentException e) {
+					log.warn("Invalid content type '{}' for recording {}. Falling back to octet-stream.",
+							metadata.getContentType(), recordingId);
+				}
+			}
+
+			String filename = metadata.getFileName() != null ? metadata.getFileName() : "recording-audio";
+			return ResponseEntity.ok().contentType(mediaType)
+					.header(HttpHeaders.CONTENT_DISPOSITION, "inline; filename=\"" + filename.replace("\"", "") + "\"")
+					.body(audioBytes);
+		} catch (Exception e) {
+			log.error("Failed to stream audio for recording {}: {}", recordingId, e.getMessage(), e);
+			return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body("Audio file could not be loaded.");
+		}
 	}
 
 	@PostMapping("/recordings/{id}/favorite")
