@@ -8,12 +8,12 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutionException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
+import javax.sound.sampled.AudioSystem;
 
 import org.jaudiotagger.audio.AudioFile;
 import org.jaudiotagger.audio.AudioFileIO;
@@ -23,12 +23,10 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import edu.cit.audioscholar.model.QualityIssue;
-import edu.cit.audioscholar.model.QualityReport;
 
 @Service
-public class QualityReportService {
-	private static final Logger log = LoggerFactory.getLogger(QualityReportService.class);
-	private static final String COLLECTION_NAME = "qualityReports";
+public class QualityIssueDetector {
+	private static final Logger log = LoggerFactory.getLogger(QualityIssueDetector.class);
 	private static final int WINDOW_SECONDS = 15;
 	private static final int MIN_CLEAR_SAMPLE_RATE = 16_000;
 	private static final int LOW_BITRATE_MONO_KBPS = 32;
@@ -36,63 +34,25 @@ public class QualityReportService {
 	private static final double MIN_CLEAR_SNR_DB = 10.0;
 	private static final Pattern FIRST_NUMBER = Pattern.compile("\\d+(?:\\.\\d+)?");
 
-	private final FirebaseService firebaseService;
-	private final QualityIssueDetector qualityIssueDetector;
-
-	public QualityReportService(FirebaseService firebaseService, QualityIssueDetector qualityIssueDetector) {
-		this.firebaseService = firebaseService;
-		this.qualityIssueDetector = qualityIssueDetector;
-	}
-
-	public QualityReport analyzeAndSave(String recordingId, Path mediaPath) {
-		QualityReport report = analyze(recordingId, mediaPath);
-		try {
-			save(report);
-		} catch (Exception e) {
-			log.warn("[{}] Quality report could not be saved: {}", recordingId, e.getMessage());
-		}
-		return report;
-	}
-
-	public QualityReport getReport(String recordingId) throws ExecutionException, InterruptedException {
-		List<Map<String, Object>> results = firebaseService.queryCollection(COLLECTION_NAME, "recordingId",
-				recordingId);
-		if (results.isEmpty()) {
-			return null;
-		}
-		return QualityReport.fromMap(results.get(0));
-	}
-
-	public QualityReport generateReport(String recordingId) throws ExecutionException, InterruptedException {
-		QualityReport existing = getReport(recordingId);
-		if (existing != null) {
-			return existing;
-		}
-		QualityReport report = QualityReport.unavailable(recordingId);
-		save(report);
-		return report;
-	}
-
-	public QualityReport createAllClearReport(String recordingId) throws ExecutionException, InterruptedException {
-		QualityReport report = QualityReport.allClear(recordingId);
-		save(report);
-		return report;
-	}
-
-	public void save(QualityReport report) throws ExecutionException, InterruptedException {
-		firebaseService.saveData(COLLECTION_NAME, report.getReportId(), report.toMap());
-	}
-
-	public QualityReport analyze(String recordingId, Path mediaPath) {
+	public List<QualityIssue> detectIssues(Path mediaPath) {
 		if (mediaPath == null) {
-			return QualityReport.unavailable(recordingId);
+			return List.of();
 		}
-		List<QualityIssue> issues = qualityIssueDetector.detectIssues(mediaPath);
-		QualityReport report = new QualityReport();
-		report.setRecordingId(recordingId);
-		report.setIssues(issues);
-		report.setStatus(issues.isEmpty() ? "ALL_CLEAR" : "ISSUES_DETECTED");
-		return report;
+		List<QualityIssue> issues = inspectMediaMetadata(mediaPath);
+		try (AudioInputStream originalStream = AudioSystem.getAudioInputStream(mediaPath.toFile())) {
+			AudioFormat baseFormat = originalStream.getFormat();
+			AudioFormat pcmFormat = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED, baseFormat.getSampleRate(), 16,
+					baseFormat.getChannels(), baseFormat.getChannels() * 2, baseFormat.getSampleRate(), false);
+			try (AudioInputStream pcmStream = AudioSystem.getAudioInputStream(pcmFormat, originalStream)) {
+				byte[] data = readAllBytes(pcmStream);
+				issues.addAll(inspectPcm(data, pcmFormat, issues));
+				return issues;
+			}
+		} catch (Exception e) {
+			log.info("Quality issue detector could not inspect PCM for {}: {}", mediaPath.getFileName(),
+					e.getMessage());
+			return issues;
+		}
 	}
 
 	private byte[] readAllBytes(AudioInputStream stream) throws IOException {
@@ -190,8 +150,9 @@ public class QualityReportService {
 			double abs = Math.abs(normalized);
 			sumSquares += normalized * normalized;
 			peak = Math.max(peak, abs);
-			if (abs > 0.98)
+			if (abs > 0.98) {
 				clipped++;
+			}
 			samples++;
 		}
 		double rms = samples == 0 ? 0 : Math.sqrt(sumSquares / samples);

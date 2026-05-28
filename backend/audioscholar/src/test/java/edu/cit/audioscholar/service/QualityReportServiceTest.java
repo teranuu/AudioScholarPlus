@@ -24,7 +24,8 @@ class QualityReportServiceTest {
 
 	Path tempDir;
 
-	private final QualityReportService service = new QualityReportService(mock(FirebaseService.class));
+	private final QualityReportService service = new QualityReportService(mock(FirebaseService.class),
+			new QualityIssueDetector());
 
 	@BeforeEach
 	void setUp() throws IOException {

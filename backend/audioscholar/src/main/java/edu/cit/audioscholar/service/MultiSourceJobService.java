@@ -6,7 +6,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Date;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -18,10 +17,13 @@ import org.springframework.util.StringUtils;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.multipart.MultipartFile;
 
+import edu.cit.audioscholar.model.KeyPoint;
+import edu.cit.audioscholar.model.MergedSummary;
 import edu.cit.audioscholar.model.MultiSourceJob;
 import edu.cit.audioscholar.model.OutputType;
 import edu.cit.audioscholar.model.ProcessingStatus;
 import edu.cit.audioscholar.model.QualityReport;
+import edu.cit.audioscholar.model.SourceAttribution;
 import edu.cit.audioscholar.model.SourceFile;
 import edu.cit.audioscholar.model.Summary;
 
@@ -36,17 +38,24 @@ public class MultiSourceJobService {
 	private final GeminiService geminiService;
 	private final QualityReportService qualityReportService;
 	private final SummaryService summaryService;
+	private final DeduplicationService deduplicationService;
+	private final SourceAttributionService sourceAttributionService;
+	private final MergedSummaryRepository mergedSummaryRepository;
 	private final Path tempDir;
 	private final String maxFileSizeValue;
 
 	public MultiSourceJobService(FirebaseService firebaseService, GeminiService geminiService,
 			QualityReportService qualityReportService, SummaryService summaryService,
-			@Value("${app.temp-file-dir}") String tempDirStr,
+			DeduplicationService deduplicationService, SourceAttributionService sourceAttributionService,
+			MergedSummaryRepository mergedSummaryRepository, @Value("${app.temp-file-dir}") String tempDirStr,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue) throws IOException {
 		this.firebaseService = firebaseService;
 		this.geminiService = geminiService;
 		this.qualityReportService = qualityReportService;
 		this.summaryService = summaryService;
+		this.deduplicationService = deduplicationService;
+		this.sourceAttributionService = sourceAttributionService;
+		this.mergedSummaryRepository = mergedSummaryRepository;
 		this.tempDir = Path.of(tempDirStr);
 		this.maxFileSizeValue = maxFileSizeValue;
 		Files.createDirectories(this.tempDir);
@@ -99,6 +108,8 @@ public class MultiSourceJobService {
 					outputType.name());
 			Summary summary = parseMergedSummary(job, summaryJson);
 			summaryService.createSummary(summary);
+			MergedSummary mergedSummary = buildMergedSummaryRecord(job, summary);
+			mergedSummaryRepository.save(mergedSummary);
 			job.setMergedSummary(summary);
 			job.setStatus(ProcessingStatus.COMPLETE.name());
 			job.setUpdatedAt(new Date());
@@ -140,25 +151,13 @@ public class MultiSourceJobService {
 		if (root.path("keyPoints").isArray()) {
 			root.path("keyPoints").forEach(node -> keyPoints.add(node.asText()));
 		}
-		summary.setKeyPoints(deduplicate(keyPoints));
+		summary.setKeyPoints(deduplicationService.removeDuplicateText(keyPoints));
 		List<String> topics = new ArrayList<>();
 		if (root.path("topics").isArray()) {
 			root.path("topics").forEach(node -> topics.add(node.asText()));
 		}
 		summary.setTopics(topics);
 		return summary;
-	}
-
-	private List<String> deduplicate(List<String> values) {
-		Set<String> seen = new HashSet<>();
-		List<String> deduped = new ArrayList<>();
-		for (String value : values) {
-			String key = value == null ? "" : value.toLowerCase().replaceAll("[^a-z0-9 ]", "").trim();
-			if (!key.isBlank() && seen.add(key)) {
-				deduped.add(value);
-			}
-		}
-		return deduped;
 	}
 
 	private String buildMergedTranscript(List<SourceFile> sourceFiles) {
@@ -171,6 +170,35 @@ public class MultiSourceJobService {
 			builder.append(sourceFile.getTranscriptText()).append("\n\n");
 		}
 		return builder.toString();
+	}
+
+	private MergedSummary buildMergedSummaryRecord(MultiSourceJob job, Summary summary) {
+		MergedSummary mergedSummary = new MergedSummary();
+		mergedSummary.setJobId(job.getJobId());
+		mergedSummary.setUserId(job.getUserId());
+		mergedSummary.setContent(summary.getFormattedSummaryText());
+		mergedSummary.setStatus(ProcessingStatus.COMPLETE.name());
+
+		List<KeyPoint> keyPoints = new ArrayList<>();
+		for (String keyPointText : summary.getKeyPoints()) {
+			keyPoints.add(new KeyPoint(keyPointText, detectSourceLabel(keyPointText, job.getSourceFiles())));
+		}
+		List<SourceAttribution> attributions = deduplicationService.removeDuplicateKeyPoints(keyPoints).stream()
+				.map(sourceAttributionService::assignAttribution).toList();
+		mergedSummary.setSourceAttributions(attributions);
+		return mergedSummary;
+	}
+
+	private String detectSourceLabel(String text, List<SourceFile> sourceFiles) {
+		if (text == null || sourceFiles == null) {
+			return null;
+		}
+		for (SourceFile sourceFile : sourceFiles) {
+			if (sourceFile.getSourceLabel() != null && text.contains(sourceFile.getSourceLabel())) {
+				return sourceFile.getSourceLabel();
+			}
+		}
+		return null;
 	}
 
 	private void validateFiles(List<MultipartFile> files) {

@@ -8,6 +8,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -51,6 +52,26 @@ public class QualityReportController {
 		} catch (Exception e) {
 			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
 					.body(Map.of("status", "UNAVAILABLE", "message", "Quality report could not be loaded."));
+		}
+	}
+
+	@PostMapping("/{recordingId}/quality-report")
+	@PreAuthorize("isAuthenticated()")
+	public ResponseEntity<?> generateQualityReport(@PathVariable String recordingId, Authentication authentication) {
+		String userId = authentication.getName();
+		AudioMetadata metadata = firebaseService.getAudioMetadataByRecordingId(recordingId);
+		if (metadata == null) {
+			return ResponseEntity.notFound().build();
+		}
+		if (!userId.equals(metadata.getUserId())) {
+			return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
+		}
+		try {
+			QualityReport report = qualityReportService.generateReport(recordingId);
+			return ResponseEntity.ok(report);
+		} catch (Exception e) {
+			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+					.body(Map.of("status", "UNAVAILABLE", "message", "Quality report could not be generated."));
 		}
 	}
 }

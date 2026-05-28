@@ -11,6 +11,7 @@ public class Summary {
 	private String outputType;
 	private QualityReport qualityReport;
 	private List<String> keyPoints;
+	private List<SummaryKeyPoint> summaryKeyPoints;
 	private List<String> topics;
 	private List<Map<String, String>> glossary;
 	private String formattedSummaryText;
@@ -20,6 +21,7 @@ public class Summary {
 
 	public Summary() {
 		this.keyPoints = new ArrayList<>();
+		this.summaryKeyPoints = new ArrayList<>();
 		this.topics = new ArrayList<>();
 		this.glossary = new ArrayList<>();
 	}
@@ -71,6 +73,14 @@ public class Summary {
 		this.keyPoints = (keyPoints != null) ? new ArrayList<>(keyPoints) : new ArrayList<>();
 	}
 
+	public List<SummaryKeyPoint> getSummaryKeyPoints() {
+		return summaryKeyPoints;
+	}
+
+	public void setSummaryKeyPoints(List<SummaryKeyPoint> summaryKeyPoints) {
+		this.summaryKeyPoints = (summaryKeyPoints != null) ? new ArrayList<>(summaryKeyPoints) : new ArrayList<>();
+	}
+
 	public List<String> getTopics() {
 		return topics;
 	}
@@ -110,6 +120,8 @@ public class Summary {
 		map.put("outputType", outputType);
 		map.put("qualityReport", qualityReport != null ? qualityReport.toMap() : null);
 		map.put("keyPoints", keyPoints);
+		map.put("summaryKeyPoints",
+				summaryKeyPoints != null ? summaryKeyPoints.stream().map(SummaryKeyPoint::toMap).toList() : List.of());
 		map.put("topics", topics);
 		map.put("glossary", glossary);
 		map.put("formattedSummaryText", formattedSummaryText);
@@ -139,6 +151,24 @@ public class Summary {
 			summary.keyPoints = new ArrayList<>(keyPointsList);
 		} else {
 			summary.keyPoints = new ArrayList<>();
+		}
+
+		Object summaryKeyPointsObj = map.get("summaryKeyPoints");
+		if (summaryKeyPointsObj instanceof List<?> rawKeyPoints) {
+			List<SummaryKeyPoint> parsedKeyPoints = new ArrayList<>();
+			for (Object raw : rawKeyPoints) {
+				if (raw instanceof Map<?, ?> rawMap) {
+					@SuppressWarnings("unchecked")
+					Map<String, Object> typedMap = (Map<String, Object>) rawMap;
+					SummaryKeyPoint keyPoint = SummaryKeyPoint.fromMap(typedMap);
+					if (keyPoint != null) {
+						parsedKeyPoints.add(keyPoint);
+					}
+				}
+			}
+			summary.summaryKeyPoints = parsedKeyPoints;
+		} else {
+			summary.summaryKeyPoints = new ArrayList<>();
 		}
 
 		Object topicsObj = map.get("topics");
