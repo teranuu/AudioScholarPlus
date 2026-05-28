@@ -1,7 +1,10 @@
 package edu.cit.audioscholar.controller;
 
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -20,10 +23,13 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import edu.cit.audioscholar.dto.UpdateRecordingRequest;
+import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.Recording;
 import edu.cit.audioscholar.service.AudioProcessingService;
 import edu.cit.audioscholar.service.FirebaseService;
+import edu.cit.audioscholar.service.NhostStorageService;
 import edu.cit.audioscholar.service.RecordingService;
+import edu.cit.audioscholar.service.UserService;
 
 @ExtendWith(MockitoExtension.class)
 public class AudioControllerTest {
@@ -39,6 +45,12 @@ public class AudioControllerTest {
 
 	@Mock
 	private AudioProcessingService audioProcessingService;
+
+	@Mock
+	private UserService userService;
+
+	@Mock
+	private NhostStorageService nhostStorageService;
 
 	@InjectMocks
 	private AudioController audioController;
@@ -94,6 +106,49 @@ public class AudioControllerTest {
 
 		mockMvc.perform(patch("/api/audio/recordings/{recordingId}", RECORDING_ID)
 				.contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsString(request)))
+				.andExpect(status().isNotFound());
+	}
+
+	@Test
+	void streamRecordingAudio_Success() throws Exception {
+		AudioMetadata metadata = new AudioMetadata();
+		metadata.setRecordingId(RECORDING_ID);
+		metadata.setUserId(TEST_USER_ID);
+		metadata.setNhostFileId("file123");
+		metadata.setContentType("audio/wav");
+		metadata.setFileName("lecture.wav");
+
+		when(firebaseService.getAudioMetadataByRecordingId(RECORDING_ID)).thenReturn(metadata);
+		when(nhostStorageService.downloadFileBytes("file123")).thenReturn(new byte[]{1, 2, 3});
+
+		mockMvc.perform(get("/api/audio/recordings/{recordingId}/audio", RECORDING_ID)).andExpect(status().isOk())
+				.andExpect(header().string("Content-Type", "audio/wav"))
+				.andExpect(header().string("Content-Disposition", "inline; filename=\"lecture.wav\""))
+				.andExpect(content().bytes(new byte[]{1, 2, 3}));
+	}
+
+	@Test
+	void streamRecordingAudio_Forbidden() throws Exception {
+		AudioMetadata metadata = new AudioMetadata();
+		metadata.setRecordingId(RECORDING_ID);
+		metadata.setUserId(OTHER_USER_ID);
+		metadata.setNhostFileId("file123");
+
+		when(firebaseService.getAudioMetadataByRecordingId(RECORDING_ID)).thenReturn(metadata);
+
+		mockMvc.perform(get("/api/audio/recordings/{recordingId}/audio", RECORDING_ID))
+				.andExpect(status().isForbidden());
+	}
+
+	@Test
+	void streamRecordingAudio_MissingFileId() throws Exception {
+		AudioMetadata metadata = new AudioMetadata();
+		metadata.setRecordingId(RECORDING_ID);
+		metadata.setUserId(TEST_USER_ID);
+
+		when(firebaseService.getAudioMetadataByRecordingId(RECORDING_ID)).thenReturn(metadata);
+
+		mockMvc.perform(get("/api/audio/recordings/{recordingId}/audio", RECORDING_ID))
 				.andExpect(status().isNotFound());
 	}
 }

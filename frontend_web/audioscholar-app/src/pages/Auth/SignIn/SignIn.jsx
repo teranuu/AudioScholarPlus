@@ -35,7 +35,7 @@ const SignIn = () => {
                         console.log('Sending Firebase ID token to backend for verification...');
                         const backendResponse = await verifyFirebaseTokenWithBackend(idToken);
 
-                        console.log('Backend verification successful (Firebase Token); auth response payload omitted from logs.');
+                        console.log('Backend verification successful (Firebase Token):', backendResponse);
 
                         localStorage.setItem('AuthToken', backendResponse.token);
                         localStorage.setItem('userId', backendResponse.userId);
@@ -134,21 +134,32 @@ const SignIn = () => {
                         const user = result.user;
                         console.log('Firebase Google sign-in successful for user:', user.uid);
 
-                        const credential = GoogleAuthProvider.credentialFromResult(result);
-                        const googleIdToken = credential?.idToken;
+                        // const credential = GoogleAuthProvider.credentialFromResult(result);
+                        // const googleIdToken = credential?.idToken;
 
-                        if (!googleIdToken) {
-                                console.error("Could not extract Google ID Token from Firebase credential.");
-                                throw new Error('Failed to get necessary Google credential.');
+                        // if (!googleIdToken) {
+                        //         console.error("Could not extract Google ID Token from Firebase credential.");
+                        //         throw new Error('Failed to get necessary Google credential.');
+                        // }
+                        // console.log('Obtained Google ID Token.');
+
+                        // console.log('Sending Google ID token to backend for verification...');
+                        const firebaseIdToken = await user.getIdToken();
+
+                        if (!firebaseIdToken) {
+                        console.error("Could not extract Firebase ID Token.");
+                        throw new Error('Failed to get Firebase ID token.');
                         }
-                        console.log('Obtained Google ID Token.');
+                        console.log('Obtained Firebase ID Token.');
 
-                        console.log('Sending Google ID token to backend for verification...');
+                        console.log('Sending Firebase ID token to backend for verification...');
+                        const backendResponse = await verifyFirebaseTokenWithBackend(firebaseIdToken);
                         // Note: We should probably use verifyFirebaseTokenWithBackend here as well to keep it consistent
                         // if verifyGoogleTokenWithBackend is just a wrapper or deprecated.
                         // But following existing pattern:
-                        const backendResponse = await verifyGoogleTokenWithBackend(googleIdToken);
-                        console.log('Backend verification successful (Google Token); auth response payload omitted from logs.');
+                        // const backendResponse = await verifyGoogleTokenWithBackend(googleIdToken);
+
+                        console.log('Backend verification successful (Google Token):', backendResponse);
 
                         localStorage.setItem('AuthToken', backendResponse.token);
                         localStorage.setItem('userId', backendResponse.userId);

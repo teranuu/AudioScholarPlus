@@ -25,6 +25,8 @@ public class AudioMetadata {
 	private ProcessingStatus status;
 	private String recordingId;
 	private String summaryId;
+	private String outputType;
+	private QualityReport qualityReport;
 	private String transcriptText;
 	private String tempFilePath;
 	private String failureReason;
@@ -185,6 +187,22 @@ public class AudioMetadata {
 
 	public void setSummaryId(String summaryId) {
 		this.summaryId = summaryId;
+	}
+
+	public String getOutputType() {
+		return outputType;
+	}
+
+	public void setOutputType(String outputType) {
+		this.outputType = outputType;
+	}
+
+	public QualityReport getQualityReport() {
+		return qualityReport;
+	}
+
+	public void setQualityReport(QualityReport qualityReport) {
+		this.qualityReport = qualityReport;
 	}
 
 	public String getTranscriptText() {
@@ -400,6 +418,10 @@ public class AudioMetadata {
 			map.put("recordingId", recordingId);
 		if (summaryId != null)
 			map.put("summaryId", summaryId);
+		if (outputType != null)
+			map.put("outputType", outputType);
+		if (qualityReport != null)
+			map.put("qualityReport", qualityReport.toMap());
 		if (transcriptText != null)
 			map.put("transcriptText", transcriptText);
 		if (tempFilePath != null)
@@ -473,6 +495,13 @@ public class AudioMetadata {
 		}
 		meta.setRecordingId((String) map.get("recordingId"));
 		meta.setSummaryId((String) map.get("summaryId"));
+		meta.setOutputType((String) map.get("outputType"));
+		Object qualityReportObj = map.get("qualityReport");
+		if (qualityReportObj instanceof Map) {
+			@SuppressWarnings("unchecked")
+			Map<String, Object> qualityReportMap = (Map<String, Object>) qualityReportObj;
+			meta.setQualityReport(QualityReport.fromMap(qualityReportMap));
+		}
 		meta.setTranscriptText((String) map.get("transcriptText"));
 		meta.setTempFilePath((String) map.get("tempFilePath"));
 		meta.setFailureReason((String) map.get("failureReason"));

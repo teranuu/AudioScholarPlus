@@ -77,12 +77,14 @@ public class GeminiService {
 	private final KeyRotationManager keyRotationManager;
 	private final ObjectMapper objectMapper = new ObjectMapper();
 	private final GeminiSmartRotationService rotationService;
+	private final PromptTemplateService promptTemplateService;
 
 	public GeminiService(RestTemplate restTemplate, KeyRotationManager keyRotationManager,
-			GeminiSmartRotationService rotationService) {
+			GeminiSmartRotationService rotationService, PromptTemplateService promptTemplateService) {
 		this.restTemplate = restTemplate;
 		this.keyRotationManager = keyRotationManager;
 		this.rotationService = rotationService;
+		this.promptTemplateService = promptTemplateService;
 	}
 
 	/**
@@ -725,6 +727,11 @@ public class GeminiService {
 	}
 
 	public String generateSummaryWithPdfContext(String transcriptText, Path pdfFilePath, String metadataId) {
+		return generateSummaryWithPdfContext(transcriptText, pdfFilePath, metadataId, null);
+	}
+
+	public String generateSummaryWithPdfContext(String transcriptText, Path pdfFilePath, String metadataId,
+			String outputType) {
 		log.info("[{}] Starting combined summarization with PDF context.", metadataId);
 
 		if (transcriptText == null || transcriptText.isBlank()) {
@@ -756,7 +763,7 @@ public class GeminiService {
 				try {
 					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 					String result = callGeminiSummarizationWithPdfContextSingleModel(transcriptText, finalPdfFileUri,
-							metadataId, targetModel, currentKey);
+							metadataId, targetModel, currentKey, outputType);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
 					return result;
 				} catch (Exception e) {
@@ -780,6 +787,12 @@ public class GeminiService {
 
 	private String callGeminiSummarizationWithPdfContextSingleModel(String transcriptText, String pdfFileUri,
 			String metadataId, String modelName, String currentApiKey) throws Exception {
+		return callGeminiSummarizationWithPdfContextSingleModel(transcriptText, pdfFileUri, metadataId, modelName,
+				currentApiKey, null);
+	}
+
+	private String callGeminiSummarizationWithPdfContextSingleModel(String transcriptText, String pdfFileUri,
+			String metadataId, String modelName, String currentApiKey, String outputType) throws Exception {
 		HttpHeaders generateHeaders = new HttpHeaders();
 		generateHeaders.setContentType(MediaType.APPLICATION_JSON);
 
@@ -789,8 +802,10 @@ public class GeminiService {
 				Identify the main key points or action items discussed across both sources and list them as distinct strings in the `keyPoints` array.
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in either the transcript or the document. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.
+				%s
 				Ensure the entire output strictly adheres to the provided JSON schema. Output only the JSON object.
-				""";
+				"""
+				.formatted(outputTypeInstruction(outputType));
 
 		Map<String, Object> promptPart = Map.of("text", prompt);
 		Map<String, Object> transcriptPart = Map.of("text", transcriptText);
@@ -844,6 +859,11 @@ public class GeminiService {
 	}
 
 	public String generateSummaryWithGoogleFileUri(String transcriptText, String googleFileUri, String metadataId) {
+		return generateSummaryWithGoogleFileUri(transcriptText, googleFileUri, metadataId, null);
+	}
+
+	public String generateSummaryWithGoogleFileUri(String transcriptText, String googleFileUri, String metadataId,
+			String outputType) {
 		log.info("[{}] Starting combined summarization with direct Google Files API URI.", metadataId);
 
 		if (transcriptText == null || transcriptText.isBlank()) {
@@ -862,7 +882,7 @@ public class GeminiService {
 				try {
 					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 					String result = callGeminiSummarizationWithPdfContextSingleModel(transcriptText, googleFileUri,
-							metadataId, targetModel, currentKey);
+							metadataId, targetModel, currentKey, outputType);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
 					return result;
 				} catch (Exception e) {
@@ -1101,6 +1121,10 @@ public class GeminiService {
 	}
 
 	public String generateTranscriptOnlySummary(String transcriptText, String metadataId) {
+		return generateTranscriptOnlySummary(transcriptText, metadataId, null);
+	}
+
+	public String generateTranscriptOnlySummary(String transcriptText, String metadataId, String outputType) {
 		log.info("[{}] Starting transcript-only summarization.", metadataId);
 
 		if (transcriptText == null || transcriptText.isBlank()) {
@@ -1113,7 +1137,7 @@ public class GeminiService {
 				try {
 					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 					String result = callGeminiTranscriptOnlySummarizationSingleModel(transcriptText, metadataId,
-							targetModel, currentKey);
+							targetModel, currentKey, outputType);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
 					return result;
 				} catch (Exception e) {
@@ -1130,6 +1154,12 @@ public class GeminiService {
 
 	private String callGeminiTranscriptOnlySummarizationSingleModel(String transcriptText, String metadataId,
 			String modelName, String currentApiKey) throws Exception {
+		return callGeminiTranscriptOnlySummarizationSingleModel(transcriptText, metadataId, modelName, currentApiKey,
+				null);
+	}
+
+	private String callGeminiTranscriptOnlySummarizationSingleModel(String transcriptText, String metadataId,
+			String modelName, String currentApiKey, String outputType) throws Exception {
 		HttpHeaders generateHeaders = new HttpHeaders();
 		generateHeaders.setContentType(MediaType.APPLICATION_JSON);
 
@@ -1140,8 +1170,10 @@ public class GeminiService {
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in the transcript. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.
 				Stay strictly within the boundaries of what is explicitly mentioned in the transcript. Do not add external information, assumptions, or hallucinations.
+				%s
 				Ensure the entire output strictly adheres to the provided JSON schema. Output only the JSON object.
-				""";
+				"""
+				.formatted(outputTypeInstruction(outputType));
 
 		Map<String, Object> promptPart = Map.of("text", prompt);
 		Map<String, Object> transcriptPart = Map.of("text", transcriptText);
@@ -1341,6 +1373,27 @@ public class GeminiService {
 			log.error("[{}] Unexpected error during recommendation generation: {}", metadataId, e.getMessage(), e);
 			return createErrorResponse("Recommendation Error", "Unexpected error: " + e.getMessage());
 		}
+	}
+
+	private String outputTypeInstruction(String outputType) {
+		String normalized = outputType == null
+				? "NOTES"
+				: outputType.trim().toUpperCase().replace('-', '_').replace(' ', '_');
+		if (promptTemplateService != null) {
+			return promptTemplateService.getTemplate(normalized);
+		}
+		return defaultOutputTypeInstruction(normalized);
+	}
+
+	private String defaultOutputTypeInstruction(String outputType) {
+		return switch (outputType) {
+			case "STUDY_MATERIAL" ->
+				"Format the generated material as Study Material: include organized lesson sections, clear explanations, important terms, examples where present in the source, and learner-friendly review structure.";
+			case "REVIEW_MATERIAL" ->
+				"Format the generated material as Review Material: make it concise and recall-focused, emphasizing quick-review bullets, key facts, likely exam review points, and short definitions.";
+			default ->
+				"Format the generated material as Notes: create lecture-note style sections, detailed but readable bullets, and preserve the flow of the discussion.";
+		};
 	}
 
 	private String extractPartialTranscriptFromIncompleteJson(String incompleteJson) {

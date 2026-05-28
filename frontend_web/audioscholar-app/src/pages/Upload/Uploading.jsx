@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../services/authService';
 import { Header } from '../Home/HomePage';
 import { FiCheckCircle, FiFile, FiFileText, FiLoader, FiUpload, FiXCircle } from 'react-icons/fi';
@@ -20,6 +20,11 @@ const VALID_PPTX_TYPES = [
 
 const VALID_AUDIO_EXTENSIONS = ['mp3', 'wav', 'aiff', 'aac', 'ogg', 'flac'];
 const VALID_PPTX_EXTENSIONS = ['ppt', 'pptx'];
+const OUTPUT_TYPES = [
+  { value: 'NOTES', title: 'Notes', description: 'Detailed lecture notes with organized sections and key ideas.' },
+  { value: 'STUDY_MATERIAL', title: 'Study Material', description: 'A structured study guide with explanations, terms, and review flow.' },
+  { value: 'REVIEW_MATERIAL', title: 'Review Material', description: 'A concise reviewer for quick recall and exam preparation.' },
+];
 
 const Uploading = () => {
   const [selectedAudioFile, setSelectedAudioFile] = useState(null);
@@ -28,6 +33,7 @@ const Uploading = () => {
   const [pptxFileName, setPptxFileName] = useState('');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
+  const [outputType, setOutputType] = useState('');
   const [error, setError] = useState('');
   const [pptxError, setPptxError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -183,6 +189,10 @@ const Uploading = () => {
        setError('Please enter a title for the recording.');
        return;
     }
+    if (!outputType) {
+      setError('Please select an output type before processing.');
+      return;
+    }
 
     setLoading(true);
 
@@ -197,6 +207,7 @@ const Uploading = () => {
     const formData = new FormData();
     formData.append('audioFile', selectedAudioFile);
     formData.append('title', title.trim());
+    formData.append('outputType', outputType);
     if (description.trim()) {
       formData.append('description', description.trim());
     }
@@ -246,6 +257,7 @@ const Uploading = () => {
         removePptxFile(); 
         setTitle('');
         setDescription('');
+        setOutputType('');
       }
 
     } catch (err) {
@@ -274,7 +286,12 @@ const Uploading = () => {
       <main className="flex-grow flex items-center justify-center py-12 bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
         <div className="container mx-auto px-4 max-w-4xl">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-8 md:p-10 transition-colors duration-200">
-            <h1 className="text-3xl font-bold text-gray-800 dark:text-white mb-6 text-center">Upload Recording</h1>
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6">
+              <h1 className="text-3xl font-bold text-gray-800 dark:text-white">Upload Recording</h1>
+              <Link to="/upload/multi-source" className="text-sm font-medium text-teal-700 dark:text-teal-300 hover:underline">
+                Multi-source upload
+              </Link>
+            </div>
 
             <input
               type="file"
@@ -399,14 +416,39 @@ const Uploading = () => {
                 />
               </div>
 
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="block text-sm font-bold text-gray-700 dark:text-gray-300">Output Type</label>
+                  <span className="text-xs text-gray-500 dark:text-gray-400">Required</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  {OUTPUT_TYPES.map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setOutputType(option.value)}
+                      disabled={loading}
+                      className={`text-left border rounded-lg p-4 transition-all duration-150 ${
+                        outputType === option.value
+                          ? 'border-teal-500 bg-teal-50 dark:bg-teal-900/20 ring-2 ring-teal-200 dark:ring-teal-800'
+                          : 'border-gray-200 dark:border-gray-600 hover:border-teal-300 dark:hover:border-teal-500'
+                      } ${loading ? 'opacity-60 cursor-not-allowed' : ''}`}
+                    >
+                      <div className="font-semibold text-gray-900 dark:text-white">{option.title}</div>
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">{option.description}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="h-6">
                  {success && <p className="text-sm text-green-600 dark:text-green-400 text-center flex items-center justify-center gap-1"><FiCheckCircle/>{success}</p>}
                </div>
 
               <button
                 type="submit"
-                disabled={!selectedAudioFile || loading || !title.trim()}
-                className={`w-full bg-[#2D8A8A] text-white py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 transition-all duration-200 ease-in-out ${(!selectedAudioFile || loading || !title.trim()) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#236b6b] hover:shadow-md transform hover:-translate-y-0.5'}`}
+                disabled={!selectedAudioFile || loading || !title.trim() || !outputType}
+                className={`w-full bg-[#2D8A8A] text-white py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 transition-all duration-200 ease-in-out ${(!selectedAudioFile || loading || !title.trim() || !outputType) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#236b6b] hover:shadow-md transform hover:-translate-y-0.5'}`}
               >
                 {loading ? <><FiLoader className="animate-spin h-5 w-5" /> Uploading...</> : <><FiUpload className="h-5 w-5"/> Upload Recording</>}
               </button>

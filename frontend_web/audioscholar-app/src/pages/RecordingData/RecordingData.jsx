@@ -44,6 +44,122 @@ const formatDuration = (seconds) => {
   return `${minutes}m ${remainingSeconds}s`;
 };
 
+const formatOutputType = (value) => {
+  const labels = {
+    NOTES: 'Notes',
+    STUDY_MATERIAL: 'Study Material',
+    REVIEW_MATERIAL: 'Review Material',
+  };
+  return labels[value] || value || 'Output';
+};
+
+const formatIssueType = (value) => {
+  const labels = {
+    HIGH_BACKGROUND_NOISE: 'High background noise',
+    INAUDIBLE_SPEECH: 'Inaudible speech',
+    UNCLEAR_AUDIO: 'Unclear audio',
+    AUDIO_CLIPPING: 'Audio clipping',
+    MISSING_AUDIO: 'Missing audio',
+  };
+  return labels[value] || value || 'Recording issue';
+};
+
+const parseMaybeJson = (value) => {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+};
+
+const normalizeSummaryData = (rawSummary) => {
+  if (!rawSummary) return null;
+  const parsedSummary = parseMaybeJson(rawSummary);
+  const source = typeof parsedSummary === 'object' && parsedSummary !== null
+    ? parsedSummary
+    : { formattedSummaryText: String(parsedSummary || '') };
+
+  const parsedFormatted = parseMaybeJson(source.formattedSummaryText);
+  const formattedSource = typeof parsedFormatted === 'object' && parsedFormatted !== null ? parsedFormatted : null;
+  const formattedSummaryText = formattedSource?.summaryText || source.formattedSummaryText || source.summaryText || '';
+
+  return {
+    ...source,
+    formattedSummaryText,
+    keyPoints: source.keyPoints || formattedSource?.keyPoints || [],
+    topics: source.topics || formattedSource?.topics || [],
+    glossary: source.glossary || formattedSource?.glossary || [],
+    qualityReport: source.qualityReport || formattedSource?.qualityReport || null,
+    outputType: source.outputType || formattedSource?.outputType || null,
+  };
+};
+
+const hasUsableSummary = (summary) => {
+  if (!summary) return false;
+  return Boolean(
+    summary.formattedSummaryText?.trim?.() ||
+    summary.keyPoints?.length ||
+    summary.glossary?.length ||
+    summary.topics?.length
+  );
+};
+
+const QualityReportSection = ({ report }) => {
+  if (!report) {
+    return (
+      <div className="border border-yellow-200 bg-yellow-50 text-yellow-800 rounded-lg p-4 text-sm">
+        Quality report is not available for this recording.
+      </div>
+    );
+  }
+
+  const issues = report.issues || [];
+  if (report.status === 'ALL_CLEAR') {
+    return (
+      <div className="border border-green-200 bg-green-50 text-green-800 rounded-lg p-4 text-sm flex items-start gap-2">
+        <FiCheckCircle className="mt-0.5 shrink-0" />
+        <div>
+          <div className="font-semibold">Recording quality all clear</div>
+          <p className="mt-1 text-green-700">No major quality issues were detected in the measurable audio.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (report.status === 'UNAVAILABLE' || issues.length === 0) {
+    return (
+      <div className="border border-yellow-200 bg-yellow-50 text-yellow-800 rounded-lg p-4 text-sm">
+        Quality report is not available for this recording.
+      </div>
+    );
+  }
+
+  return (
+    <div className="border border-yellow-200 bg-yellow-50 rounded-lg p-4">
+      <div className="flex items-center gap-2 text-yellow-900 font-semibold mb-3">
+        <FiAlertTriangle />
+        Quality Report
+      </div>
+      <div className="space-y-2">
+        {issues.map((issue, index) => (
+          <div key={issue.issueId || index} className="bg-white border border-yellow-100 rounded-md p-3 text-sm">
+            <div className="flex flex-wrap items-center gap-2 mb-1">
+              <span className="font-semibold text-gray-900">{formatIssueType(issue.issueType)}</span>
+              <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded">{issue.severity || 'Notice'}</span>
+              <span className="text-xs text-gray-500">{issue.startTime} - {issue.endTime}</span>
+            </div>
+            <p className="text-gray-700">{issue.recommendedAction}</p>
+          </div>
+        ))}
+      </div>
+      <p className="text-xs text-yellow-800 mt-3">Warnings describe recording conditions, not verified factual errors.</p>
+    </div>
+  );
+};
+
 const StatusBadge = ({ recording }) => {
   const { status, failureReason } = recording;
   const originalStatus = status;
@@ -232,6 +348,9 @@ const RecordingData = () => {
   const [summaryData, setSummaryData] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState(null);
+  const [audioObjectUrl, setAudioObjectUrl] = useState(null);
+  const [audioLoading, setAudioLoading] = useState(false);
+  const [audioError, setAudioError] = useState(null);
 
   const [recommendationsData, setRecommendationsData] = useState([]);
   const [recommendationsLoading, setRecommendationsLoading] = useState(false);
@@ -409,9 +528,18 @@ const RecordingData = () => {
     let summaryStatus = null;
 
     if (cachedSummary) {
-      setSummaryData(JSON.parse(cachedSummary));
+      const normalizedCachedSummary = normalizeSummaryData(JSON.parse(cachedSummary));
+      if (hasUsableSummary(normalizedCachedSummary)) {
+        setSummaryData(normalizedCachedSummary);
+        setSummaryLoading(false);
+        summaryStatus = 200;
+      } else {
+        localStorage.removeItem(summaryCacheKey);
+      }
+    }
+
+    if (summaryStatus === 200) {
       setSummaryLoading(false);
-      summaryStatus = 200;
     } else {
       const summaryUrl = `${API_BASE_URL}api/recordings/${actualRecordingId}/summary`;
       try {
@@ -420,8 +548,9 @@ const RecordingData = () => {
         summaryStatus = summaryResponse.status;
 
         if (summaryResponse.status === 200) {
-          localStorage.setItem(summaryCacheKey, JSON.stringify(summaryResponse.data));
-          setSummaryData(summaryResponse.data);
+          const normalizedSummary = normalizeSummaryData(summaryResponse.data);
+          localStorage.setItem(summaryCacheKey, JSON.stringify(normalizedSummary));
+          setSummaryData(normalizedSummary);
           console.log("Fetched summary (200 OK):", summaryResponse.data);
         } else if (summaryResponse.status === 202) {
           const message = summaryResponse.data?.message || "Processing is ongoing.";
@@ -541,6 +670,67 @@ const RecordingData = () => {
       setRecommendationsError("Cannot fetch details: Critical recording identifier is missing.");
     }
   }, [recordingData, fetchDetails]);
+
+  useEffect(() => {
+    if (!recordingData?.recordingId) {
+      setAudioObjectUrl(null);
+      setAudioError(null);
+      setAudioLoading(false);
+      return undefined;
+    }
+
+    const token = localStorage.getItem('AuthToken');
+    if (!token) {
+      setAudioError('User not authenticated. Please log in.');
+      setAudioObjectUrl(null);
+      return undefined;
+    }
+
+    let objectUrl = null;
+    let cancelled = false;
+    const controller = new AbortController();
+
+    const loadAudio = async () => {
+      setAudioLoading(true);
+      setAudioError(null);
+      setAudioObjectUrl(null);
+
+      try {
+        const audioUrl = `${API_BASE_URL}api/audio/recordings/${recordingData.recordingId}/audio`;
+        const response = await axios.get(audioUrl, {
+          headers: { Authorization: `Bearer ${token}` },
+          responseType: 'blob',
+          signal: controller.signal,
+        });
+
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(response.data);
+        setAudioObjectUrl(objectUrl);
+      } catch (err) {
+        if (cancelled || axios.isCancel?.(err) || err.name === 'CanceledError') return;
+        console.error('Error loading audio stream:', err);
+        if (err.response?.status === 404) {
+          setAudioError('Audio file is not available for this recording.');
+        } else if (err.response?.status === 403) {
+          setAudioError('Access denied to this audio file.');
+        } else {
+          setAudioError('Audio file could not be loaded.');
+        }
+      } finally {
+        if (!cancelled) setAudioLoading(false);
+      }
+    };
+
+    loadAudio();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [recordingData?.recordingId]);
 
   const formatDate = (timestamp) => {
     if (timestamp?.seconds) {
@@ -662,7 +852,8 @@ const RecordingData = () => {
     return <div className="min-h-screen flex items-center justify-center">Recording metadata could not be loaded.</div>;
   }
 
-  const audioSrcToPlay = recordingData.storageUrl || recordingData.audioUrl;
+  const audioDownloadUrl = audioObjectUrl || recordingData.storageUrl || recordingData.audioUrl;
+  const audioSrcToPlay = audioObjectUrl;
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F0F4F8]">
@@ -704,9 +895,9 @@ const RecordingData = () => {
                     {recordingData.isFavorite ? <FaHeart className="mr-2 h-4 w-4" /> : <FaRegHeart className="mr-2 h-4 w-4" />}
                     {recordingData.isFavorite ? 'Favorited' : 'Favorite'}
                 </button>
-                {audioSrcToPlay && (
+                {audioDownloadUrl && (
                   <a
-                    href={audioSrcToPlay}
+                    href={audioDownloadUrl}
                     download
                     className="inline-flex items-center bg-white text-teal-700 font-medium py-2 px-4 rounded-md text-sm transition-all duration-200 ease-in-out shadow hover:shadow-md hover:bg-gray-50 transform hover:-translate-y-0.5"
                   >
@@ -724,7 +915,7 @@ const RecordingData = () => {
             </div>
           </div>
 
-          {audioSrcToPlay ? (
+          {(audioSrcToPlay || audioLoading || audioError) ? (
             <div className="mb-8 bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">
               <div className="bg-gradient-to-r from-teal-500 to-teal-600 text-white p-4 flex items-center justify-between">
                 <h2 className="text-xl font-semibold flex items-center">
@@ -735,15 +926,33 @@ const RecordingData = () => {
 
               <div className="p-6">
                 <div className="bg-gray-50 p-5 rounded-lg border border-gray-100 shadow-inner">
-                  <audio
-                    controls
-                    src={audioSrcToPlay}
-                    className="w-full h-14 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500"
-                    preload="metadata"
-                  >
-                    Your browser does not support the audio element.
-                  </audio>
+                  {audioSrcToPlay ? (
+                    <audio
+                      controls
+                      src={audioSrcToPlay}
+                      className="w-full h-14 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500"
+                      preload="metadata"
+                    >
+                      Your browser does not support the audio element.
+                    </audio>
+                  ) : audioLoading ? (
+                    <div className="h-14 flex items-center text-sm text-gray-500">
+                      <FiLoader className="mr-2 h-4 w-4 animate-spin" />
+                      Loading audio...
+                    </div>
+                  ) : (
+                    <div className="h-14 flex items-center text-sm text-gray-500">
+                      Audio is unavailable.
+                    </div>
+                  )}
                 </div>
+
+                {audioError && (
+                  <div className="flex items-center bg-red-50 text-red-700 p-3 rounded-md mt-4 text-sm">
+                    <FiAlertTriangle className="mr-2 h-4 w-4" />
+                    <p>{audioError}</p>
+                  </div>
+                )}
 
                 {!recordingData.transcriptText && recordingData.status !== 'failed' && recordingData.status !== 'processing_halted_unsuitable_content' && (
                   <div className="flex items-center bg-yellow-50 text-yellow-700 p-3 rounded-md mt-4 text-sm">
@@ -908,6 +1117,15 @@ const RecordingData = () => {
                 {!summaryLoading && !summaryError && summaryData && (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                     <div className="md:col-span-2 space-y-6 max-h-[600px] overflow-y-auto pr-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="inline-flex items-center rounded-full bg-teal-100 text-teal-800 text-xs font-semibold px-3 py-1">
+                          {formatOutputType(summaryData.outputType || recordingData?.outputType)}
+                        </span>
+                        {recordingData?.status && (
+                          <span className="text-xs text-gray-500">Status: {recordingData.status}</span>
+                        )}
+                      </div>
+                      <QualityReportSection report={summaryData.qualityReport || recordingData?.qualityReport} />
                       {summaryData.formattedSummaryText && (
                         <div>
                           <h3 className="font-semibold text-lg mb-2 text-gray-800">Summary Details</h3>

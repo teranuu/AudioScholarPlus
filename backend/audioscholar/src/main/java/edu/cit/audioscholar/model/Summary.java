@@ -8,16 +8,23 @@ import com.google.cloud.firestore.annotation.ServerTimestamp;
 public class Summary {
 	private String summaryId;
 	private String recordingId;
+	private String userId;
+	private String outputType;
+	private String status;
+	private QualityReport qualityReport;
 	private List<String> keyPoints;
+	private List<SummaryKeyPoint> summaryKeyPoints;
 	private List<String> topics;
 	private List<Map<String, String>> glossary;
 	private String formattedSummaryText;
 
 	@ServerTimestamp
 	private Date createdAt;
+	private Date updatedAt;
 
 	public Summary() {
 		this.keyPoints = new ArrayList<>();
+		this.summaryKeyPoints = new ArrayList<>();
 		this.topics = new ArrayList<>();
 		this.glossary = new ArrayList<>();
 	}
@@ -45,12 +52,52 @@ public class Summary {
 		this.recordingId = recordingId;
 	}
 
+	public String getUserId() {
+		return userId;
+	}
+
+	public void setUserId(String userId) {
+		this.userId = userId;
+	}
+
+	public String getOutputType() {
+		return outputType;
+	}
+
+	public void setOutputType(String outputType) {
+		this.outputType = outputType;
+	}
+
+	public String getStatus() {
+		return status;
+	}
+
+	public void setStatus(String status) {
+		this.status = status;
+	}
+
+	public QualityReport getQualityReport() {
+		return qualityReport;
+	}
+
+	public void setQualityReport(QualityReport qualityReport) {
+		this.qualityReport = qualityReport;
+	}
+
 	public List<String> getKeyPoints() {
 		return keyPoints;
 	}
 
 	public void setKeyPoints(List<String> keyPoints) {
 		this.keyPoints = (keyPoints != null) ? new ArrayList<>(keyPoints) : new ArrayList<>();
+	}
+
+	public List<SummaryKeyPoint> getSummaryKeyPoints() {
+		return summaryKeyPoints;
+	}
+
+	public void setSummaryKeyPoints(List<SummaryKeyPoint> summaryKeyPoints) {
+		this.summaryKeyPoints = (summaryKeyPoints != null) ? new ArrayList<>(summaryKeyPoints) : new ArrayList<>();
 	}
 
 	public List<String> getTopics() {
@@ -77,6 +124,14 @@ public class Summary {
 		this.formattedSummaryText = formattedSummaryText;
 	}
 
+	public String getContent() {
+		return formattedSummaryText;
+	}
+
+	public void setContent(String content) {
+		this.formattedSummaryText = content;
+	}
+
 	public Date getCreatedAt() {
 		return createdAt;
 	}
@@ -85,14 +140,31 @@ public class Summary {
 		this.createdAt = createdAt;
 	}
 
+	public Date getUpdatedAt() {
+		return updatedAt;
+	}
+
+	public void setUpdatedAt(Date updatedAt) {
+		this.updatedAt = updatedAt;
+	}
+
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
 		map.put("summaryId", summaryId);
 		map.put("recordingId", recordingId);
+		map.put("userId", userId);
+		map.put("outputType", outputType);
+		map.put("content", formattedSummaryText);
+		map.put("status", status);
+		map.put("qualityReport", qualityReport != null ? qualityReport.toMap() : null);
 		map.put("keyPoints", keyPoints);
+		map.put("summaryKeyPoints",
+				summaryKeyPoints != null ? summaryKeyPoints.stream().map(SummaryKeyPoint::toMap).toList() : List.of());
 		map.put("topics", topics);
 		map.put("glossary", glossary);
 		map.put("formattedSummaryText", formattedSummaryText);
+		map.put("createdAt", createdAt);
+		map.put("updatedAt", updatedAt);
 		return map;
 	}
 
@@ -103,7 +175,19 @@ public class Summary {
 		Summary summary = new Summary();
 		summary.summaryId = (String) map.get("summaryId");
 		summary.recordingId = (String) map.get("recordingId");
+		summary.userId = (String) map.get("userId");
+		summary.outputType = (String) map.get("outputType");
+		summary.status = (String) map.get("status");
+		Object qualityReportObj = map.get("qualityReport");
+		if (qualityReportObj instanceof Map) {
+			@SuppressWarnings("unchecked")
+			Map<String, Object> qualityReportMap = (Map<String, Object>) qualityReportObj;
+			summary.qualityReport = QualityReport.fromMap(qualityReportMap);
+		}
 		summary.formattedSummaryText = (String) map.get("formattedSummaryText");
+		if (summary.formattedSummaryText == null) {
+			summary.formattedSummaryText = (String) map.get("content");
+		}
 
 		Object keyPointsObj = map.get("keyPoints");
 		if (keyPointsObj instanceof List) {
@@ -112,6 +196,24 @@ public class Summary {
 			summary.keyPoints = new ArrayList<>(keyPointsList);
 		} else {
 			summary.keyPoints = new ArrayList<>();
+		}
+
+		Object summaryKeyPointsObj = map.get("summaryKeyPoints");
+		if (summaryKeyPointsObj instanceof List<?> rawKeyPoints) {
+			List<SummaryKeyPoint> parsedKeyPoints = new ArrayList<>();
+			for (Object raw : rawKeyPoints) {
+				if (raw instanceof Map<?, ?> rawMap) {
+					@SuppressWarnings("unchecked")
+					Map<String, Object> typedMap = (Map<String, Object>) rawMap;
+					SummaryKeyPoint keyPoint = SummaryKeyPoint.fromMap(typedMap);
+					if (keyPoint != null) {
+						parsedKeyPoints.add(keyPoint);
+					}
+				}
+			}
+			summary.summaryKeyPoints = parsedKeyPoints;
+		} else {
+			summary.summaryKeyPoints = new ArrayList<>();
 		}
 
 		Object topicsObj = map.get("topics");
@@ -159,6 +261,13 @@ public class Summary {
 			summary.createdAt = ((Timestamp) createdAtObj).toDate();
 		} else if (createdAtObj instanceof Date) {
 			summary.createdAt = (Date) createdAtObj;
+		}
+
+		Object updatedAtObj = map.get("updatedAt");
+		if (updatedAtObj instanceof Timestamp) {
+			summary.updatedAt = ((Timestamp) updatedAtObj).toDate();
+		} else if (updatedAtObj instanceof Date) {
+			summary.updatedAt = (Date) updatedAtObj;
 		}
 
 		return summary;

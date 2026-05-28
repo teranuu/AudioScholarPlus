@@ -16,13 +16,12 @@ import edu.cit.audioscholar.model.Summary;
 public class SummaryService {
 
 	private static final Logger log = LoggerFactory.getLogger(SummaryService.class);
-	private static final String COLLECTION_NAME = "summaries";
 
-	private final FirebaseService firebaseService;
+	private final SummaryRepository summaryRepository;
 	private final RecordingService recordingService;
 
-	public SummaryService(FirebaseService firebaseService, RecordingService recordingService) {
-		this.firebaseService = firebaseService;
+	public SummaryService(SummaryRepository summaryRepository, RecordingService recordingService) {
+		this.summaryRepository = summaryRepository;
 		this.recordingService = recordingService;
 	}
 
@@ -33,7 +32,13 @@ public class SummaryService {
 		}
 
 		log.info("Attempting to save Summary object (ID: {}) using POJO method.", summary.getSummaryId());
-		firebaseService.saveData(COLLECTION_NAME, summary.getSummaryId(), summary);
+		if (summary.getStatus() == null) {
+			summary.setStatus("COMPLETE");
+		}
+		populateMissingKeyPointTimestamps(summary);
+		summary.setUpdatedAt(new java.util.Date());
+		saveSummaryKeyPoints(summary);
+		summaryRepository.save(summary);
 		log.info("Firestore saveData call completed for summary ID: {}", summary.getSummaryId());
 
 		try {
@@ -66,7 +71,7 @@ public class SummaryService {
 
 	public Summary getSummaryById(String summaryId) throws ExecutionException, InterruptedException {
 		log.debug("Fetching summary by ID: {}", summaryId);
-		Map<String, Object> data = firebaseService.getData(COLLECTION_NAME, summaryId);
+		Map<String, Object> data = summaryRepository.findById(summaryId);
 		if (data == null) {
 			log.warn("Summary not found for ID: {}", summaryId);
 			return null;
@@ -78,8 +83,7 @@ public class SummaryService {
 
 	public Summary getSummaryByRecordingId(String recordingId) throws ExecutionException, InterruptedException {
 		log.debug("Fetching summary by recordingId: {}", recordingId);
-		List<Map<String, Object>> results = firebaseService.queryCollection(COLLECTION_NAME, "recordingId",
-				recordingId);
+		List<Map<String, Object>> results = summaryRepository.findByRecordingId(recordingId);
 		if (results.isEmpty()) {
 			log.warn("No summary found for recordingId: {}", recordingId);
 			return null;
@@ -97,9 +101,66 @@ public class SummaryService {
 			throw new IllegalArgumentException("Summary object and its ID cannot be null for update.");
 		}
 		log.info("Attempting to update Summary object (ID: {}) using POJO merge method.", summary.getSummaryId());
-		firebaseService.updateData(COLLECTION_NAME, summary.getSummaryId(), summary);
+		if (summary.getStatus() == null) {
+			summary.setStatus("COMPLETE");
+		}
+		populateMissingKeyPointTimestamps(summary);
+		summary.setUpdatedAt(new java.util.Date());
+		saveSummaryKeyPoints(summary);
+		summaryRepository.update(summary);
 		log.info("Firestore updateData call completed for summary ID: {}", summary.getSummaryId());
 		return summary;
+	}
+
+	private void saveSummaryKeyPoints(Summary summary) {
+		if (summary == null || summary.getSummaryId() == null) {
+			return;
+		}
+		List<edu.cit.audioscholar.model.SummaryKeyPoint> keyPoints = summary.getSummaryKeyPoints();
+		if ((keyPoints == null || keyPoints.isEmpty()) && summary.getKeyPoints() != null) {
+			keyPoints = new java.util.ArrayList<>();
+			for (String text : summary.getKeyPoints()) {
+				edu.cit.audioscholar.model.SummaryKeyPoint keyPoint = new edu.cit.audioscholar.model.SummaryKeyPoint();
+				keyPoint.setSummaryId(summary.getSummaryId());
+				keyPoint.setText(text);
+				keyPoints.add(keyPoint);
+			}
+			summary.setSummaryKeyPoints(keyPoints);
+		}
+		populateMissingKeyPointTimestamps(summary);
+		if (keyPoints == null) {
+			return;
+		}
+		for (edu.cit.audioscholar.model.SummaryKeyPoint keyPoint : keyPoints) {
+			if (keyPoint == null || keyPoint.getKeyPointId() == null) {
+				continue;
+			}
+			keyPoint.setSummaryId(summary.getSummaryId());
+			summaryRepository.saveKeyPoint(keyPoint);
+		}
+	}
+
+	private void populateMissingKeyPointTimestamps(Summary summary) {
+		if (summary == null || summary.getSummaryKeyPoints() == null || summary.getSummaryKeyPoints().isEmpty()) {
+			return;
+		}
+		List<edu.cit.audioscholar.model.QualityIssue> issues = summary.getQualityReport() != null
+				? summary.getQualityReport().getIssues()
+				: List.of();
+		for (int i = 0; i < summary.getSummaryKeyPoints().size(); i++) {
+			edu.cit.audioscholar.model.SummaryKeyPoint keyPoint = summary.getSummaryKeyPoints().get(i);
+			if (keyPoint == null || keyPoint.getSourceStartTime() != null || keyPoint.getSourceEndTime() != null) {
+				continue;
+			}
+			if (issues != null && !issues.isEmpty()) {
+				edu.cit.audioscholar.model.QualityIssue issue = issues.get(Math.min(i, issues.size() - 1));
+				keyPoint.setSourceStartTime(issue.getStartTime());
+				keyPoint.setSourceEndTime(issue.getEndTime());
+			} else {
+				keyPoint.setSourceStartTime("00:00");
+				keyPoint.setSourceEndTime("00:00");
+			}
+		}
 	}
 
 	public void deleteSummary(String summaryId) throws ExecutionException, InterruptedException {
@@ -130,7 +191,7 @@ public class SummaryService {
 						summary.getRecordingId(), summaryId, e.getMessage(), e);
 			}
 
-			firebaseService.deleteData(COLLECTION_NAME, summaryId);
+			summaryRepository.delete(summaryId);
 			log.info("Successfully deleted summary document ID: {}", summaryId);
 
 		} else {

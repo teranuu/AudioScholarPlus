@@ -15,6 +15,7 @@ import CheckoutPage from '../../pages/Subscription/CheckoutPage';
 import PaymentMethodPage from '../../pages/Subscription/PaymentMethodPage';
 import SubscriptionTierPage from '../../pages/Subscription/SubscriptionTierPage';
 import Uploading from '../../pages/Upload/Uploading';
+import MultiSourceUpload from '../../pages/Upload/MultiSourceUpload';
 import UserProfile from '../../pages/UserProfile/UserProfile';
 import UserProfileEdit from '../../pages/UserProfileEdit/UserProfileEdit';
 import AdminLayout from '../../pages/Admin/AdminLayout';
@@ -51,6 +52,11 @@ function App() {
           <Route path="/upload" element={
             <ProtectedRoute>
               <Uploading />
+            </ProtectedRoute>
+          } />
+          <Route path="/upload/multi-source" element={
+            <ProtectedRoute>
+              <MultiSourceUpload />
             </ProtectedRoute>
           } />
           <Route path="/recordings" element={

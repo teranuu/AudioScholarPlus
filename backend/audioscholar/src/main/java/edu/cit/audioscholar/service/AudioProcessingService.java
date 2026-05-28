@@ -32,6 +32,7 @@ import com.google.cloud.firestore.FieldValue;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
 import edu.cit.audioscholar.exception.InvalidAudioFileException;
 import edu.cit.audioscholar.model.AudioMetadata;
+import edu.cit.audioscholar.model.OutputType;
 import edu.cit.audioscholar.model.ProcessingStatus;
 
 @Service
@@ -81,7 +82,7 @@ public class AudioProcessingService {
 
 	@Caching(evict = {@CacheEvict(value = CACHE_METADATA_BY_USER, allEntries = true)})
 	public AudioMetadata queueFilesForUpload(MultipartFile audioFile, @Nullable MultipartFile powerpointFile,
-			@Nullable String title, @Nullable String description, String userId)
+			@Nullable String title, @Nullable String description, String outputType, String userId)
 			throws IOException, InvalidAudioFileException, FirestoreInteractionException {
 
 		log.info("Queueing files for upload: Audio: {}, PowerPoint: {}, Title: {}, User: {}",
@@ -89,6 +90,13 @@ public class AudioProcessingService {
 				(powerpointFile != null ? powerpointFile.getOriginalFilename() : "N/A"), title, userId);
 
 		validateMultipartFile(audioFile, "Audio", userId);
+		OutputType selectedOutputType;
+		try {
+			selectedOutputType = OutputType.fromValue(outputType);
+		} catch (IllegalArgumentException e) {
+			throw new InvalidAudioFileException(
+					"Please select Notes, Study Material, or Review Material before processing.");
+		}
 		if (powerpointFile != null && !powerpointFile.isEmpty()) {
 			validateMultipartFile(powerpointFile, "PowerPoint", userId);
 		} else {
@@ -123,6 +131,7 @@ public class AudioProcessingService {
 			initialMetadata.setUploadTimestamp(Timestamp.of(new Date()));
 			initialMetadata.setLastUpdated(Timestamp.of(new Date()));
 			initialMetadata.setStatus(ProcessingStatus.UPLOAD_PENDING);
+			initialMetadata.setOutputType(selectedOutputType.name());
 			initialMetadata.setTranscriptionComplete(false);
 			initialMetadata.setPdfConversionComplete(false);
 			initialMetadata.setRecordingId(metadataId);
@@ -160,12 +169,19 @@ public class AudioProcessingService {
 			try {
 				Map<String, Object> recordingData = new HashMap<>();
 				recordingData.put("id", metadataId);
+				recordingData.put("recordingId", metadataId);
 				recordingData.put("userId", userId);
 				recordingData.put("title", initialMetadata.getTitle());
 				recordingData.put("description", initialMetadata.getDescription());
+				recordingData.put("fileUrl", initialMetadata.getStorageUrl());
 				recordingData.put("fileSize", initialMetadata.getFileSize());
+				recordingData.put("fileType", initialMetadata.getContentType());
 				recordingData.put("contentType", initialMetadata.getContentType());
+				recordingData.put("outputType", selectedOutputType.name());
+				recordingData.put("status",
+						initialMetadata.getStatus() != null ? initialMetadata.getStatus().name() : null);
 				recordingData.put("createdAt", Timestamp.now());
+				recordingData.put("updatedAt", Timestamp.now());
 
 				firebaseService.saveData("recordings", metadataId, recordingData);
 				log.info("Created Recording document with ID: {} for user: {}", metadataId, userId);

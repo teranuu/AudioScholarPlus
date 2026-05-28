@@ -193,7 +193,7 @@ public class SummarizationListenerService {
 
 					try {
 						String summarizationJson = geminiService.generateSummaryWithGoogleFileUri(transcript,
-								googleFilesApiPdfUri, metadataId);
+								googleFilesApiPdfUri, metadataId, metadata.getOutputType());
 						processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 					} catch (Exception e) {
 						throw new RuntimeException("Summarization with Google Files API failed: " + e.getMessage(), e);
@@ -222,7 +222,7 @@ public class SummarizationListenerService {
 
 						try {
 							String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
-									tempPdfPath, metadataId);
+									tempPdfPath, metadataId, metadata.getOutputType());
 							processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 						} catch (Exception e) {
 							throw new RuntimeException(
@@ -248,7 +248,8 @@ public class SummarizationListenerService {
 					updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
 
 					try {
-						String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript, metadataId);
+						String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript, metadataId,
+								metadata.getOutputType());
 						processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 					} catch (Exception e) {
 						throw new RuntimeException("Transcript-only summarization failed: " + e.getMessage(), e);
@@ -303,7 +304,7 @@ public class SummarizationListenerService {
 
 							try {
 								String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
-										tempPdfPath, metadataId);
+										tempPdfPath, metadataId, metadata.getOutputType());
 								processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 							} catch (Exception e) {
 								throw new RuntimeException(
@@ -337,7 +338,7 @@ public class SummarizationListenerService {
 
 						try {
 							String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
-									tempPdfPath, metadataId);
+									tempPdfPath, metadataId, metadata.getOutputType());
 							processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 						} catch (Exception e) {
 							throw new RuntimeException("Summarization with PDF context failed: " + e.getMessage(), e);
@@ -358,7 +359,8 @@ public class SummarizationListenerService {
 							metadataId);
 					updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
 					try {
-						String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript, metadataId);
+						String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript, metadataId,
+								metadata.getOutputType());
 						processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 					} catch (Exception e) {
 						throw new RuntimeException("Fallback transcript-only summarization failed: " + e.getMessage(),
@@ -502,6 +504,14 @@ public class SummarizationListenerService {
 
 			Summary summary = createSummary(metadataId, userId, summaryText, keyPoints, topics, pdfContextUrl,
 					glossary);
+			summary.setOutputType(metadata.getOutputType());
+			summary.setQualityReport(metadata.getQualityReport());
+			try {
+				summaryService.updateSummary(summary);
+			} catch (Exception e) {
+				log.warn("[{}] Summary generated but new AudioScholar+ fields were not updated: {}", metadataId,
+						e.getMessage());
+			}
 
 			Map<String, Object> updates = new HashMap<>();
 			updates.put("summaryId", summary.getSummaryId());
@@ -530,7 +540,9 @@ public class SummarizationListenerService {
 		Summary summary = new Summary();
 		summary.setSummaryId(UUID.randomUUID().toString());
 		summary.setRecordingId(metadataId);
+		summary.setUserId(userId);
 		summary.setFormattedSummaryText(summaryText);
+		summary.setStatus(ProcessingStatus.SUMMARY_COMPLETE.name());
 		if (keyPoints != null) {
 			summary.setKeyPoints(keyPoints);
 		}
@@ -541,6 +553,7 @@ public class SummarizationListenerService {
 			summary.setGlossary(glossary);
 		}
 		summary.setCreatedAt(new Date());
+		summary.setUpdatedAt(new Date());
 
 		try {
 			log.info("[{}] Saving summary with ID {} to Firestore", metadataId, summary.getSummaryId());

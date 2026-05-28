@@ -24,12 +24,14 @@ public class RecordingService {
 	private static final String RECORDINGS_COLLECTION = "recordings";
 
 	private final FirebaseService firebaseService;
+	private final RecordingRepository recordingRepository;
 	private final UserService userService;
 	private final SummaryService summaryService;
 
-	public RecordingService(FirebaseService firebaseService, UserService userService,
-			@Lazy SummaryService summaryService) {
+	public RecordingService(FirebaseService firebaseService, RecordingRepository recordingRepository,
+			UserService userService, @Lazy SummaryService summaryService) {
 		this.firebaseService = firebaseService;
+		this.recordingRepository = recordingRepository;
 		this.userService = userService;
 		this.summaryService = summaryService;
 	}
@@ -54,7 +56,7 @@ public class RecordingService {
 		log.info("Saving Recording (ID: {}) to Firestore collection '{}' for user {}", recording.getRecordingId(),
 				RECORDINGS_COLLECTION, recording.getUserId());
 
-		firebaseService.saveData(RECORDINGS_COLLECTION, recording.getRecordingId(), recording.toMap());
+		recordingRepository.save(recording);
 		log.info("Successfully saved Recording (ID: {}) to Firestore.", recording.getRecordingId());
 
 		var user = userService.getUserById(recording.getUserId());
@@ -86,7 +88,7 @@ public class RecordingService {
 			return null;
 		}
 		log.debug("Fetching recording by ID: {}", recordingId);
-		java.util.Map<String, Object> data = firebaseService.getData(RECORDINGS_COLLECTION, recordingId);
+		java.util.Map<String, Object> data = recordingRepository.findById(recordingId);
 		if (data == null) {
 			log.warn("No document found in collection '{}' for ID: {}", RECORDINGS_COLLECTION, recordingId);
 			return null;
@@ -102,7 +104,7 @@ public class RecordingService {
 		}
 		recording.setUpdatedAt(new Date());
 		log.info("Updating Recording (ID: {}) in Firestore.", recording.getRecordingId());
-		firebaseService.updateData(RECORDINGS_COLLECTION, recording.getRecordingId(), recording.toMap());
+		recordingRepository.update(recording);
 		log.info("Successfully updated Recording (ID: {}).", recording.getRecordingId());
 		return recording;
 	}
@@ -151,7 +153,7 @@ public class RecordingService {
 			}
 
 			log.info("Deleting Recording document (ID: {}) from Firestore.", recordingId);
-			firebaseService.deleteData(RECORDINGS_COLLECTION, recordingId);
+			recordingRepository.delete(recordingId);
 			log.info("Successfully deleted Recording document (ID: {}).", recordingId);
 
 			if (StringUtils.hasText(audioUrl)) {
@@ -183,8 +185,7 @@ public class RecordingService {
 			return List.of();
 		}
 		log.debug("Fetching recordings for user ID: {}", userId);
-		List<java.util.Map<String, Object>> results = firebaseService.queryCollection(RECORDINGS_COLLECTION, "userId",
-				userId);
+		List<java.util.Map<String, Object>> results = recordingRepository.findByUserId(userId);
 		log.debug("Found {} recording documents for user {}", results.size(), userId);
 		return results.stream().map(data -> Recording.fromMap((String) data.get("recordingId"), data))
 				.filter(Objects::nonNull).filter(r -> r.getRecordingId() != null).collect(Collectors.toList());

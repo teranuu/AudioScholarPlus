@@ -52,6 +52,7 @@ public class AudioTranscriptionListenerService {
 	private final NhostStorageService nhostStorageService;
 	private final GeminiService geminiService;
 	private final RecordingService recordingService;
+	private final QualityReportService qualityReportService;
 	private final CacheManager cacheManager;
 	private final Path tempFileDir;
 	private final RabbitTemplate rabbitTemplate;
@@ -59,13 +60,15 @@ public class AudioTranscriptionListenerService {
 	private final Map<String, ReentrantLock> metadataLocks = new ConcurrentHashMap<>();
 
 	public AudioTranscriptionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
-			GeminiService geminiService, @Lazy RecordingService recordingService, CacheManager cacheManager,
+			GeminiService geminiService, @Lazy RecordingService recordingService,
+			QualityReportService qualityReportService, CacheManager cacheManager,
 			@Value("${app.temp-file-dir}") String tempFileDirStr, RabbitTemplate rabbitTemplate,
 			RobustTaskExecutor robustTaskExecutor) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
 		this.geminiService = geminiService;
 		this.recordingService = recordingService;
+		this.qualityReportService = qualityReportService;
 		this.cacheManager = cacheManager;
 		this.tempFileDir = Paths.get(tempFileDirStr);
 		this.rabbitTemplate = rabbitTemplate;
@@ -169,6 +172,20 @@ public class AudioTranscriptionListenerService {
 							log.info("[{}] Successfully updated durationSeconds ({}) in metadata.", metadataId,
 									durationSeconds);
 						}
+					}
+
+					try {
+						var qualityReport = qualityReportService.analyzeAndSave(metadataId, tempFilePath);
+						Map<String, Object> qualityUpdates = new HashMap<>();
+						qualityUpdates.put("qualityReport", qualityReport.toMap());
+						qualityUpdates.put("lastUpdated", Timestamp.now());
+						firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId,
+								qualityUpdates);
+						log.info("[{}] Quality report generated with status {} and {} issue(s).", metadataId,
+								qualityReport.getStatus(), qualityReport.getIssues().size());
+					} catch (Exception e) {
+						log.warn("[{}] Quality report generation failed without blocking transcription: {}", metadataId,
+								e.getMessage());
 					}
 
 					metadataMap = firebaseService.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
