@@ -927,7 +927,7 @@ public class GeminiService {
 
 		String prompt = """
 				Analyze the provided lecture transcript and the accompanying PDF document.
-				Generate a comprehensive, concise, well-structured summary incorporating information from BOTH sources, using Markdown in the `summaryText` field. Use headings (##) for main sections and bullet points (* or -) for details. Focus on core arguments, findings, definitions, and conclusions presented in either the transcript or the document.
+				Generate learning material incorporating information from BOTH sources, using Markdown in the `summaryText` field. Match the selected output format instruction below. Focus on core arguments, findings, definitions, and conclusions presented in either the transcript or the document.
 				Identify the main key points or action items discussed across both sources and list them as distinct strings in the `keyPoints` array.
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in either the transcript or the document. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.
@@ -1294,7 +1294,7 @@ public class GeminiService {
 
 		String prompt = """
 				Analyze the provided lecture transcript carefully.
-				Generate a comprehensive, concise, well-structured summary in Markdown in the `summaryText` field. Use headings (##) for main sections and bullet points (* or -) for details. Focus on core arguments, findings, definitions, and conclusions presented in the transcript.
+				Generate learning material in Markdown in the `summaryText` field. Match the selected output format instruction below. Focus on core arguments, findings, definitions, and conclusions presented in the transcript.
 				Identify the main key points or action items discussed and list them as distinct strings in the `keyPoints` array.
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in the transcript. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.
@@ -1521,7 +1521,7 @@ public class GeminiService {
 			case "REVIEW_MATERIAL" ->
 				"Format the generated material as Review Material: make it concise and recall-focused, emphasizing quick-review bullets, key facts, likely exam review points, and short definitions.";
 			default ->
-				"Format the generated material as Notes: create lecture-note style sections, detailed but readable bullets, and preserve the flow of the discussion.";
+				"Format the generated material as Notes: create shortened, personal lecture notes in Markdown. Keep the notes less granular than Study Material: include a brief overview, 3-6 key ideas, compact topic notes, and quick review bullets. Preserve the lecture flow where useful, but avoid long lesson-guide explanations, exhaustive examples, or module-style study guide sections.";
 		};
 	}
 

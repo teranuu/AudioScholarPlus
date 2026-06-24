@@ -39,6 +39,9 @@ class GeminiServiceTest {
 	@Mock
 	private GeminiSmartRotationService rotationService;
 
+	@Mock
+	private PromptTemplateService promptTemplateService;
+
 	@InjectMocks
 	private GeminiService geminiService;
 
@@ -254,6 +257,37 @@ class GeminiServiceTest {
 		verify(rotationService, times(1)).executeWithInfiniteRotation(any());
 		verify(restTemplate, times(1)).exchange(anyString(), eq(HttpMethod.POST), any(), eq(String.class));
 		verify(keyRotationManager, times(1)).reportSuccess(KeyProvider.GEMINI, API_KEY);
+	}
+
+	@Test
+	void generateTranscriptOnlySummaryAppliesNotesTemplate() {
+		// Given
+		String metadataId = "test-metadata-id";
+		String notesInstruction = "Format the generated material as Notes: create shortened, personal lecture notes";
+		when(promptTemplateService.getTemplate("NOTES")).thenReturn(notesInstruction);
+		when(keyRotationManager.getKey(any(KeyProvider.class))).thenReturn(API_KEY);
+		ResponseEntity<String> successResponse = new ResponseEntity<>(
+				"{\"candidates\": [{\"content\": {\"parts\": [{\"text\": "
+						+ "\"{\\\"summaryText\\\": \\\"Notes summary\\\", \\\"keyPoints\\\": [], \\\"topics\\\": [], \\\"glossary\\\": []}\"}]}}]}",
+				HttpStatus.OK);
+
+		when(rotationService.executeWithInfiniteRotation(any())).thenAnswer(invocation -> {
+			Function<String, String> apiCallFunction = invocation.getArgument(0);
+			return apiCallFunction.apply("gemini-2.5-flash");
+		});
+
+		ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.class);
+		when(restTemplate.exchange(contains("gemini-2.5-flash"), eq(HttpMethod.POST), entityCaptor.capture(),
+				eq(String.class))).thenReturn(successResponse);
+
+		// When
+		geminiService.generateTranscriptOnlySummary(TRANSCRIPT_TEXT, metadataId, "NOTES");
+
+		// Then
+		String bodyString = entityCaptor.getValue().getBody().toString();
+		assertTrue(bodyString.contains(notesInstruction));
+		assertTrue(bodyString.contains("Match the selected output format instruction below"));
+		assertFalse(bodyString.contains("Format the generated material as Study Material"));
 	}
 
 	// ==================== LEGACY METHOD TESTS ====================

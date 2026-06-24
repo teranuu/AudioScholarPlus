@@ -51,7 +51,7 @@ public class PromptTemplateService {
 			case REVIEW_MATERIAL ->
 				"Format the generated material as Review Material: make it concise and recall-focused, emphasizing quick-review bullets, key facts, likely exam review points, and short definitions.";
 			case NOTES ->
-				"Format the generated material as Notes: create lecture-note style sections, detailed but readable bullets, and preserve the flow of the discussion.";
+				"Format the generated material as Notes: create shortened, personal lecture notes in Markdown. Keep the notes less granular than Study Material: include a brief overview, 3-6 key ideas, compact topic notes, and quick review bullets. Preserve the lecture flow where useful, but avoid long lesson-guide explanations, exhaustive examples, or module-style study guide sections.";
 		};
 	}
 }

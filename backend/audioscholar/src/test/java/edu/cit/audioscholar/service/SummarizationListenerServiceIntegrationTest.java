@@ -22,6 +22,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
+import edu.cit.audioscholar.model.Summary;
 import edu.cit.audioscholar.util.RobustTaskExecutor;
 
 /**
@@ -54,9 +55,6 @@ class SummarizationListenerServiceIntegrationTest {
 	private RecordingService recordingService;
 
 	@Mock
-	private ObjectMapper objectMapper;
-
-	@Mock
 	private Cache cache;
 
 	@Mock
@@ -70,6 +68,9 @@ class SummarizationListenerServiceIntegrationTest {
 	@Captor
 	private ArgumentCaptor<Map<String, Object>> metadataUpdateCaptor;
 
+	@Captor
+	private ArgumentCaptor<Summary> summaryCaptor;
+
 	private static final String METADATA_ID = "test-metadata-id";
 	private static final String USER_ID = "test-user-id";
 	private static final String MESSAGE_ID = "test-message-id";
@@ -79,7 +80,7 @@ class SummarizationListenerServiceIntegrationTest {
 		// Manually create the service with mocked dependencies to avoid constructor
 		// injection issues
 		summarizationListenerService = new SummarizationListenerService(firebaseService, geminiService,
-				nhostStorageService, summaryService, cacheManager, objectMapper, "src/test/resources", // tempDir
+				nhostStorageService, summaryService, cacheManager, new ObjectMapper(), "src/test/resources", // tempDir
 				recommenderService, recordingService, rabbitTemplate, robustTaskExecutor);
 	}
 
@@ -110,7 +111,7 @@ class SummarizationListenerServiceIntegrationTest {
 
 		// Mock GeminiService to throw an exception
 		doThrow(new RuntimeException("EnhancedGeminiException: All retry attempts and model fallbacks exhausted"))
-				.when(geminiService).generateTranscriptOnlySummary(anyString(), eq(METADATA_ID));
+				.when(geminiService).generateTranscriptOnlySummary(anyString(), eq(METADATA_ID), eq("NOTES"));
 
 		// When
 		summarizationListenerService.handleSummarizationRequest(message);
@@ -135,6 +136,24 @@ class SummarizationListenerServiceIntegrationTest {
 		verify(recordingService, never()).getRecordingById(anyString());
 	}
 
+	@Test
+	void testHandleSummarizationRequest_PropagatesOutputTypeToGeminiAndInitialSummarySave() throws Exception {
+		setupRobustTaskExecutorMock();
+		Map<String, String> message = createValidAudioOnlyMessage();
+		AudioMetadata metadata = createAudioOnlyMetadata();
+		mockFirebaseService(metadata);
+		doReturn(
+				"{\"summaryText\":\"Personal notes\",\"keyPoints\":[\"Point one\"],\"topics\":[\"Topic one\"],\"glossary\":[]}")
+				.when(geminiService).generateTranscriptOnlySummary(anyString(), eq(METADATA_ID), eq("NOTES"));
+
+		summarizationListenerService.handleSummarizationRequest(message);
+
+		verify(geminiService).generateTranscriptOnlySummary(eq("Test transcript text"), eq(METADATA_ID), eq("NOTES"));
+		verify(summaryService).createSummary(summaryCaptor.capture());
+		assertEquals("NOTES", summaryCaptor.getValue().getOutputType());
+		assertEquals("Personal notes", summaryCaptor.getValue().getFormattedSummaryText());
+	}
+
 	// ==================== HELPER METHODS ====================
 
 	private Map<String, String> createValidAudioOnlyMessage() {
@@ -151,6 +170,7 @@ class SummarizationListenerServiceIntegrationTest {
 		metadata.setStatus(ProcessingStatus.SUMMARIZATION_QUEUED);
 		metadata.setTranscriptText("Test transcript text");
 		metadata.setAudioOnly(true);
+		metadata.setOutputType("NOTES");
 		return metadata;
 	}
 
@@ -171,6 +191,7 @@ class SummarizationListenerServiceIntegrationTest {
 			metadataMap.put("status", metadata.getStatus().name());
 			metadataMap.put("transcriptText", metadata.getTranscriptText());
 			metadataMap.put("audioOnly", metadata.isAudioOnly());
+			metadataMap.put("outputType", metadata.getOutputType());
 			metadataMap.put("failureReason", null);
 			// Ensure all values are strings or primitives, not Firestore FieldValues
 

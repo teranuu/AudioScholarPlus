@@ -38,6 +38,7 @@ import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
+import edu.cit.audioscholar.model.QualityReport;
 import edu.cit.audioscholar.model.Recording;
 import edu.cit.audioscholar.model.Summary;
 import edu.cit.audioscholar.util.RobustTaskExecutor;
@@ -500,10 +501,8 @@ public class SummarizationListenerService {
 				pdfContextUrl = metadata.getGeneratedPdfUrl();
 			}
 
-			Summary summary = createSummary(metadataId, userId, summaryText, keyPoints, topics, pdfContextUrl,
-					glossary);
-			summary.setOutputType(metadata.getOutputType());
-			summary.setQualityReport(metadata.getQualityReport());
+			Summary summary = createSummary(metadataId, userId, summaryText, keyPoints, topics, pdfContextUrl, glossary,
+					metadata.getOutputType(), metadata.getQualityReport());
 			try {
 				summaryService.updateSummary(summary);
 			} catch (Exception e) {
@@ -534,11 +533,14 @@ public class SummarizationListenerService {
 	}
 
 	private Summary createSummary(String metadataId, String userId, String summaryText, List<String> keyPoints,
-			List<String> topics, String pdfContextUrl, List<Map<String, String>> glossary) {
+			List<String> topics, String pdfContextUrl, List<Map<String, String>> glossary, String outputType,
+			QualityReport qualityReport) {
 		Summary summary = new Summary();
 		summary.setSummaryId(UUID.randomUUID().toString());
 		summary.setRecordingId(metadataId);
 		summary.setUserId(userId);
+		summary.setOutputType(outputType);
+		summary.setQualityReport(qualityReport);
 		summary.setFormattedSummaryText(summaryText);
 		summary.setStatus(ProcessingStatus.SUMMARY_COMPLETE.name());
 		if (keyPoints != null) {
