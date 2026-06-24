@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.function.Function;
@@ -51,6 +52,8 @@ class GeminiServiceTest {
 		// methods.
 		ReflectionTestUtils.setField(geminiService, "transcriptionModelName", "gemini-2.5-flash");
 		ReflectionTestUtils.setField(geminiService, "summarizationModelName", "gemini-2.5-flash");
+		ReflectionTestUtils.setField(geminiService, "filePollIntervalMs", 1L);
+		ReflectionTestUtils.setField(geminiService, "fileReadyTimeoutMs", 1000L);
 	}
 
 	// ==================== SUCCESS SCENARIOS (New Fallback Logic)
@@ -77,11 +80,13 @@ class GeminiServiceTest {
 			when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
 					.thenReturn(uploadResponse);
 
-			// Mock Rotation Service
-			when(rotationService.executeWithInfiniteRotation(any())).thenAnswer(invocation -> {
-				Function<String, String> apiCallFunction = invocation.getArgument(0);
-				return apiCallFunction.apply("gemini-2.5-flash");
-			});
+			ResponseEntity<String> processingResponse = new ResponseEntity<>("{\"state\":\"PROCESSING\"}",
+					HttpStatus.OK);
+			ResponseEntity<String> activeResponse = new ResponseEntity<>("{\"state\":\"ACTIVE\"}", HttpStatus.OK);
+			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.GET), any(), eq(String.class)))
+					.thenReturn(processingResponse, activeResponse);
+			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class)))
+					.thenReturn(new ResponseEntity<>(HttpStatus.NO_CONTENT));
 
 			// Mock Transcription Call
 			String transcriptionResponse = "{\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"transcript\\\": \\\"Hello world\\\"}\"}]}}]}";
@@ -106,7 +111,40 @@ class GeminiServiceTest {
 
 			assertTrue(bodyString.contains(expectedPrompt),
 					"The prompt sent to Gemini API does not match the expected new prompt.");
+			verify(keyRotationManager, times(1)).getKey(KeyProvider.GEMINI);
+			verify(restTemplate, times(2)).exchange(contains("http://file-uri"), eq(HttpMethod.GET), any(),
+					eq(String.class));
+			verify(restTemplate).exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class));
 
+		} finally {
+			Files.deleteIfExists(tempFile);
+		}
+	}
+
+	@Test
+	void transcriptionFailsWhenUploadedFileProcessingFails() throws Exception {
+		Path tempFile = Files.createTempFile("test-audio-failed", ".mp3");
+		Files.writeString(tempFile, "dummy content");
+		try {
+			when(keyRotationManager.getKey(KeyProvider.GEMINI)).thenReturn(API_KEY);
+
+			HttpHeaders initiateHeaders = new HttpHeaders();
+			initiateHeaders.add("X-Goog-Upload-Url", "http://upload-url");
+			when(restTemplate.exchange(contains("/upload/v1beta/files"), eq(HttpMethod.POST), any(), eq(String.class)))
+					.thenReturn(new ResponseEntity<>(null, initiateHeaders, HttpStatus.OK));
+			when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
+					.thenReturn(new ResponseEntity<>("{\"file\":{\"uri\":\"http://file-uri\"}}", HttpStatus.OK));
+			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.GET), any(), eq(String.class)))
+					.thenReturn(new ResponseEntity<>("{\"state\":\"FAILED\"}", HttpStatus.OK));
+			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class)))
+					.thenReturn(new ResponseEntity<>(HttpStatus.NO_CONTENT));
+
+			IOException exception = assertThrows(IOException.class,
+					() -> geminiService.callGeminiTranscriptionAPIWithFallback(tempFile, "test-audio.mp3"));
+
+			assertTrue(exception.getMessage().contains("failed to process"));
+			verify(rotationService, never()).executeWithRotation(any(), anyInt());
+			verify(restTemplate).exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class));
 		} finally {
 			Files.deleteIfExists(tempFile);
 		}

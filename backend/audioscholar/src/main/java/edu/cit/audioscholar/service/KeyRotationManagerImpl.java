@@ -1,5 +1,7 @@
 package edu.cit.audioscholar.service;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -23,8 +25,6 @@ import edu.cit.audioscholar.model.KeyProvider;
 public class KeyRotationManagerImpl implements KeyRotationManager {
 
 	private static final Logger log = LoggerFactory.getLogger(KeyRotationManagerImpl.class);
-	private static final long COOLDOWN_DURATION_MS = 60 * 1000; // 1 minute cooldown
-
 	// Storage for keys per provider
 	private final Map<KeyProvider, List<String>> keyStore = new ConcurrentHashMap<>();
 
@@ -45,6 +45,9 @@ public class KeyRotationManagerImpl implements KeyRotationManager {
 
 	@Value("${convertapi.secret:${CONVERTAPI_SECRET:}}")
 	private String convertApiSecretLegacy;
+
+	@Value("${gemini.keys.cooldown:60s}")
+	private Duration geminiCooldown = Duration.ofMinutes(1);
 
 	@PostConstruct
 	public void init() {
@@ -106,25 +109,41 @@ public class KeyRotationManagerImpl implements KeyRotationManager {
 		// Throw a specific exception that the listener can catch to requeue the
 		// message.
 		log.warn("All keys for {} are in cooldown/rate-limited state.", provider);
-		throw new KeysExhaustedException("All API keys for " + provider + " are currently in cooldown.");
+		throw new KeysExhaustedException("All API keys for " + provider + " are currently in cooldown.",
+				nextAvailableAt(provider));
 	}
 
 	@Override
 	public void reportError(KeyProvider provider, String key, int statusCode) {
+		reportError(provider, key, statusCode, provider == KeyProvider.GEMINI ? geminiCooldown : Duration.ofMinutes(1));
+	}
+
+	@Override
+	public void reportError(KeyProvider provider, String key, int statusCode, Duration cooldown) {
 		if (isRateLimitError(statusCode)) {
+			long cooldownMs = Math.max(1, cooldown.toMillis());
 			log.warn("Rate limit error ({}) reported for key: ...{}. Putting in cooldown for {}ms.", statusCode,
-					maskKey(key), COOLDOWN_DURATION_MS);
-			cooldownMap.put(key, System.currentTimeMillis() + COOLDOWN_DURATION_MS);
+					maskKey(key), cooldownMs);
+			cooldownMap.put(key, System.currentTimeMillis() + cooldownMs);
 		}
 	}
 
 	@Override
 	public void reportSuccess(KeyProvider provider, String key) {
-		// Optional: If we wanted to implement "slow start" or remove from cooldown
-		// early (if it was a soft error)
-		// For now, we just trust the cooldown timer.
-		// We could clear cooldown if a key suddenly works, but usually 429s require
-		// time.
+		cooldownMap.remove(key);
+	}
+
+	@Override
+	public Instant nextAvailableAt(KeyProvider provider) {
+		long now = System.currentTimeMillis();
+		return keyStore.getOrDefault(provider, Collections.emptyList()).stream().map(cooldownMap::get)
+				.filter(java.util.Objects::nonNull).filter(expiry -> expiry > now).min(Long::compareTo)
+				.map(Instant::ofEpochMilli).orElse(Instant.ofEpochMilli(now));
+	}
+
+	@Override
+	public int configuredKeyCount(KeyProvider provider) {
+		return keyStore.getOrDefault(provider, Collections.emptyList()).size();
 	}
 
 	private boolean isCooldown(String key) {
@@ -140,7 +159,7 @@ public class KeyRotationManagerImpl implements KeyRotationManager {
 	}
 
 	private boolean isRateLimitError(int statusCode) {
-		return statusCode == 429 || statusCode == 403;
+		return statusCode == 429;
 	}
 
 	private String maskKey(String key) {

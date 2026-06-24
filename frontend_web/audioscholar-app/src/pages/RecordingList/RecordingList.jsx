@@ -24,6 +24,13 @@ const PROCESSING_STATUSES = [
   'PROCESSING'
 ];
 const UPLOAD_TIMEOUT_SECONDS = 10 * 60;
+const RETRYABLE_FAILURE_STATUSES = ['FAILED', 'SUMMARY_FAILED'];
+
+const canRetryProcessing = (recording) => {
+    const statusUpper = recording.status?.toUpperCase() ?? '';
+    const hasDurableAudio = Boolean(recording.nhostFileId || recording.audioUrl || recording.storageUrl);
+    return RETRYABLE_FAILURE_STATUSES.includes(statusUpper) && hasDurableAudio;
+};
 
 const RecordingList = () => {
     const [recordings, setRecordings] = useState([]);
@@ -31,6 +38,7 @@ const RecordingList = () => {
     const [searchQuery, setSearchQuery] = useState('');
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
+    const [retryingIds, setRetryingIds] = useState(new Set());
     const navigate = useNavigate();
     const pollIntervalRef = useRef(null);
     const isMountedRef = useRef(true);
@@ -237,6 +245,40 @@ const RecordingList = () => {
                 }
                 return rec;
             }));
+        }
+    };
+
+    const handleRetryProcessing = async (recording) => {
+        const recordingId = recording.recordingId || recording.id;
+        if (!recordingId || retryingIds.has(recording.id)) return;
+
+        setError(null);
+        setRetryingIds(prev => new Set(prev).add(recording.id));
+        try {
+            const retryResult = await recordingService.retryProcessing(recordingId);
+            const updateRetriedRecording = (rec) => {
+                if (rec.id !== recording.id) return rec;
+                return {
+                    ...rec,
+                    status: retryResult.status || 'PROCESSING_QUEUED',
+                    processingStage: retryResult.retryStage || rec.processingStage,
+                    failureReason: null,
+                    quotaRetryAt: retryResult.retryAfter || null
+                };
+            };
+            setRecordings(prev => prev.map(updateRetriedRecording));
+            setFilteredRecordings(prev => prev.map(updateRetriedRecording));
+            startPolling(recordings.map(updateRetriedRecording));
+        } catch (err) {
+            const retryAfter = err.response?.data?.retryAfter;
+            const message = err.response?.data?.message || err.response?.data || err.message || 'Retry could not be queued.';
+            setError(retryAfter ? `${message}. Try again after ${new Date(retryAfter).toLocaleString()}.` : message);
+        } finally {
+            setRetryingIds(prev => {
+                const next = new Set(prev);
+                next.delete(recording.id);
+                return next;
+            });
         }
     };
 
@@ -567,6 +609,16 @@ const RecordingList = () => {
                                                             </div>
                                                             <div className="flex items-center space-x-4 flex-shrink-0">
                                                                 {getStatusBadge(recording)}
+                                                                {canRetryProcessing(recording) && (
+                                                                    <button
+                                                                        onClick={() => handleRetryProcessing(recording)}
+                                                                        disabled={retryingIds.has(recording.id)}
+                                                                        className="text-teal-600 hover:text-teal-800 p-1 rounded-md hover:bg-teal-100 dark:hover:bg-teal-900/30 transition disabled:opacity-50 disabled:cursor-wait"
+                                                                        title="Retry processing"
+                                                                    >
+                                                                        <FiRefreshCw className={`h-4 w-4 ${retryingIds.has(recording.id) ? 'animate-spin' : ''}`} />
+                                                                    </button>
+                                                                )}
                                                                 <button
                                                                     onClick={() => handleToggleFavorite(recording)}
                                                                     className={`p-1 rounded-md transition flex items-center gap-1 ${recording.isFavorite ? 'text-red-500 hover:bg-red-50' : 'text-gray-400 hover:text-red-500 hover:bg-gray-100 dark:hover:bg-gray-700'}`}

@@ -1,7 +1,7 @@
 import axios from 'axios';
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { FiExternalLink, FiCopy, FiCheck, FiEdit, FiSave, FiX, FiLoader, FiAlertTriangle, FiCheckCircle, FiUploadCloud, FiClock, FiHeadphones, FiDownload, FiEye, FiEdit2 } from 'react-icons/fi';
+import { FiExternalLink, FiCopy, FiCheck, FiEdit, FiSave, FiX, FiLoader, FiAlertTriangle, FiCheckCircle, FiUploadCloud, FiClock, FiHeadphones, FiDownload, FiEye, FiEdit2, FiRefreshCw } from 'react-icons/fi';
 import { FaHeart, FaRegHeart } from 'react-icons/fa';
 import ReactMarkdown from 'react-markdown';
 import { API_BASE_URL } from '../../services/authService';
@@ -36,6 +36,13 @@ const PROCESSING_STATUSES = [
   'GENERATING_RECOMMENDATIONS',
   'PROCESSING'
 ];
+const RETRYABLE_FAILURE_STATUSES = ['FAILED', 'SUMMARY_FAILED'];
+
+const canRetryProcessing = (recording) => {
+  const statusUpper = recording?.status?.toUpperCase() ?? '';
+  const hasDurableAudio = Boolean(recording?.nhostFileId || recording?.audioUrl || recording?.storageUrl);
+  return RETRYABLE_FAILURE_STATUSES.includes(statusUpper) && hasDurableAudio;
+};
 
 const formatDuration = (seconds) => {
   if (seconds === null || typeof seconds !== 'number' || seconds < 0) return 'N/A';
@@ -344,6 +351,8 @@ const RecordingData = () => {
   const [recordingData, setRecordingData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [retryError, setRetryError] = useState(null);
+  const [retryingProcessing, setRetryingProcessing] = useState(false);
 
   const [summaryData, setSummaryData] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -435,6 +444,35 @@ const RecordingData = () => {
         isFavorite: originalIsFavorite,
         favoriteCount: (prev.favoriteCount || 0)
       }));
+    }
+  };
+
+  const handleRetryProcessing = async () => {
+    if (!recordingData || retryingProcessing) return;
+    const recordingId = recordingData.recordingId || recordingData.id;
+    if (!recordingId) return;
+
+    setRetryError(null);
+    setRetryingProcessing(true);
+    try {
+      const retryResult = await recordingService.retryProcessing(recordingId);
+      const updatedRecording = {
+        ...recordingData,
+        status: retryResult.status || 'PROCESSING_QUEUED',
+        processingStage: retryResult.retryStage || recordingData.processingStage,
+        failureReason: null,
+        quotaRetryAt: retryResult.retryAfter || null,
+      };
+      setRecordingData(updatedRecording);
+      localStorage.setItem(`recording_metadata_${id}`, JSON.stringify(updatedRecording));
+      setSummaryError('Processing has been queued again. Please check back shortly.');
+      setRecommendationsError(null);
+    } catch (err) {
+      const retryAfter = err.response?.data?.retryAfter;
+      const message = err.response?.data?.message || err.response?.data || err.message || 'Retry could not be queued.';
+      setRetryError(retryAfter ? `${message}. Try again after ${new Date(retryAfter).toLocaleString()}.` : message);
+    } finally {
+      setRetryingProcessing(false);
     }
   };
 
@@ -888,6 +926,17 @@ const RecordingData = () => {
               </div>
 
               <div className="flex space-x-3 mt-4 md:mt-0 flex-shrink-0">
+                {canRetryProcessing(recordingData) && (
+                  <button
+                    onClick={handleRetryProcessing}
+                    disabled={retryingProcessing}
+                    className="inline-flex items-center bg-white text-teal-700 font-medium py-2 px-4 rounded-md text-sm transition-all duration-200 ease-in-out shadow hover:shadow-md hover:bg-gray-50 transform hover:-translate-y-0.5 disabled:opacity-60 disabled:cursor-wait"
+                    title="Retry processing"
+                  >
+                    <FiRefreshCw className={`mr-2 h-4 w-4 ${retryingProcessing ? 'animate-spin' : ''}`} />
+                    {retryingProcessing ? 'Retrying...' : 'Retry Processing'}
+                  </button>
+                )}
                 <button
                     onClick={handleToggleFavorite}
                     className={`inline-flex items-center font-medium py-2 px-4 rounded-md text-sm transition-all duration-200 ease-in-out shadow hover:shadow-md transform hover:-translate-y-0.5 ${recordingData.isFavorite ? 'bg-white text-red-600' : 'bg-white text-teal-700 hover:bg-gray-50'}`}
@@ -914,6 +963,13 @@ const RecordingData = () => {
               </div>
             </div>
           </div>
+
+          {retryError && (
+            <div className="mb-6 border border-red-200 bg-red-50 text-red-700 rounded-lg p-4 text-sm flex items-start gap-2">
+              <FiAlertTriangle className="mt-0.5 shrink-0" />
+              <span>{retryError}</span>
+            </div>
+          )}
 
           {(audioSrcToPlay || audioLoading || audioError) ? (
             <div className="mb-8 bg-white rounded-lg shadow-lg overflow-hidden border border-gray-200">

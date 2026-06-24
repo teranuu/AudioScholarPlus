@@ -1,7 +1,10 @@
 package edu.cit.audioscholar.config;
 
+import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.web.client.RestTemplateBuilder;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.cache.caffeine.CaffeineCacheManager;
@@ -17,8 +20,10 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 public class AppConfig {
 
 	@Bean
-	RestTemplate restTemplate() {
-		return new RestTemplate();
+	RestTemplate restTemplate(RestTemplateBuilder builder,
+			@Value("${http.client.connect-timeout:30s}") Duration connectTimeout,
+			@Value("${http.client.read-timeout:10m}") Duration readTimeout) {
+		return builder.connectTimeout(connectTimeout).readTimeout(readTimeout).build();
 	}
 
 	@Bean

@@ -3,6 +3,7 @@ package edu.cit.audioscholar.controller;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
@@ -35,6 +36,8 @@ import edu.cit.audioscholar.model.User;
 import edu.cit.audioscholar.service.AudioProcessingService;
 import edu.cit.audioscholar.service.FirebaseService;
 import edu.cit.audioscholar.service.NhostStorageService;
+import edu.cit.audioscholar.service.ProcessingRetryService;
+import edu.cit.audioscholar.service.ProcessingRetryService.RetryNotReadyException;
 import edu.cit.audioscholar.service.RecordingService;
 import edu.cit.audioscholar.service.UserService;
 
@@ -48,6 +51,7 @@ public class AudioController {
 	private final FirebaseService firebaseService;
 	private final UserService userService;
 	private final NhostStorageService nhostStorageService;
+	private final ProcessingRetryService processingRetryService;
 
 	private static final Set<String> ALLOWED_AUDIO_TYPES = Set.of("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
 			"audio/aac", "audio/x-aac", "audio/ogg", "audio/flac", "audio/x-flac", "audio/aiff", "audio/x-aiff",
@@ -58,12 +62,38 @@ public class AudioController {
 	private static final int DEFAULT_PAGE_SIZE = 20;
 
 	public AudioController(AudioProcessingService audioProcessingService, RecordingService recordingService,
-			FirebaseService firebaseService, UserService userService, NhostStorageService nhostStorageService) {
+			FirebaseService firebaseService, UserService userService, NhostStorageService nhostStorageService,
+			ProcessingRetryService processingRetryService) {
 		this.audioProcessingService = audioProcessingService;
 		this.recordingService = recordingService;
 		this.firebaseService = firebaseService;
 		this.userService = userService;
 		this.nhostStorageService = nhostStorageService;
+		this.processingRetryService = processingRetryService;
+	}
+
+	@PostMapping("/recordings/{recordingId}/retry-transcription")
+	@PreAuthorize("isAuthenticated()")
+	public ResponseEntity<?> retryTranscription(@PathVariable String recordingId) {
+		return retryProcessing(recordingId);
+	}
+
+	@PostMapping("/recordings/{recordingId}/retry-processing")
+	@PreAuthorize("isAuthenticated()")
+	public ResponseEntity<?> retryProcessing(@PathVariable String recordingId) {
+		try {
+			Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+			return ResponseEntity.accepted().body(processingRetryService.retry(recordingId, authentication.getName()));
+		} catch (IllegalArgumentException e) {
+			return ResponseEntity.notFound().build();
+		} catch (SecurityException e) {
+			return ResponseEntity.status(HttpStatus.FORBIDDEN).body(e.getMessage());
+		} catch (RetryNotReadyException e) {
+			return ResponseEntity.status(HttpStatus.CONFLICT)
+					.body(Map.of("message", e.getMessage(), "retryAfter", e.getRetryAfter()));
+		} catch (IllegalStateException e) {
+			return ResponseEntity.status(HttpStatus.CONFLICT).body(e.getMessage());
+		}
 	}
 
 	@PostMapping("/upload")

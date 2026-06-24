@@ -1,8 +1,8 @@
 package edu.cit.audioscholar.service;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -20,6 +20,7 @@ import org.jaudiotagger.audio.AudioFileIO;
 import org.jaudiotagger.audio.AudioHeader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import edu.cit.audioscholar.model.QualityIssue;
@@ -34,18 +35,24 @@ public class QualityIssueDetector {
 	private static final double MIN_CLEAR_SNR_DB = 10.0;
 	private static final Pattern FIRST_NUMBER = Pattern.compile("\\d+(?:\\.\\d+)?");
 
+	@Value("${quality.analysis.full-scan-max-duration:30m}")
+	private Duration fullScanMaxDuration = Duration.ofMinutes(30);
+
 	public List<QualityIssue> detectIssues(Path mediaPath) {
 		if (mediaPath == null) {
 			return List.of();
 		}
 		List<QualityIssue> issues = inspectMediaMetadata(mediaPath);
+		if (mediaDurationSeconds(mediaPath) > fullScanMaxDuration.toSeconds()) {
+			log.info("Skipping full PCM quality scan for long recording {}", mediaPath.getFileName());
+			return issues;
+		}
 		try (AudioInputStream originalStream = AudioSystem.getAudioInputStream(mediaPath.toFile())) {
 			AudioFormat baseFormat = originalStream.getFormat();
 			AudioFormat pcmFormat = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED, baseFormat.getSampleRate(), 16,
 					baseFormat.getChannels(), baseFormat.getChannels() * 2, baseFormat.getSampleRate(), false);
 			try (AudioInputStream pcmStream = AudioSystem.getAudioInputStream(pcmFormat, originalStream)) {
-				byte[] data = readAllBytes(pcmStream);
-				issues.addAll(inspectPcm(data, pcmFormat, issues));
+				inspectPcmStream(pcmStream, pcmFormat, issues);
 				return issues;
 			}
 		} catch (Exception e) {
@@ -55,43 +62,60 @@ public class QualityIssueDetector {
 		}
 	}
 
-	private byte[] readAllBytes(AudioInputStream stream) throws IOException {
-		ByteArrayOutputStream output = new ByteArrayOutputStream();
-		byte[] buffer = new byte[8192];
-		int read;
-		while ((read = stream.read(buffer)) != -1) {
-			output.write(buffer, 0, read);
-		}
-		return output.toByteArray();
-	}
-
-	private List<QualityIssue> inspectPcm(byte[] data, AudioFormat format, List<QualityIssue> existingIssues) {
-		List<QualityIssue> issues = new ArrayList<>();
+	private void inspectPcmStream(AudioInputStream stream, AudioFormat format, List<QualityIssue> issues)
+			throws IOException {
 		int frameSize = format.getFrameSize();
-		if (frameSize <= 0 || data.length < frameSize) {
+		int sampleRate = Math.max(1, Math.round(format.getSampleRate()));
+		if (frameSize <= 0) {
 			issues.add(new QualityIssue("00:00", "00:15", "MISSING_AUDIO", "HIGH",
 					"The audio could not be measured. Review or replace this source if the summary seems incomplete."));
-			return issues;
+			return;
 		}
-
-		int sampleRate = Math.max(1, Math.round(format.getSampleRate()));
-		int channelCount = Math.max(1, format.getChannels());
-		if (sampleRate < MIN_CLEAR_SAMPLE_RATE && !hasIssueType(existingIssues, "UNCLEAR_AUDIO")) {
-			issues.add(new QualityIssue("00:00", formatTime(durationSeconds(data.length, sampleRate, frameSize)),
-					"UNCLEAR_AUDIO", "MODERATE",
+		if (sampleRate < MIN_CLEAR_SAMPLE_RATE && !hasIssueType(issues, "UNCLEAR_AUDIO")) {
+			issues.add(new QualityIssue("00:00", "00:15", "UNCLEAR_AUDIO", "MODERATE",
 					"The recording uses a low sample rate and may lose speech detail. Re-upload a clearer recording if possible."));
 		}
 
 		int windowBytes = WINDOW_SECONDS * sampleRate * frameSize;
-		for (int offset = 0; offset < data.length; offset += windowBytes) {
-			int end = Math.min(data.length, offset + windowBytes);
+		byte[] data = new byte[windowBytes];
+		long totalBytes = 0;
+		int read;
+		while ((read = readWindow(stream, data)) > 0) {
+			inspectPcmWindow(data, read, format, issues, totalBytes / (sampleRate * frameSize));
+			totalBytes += read;
+		}
+		if (totalBytes == 0) {
+			issues.add(new QualityIssue("00:00", "00:15", "MISSING_AUDIO", "HIGH",
+					"The audio could not be measured. Review or replace this source if the summary seems incomplete."));
+		}
+	}
+
+	private int readWindow(AudioInputStream stream, byte[] data) throws IOException {
+		int total = 0;
+		while (total < data.length) {
+			int read = stream.read(data, total, data.length - total);
+			if (read < 0) {
+				break;
+			}
+			total += read;
+		}
+		return total;
+	}
+
+	private void inspectPcmWindow(byte[] data, int length, AudioFormat format, List<QualityIssue> issues,
+			long baseSecond) {
+		int frameSize = format.getFrameSize();
+		int sampleRate = Math.max(1, Math.round(format.getSampleRate()));
+		int channelCount = Math.max(1, format.getChannels());
+		for (int offset = 0; offset < length; offset += WINDOW_SECONDS * sampleRate * frameSize) {
+			int end = Math.min(length, offset + WINDOW_SECONDS * sampleRate * frameSize);
 			Map<String, Double> metrics = metrics(data, offset, end, frameSize, sampleRate, channelCount);
 			double rms = metrics.get("rms");
 			double peak = metrics.get("peak");
 			double clippingRatio = metrics.get("clippingRatio");
 			double snrDb = metrics.get("snrDb");
-			int startSecond = offset / (sampleRate * frameSize);
-			int endSecond = Math.max(startSecond + 1, end / (sampleRate * frameSize));
+			int startSecond = Math.toIntExact(baseSecond + offset / (sampleRate * frameSize));
+			int endSecond = Math.max(startSecond + 1, Math.toIntExact(baseSecond + end / (sampleRate * frameSize)));
 
 			if (clippingRatio > 0.02) {
 				issues.add(new QualityIssue(formatTime(startSecond), formatTime(endSecond), "AUDIO_CLIPPING", "HIGH",
@@ -108,7 +132,14 @@ public class QualityIssueDetector {
 						"Background noise may make speech unreliable in this section. Review this part before trusting the summary."));
 			}
 		}
-		return issues;
+	}
+
+	private long mediaDurationSeconds(Path mediaPath) {
+		try {
+			return AudioFileIO.read(mediaPath.toFile()).getAudioHeader().getTrackLength();
+		} catch (Exception e) {
+			return 0;
+		}
 	}
 
 	private boolean hasIssueType(List<QualityIssue> issues, String issueType) {
@@ -223,10 +254,6 @@ public class QualityIssueDetector {
 			return parsed * 1_000;
 		}
 		return parsed;
-	}
-
-	private int durationSeconds(int dataLength, int sampleRate, int frameSize) {
-		return Math.max(1, dataLength / Math.max(1, sampleRate * frameSize));
 	}
 
 	private String formatTime(int totalSeconds) {

@@ -85,6 +85,31 @@ class KeyRotationManagerTest {
 	}
 
 	@Test
+	void testDuplicateLegacyKeyIsCountedOnce() {
+		ReflectionTestUtils.setField(keyRotationManager, "geminiKeysRaw", "sameKey");
+		ReflectionTestUtils.setField(keyRotationManager, "geminiKeyLegacy", "sameKey");
+		ReflectionTestUtils.setField(keyRotationManager, "convertApiSecretsRaw", "");
+		ReflectionTestUtils.setField(keyRotationManager, "convertApiSecretLegacy", "");
+
+		keyRotationManager.init();
+
+		assertEquals(1, keyRotationManager.configuredKeyCount(KeyProvider.GEMINI));
+	}
+
+	@Test
+	void testForbiddenDoesNotPutGeminiKeyInCooldown() {
+		ReflectionTestUtils.setField(keyRotationManager, "geminiKeysRaw", "keyA");
+		ReflectionTestUtils.setField(keyRotationManager, "geminiKeyLegacy", "");
+		ReflectionTestUtils.setField(keyRotationManager, "convertApiSecretsRaw", "");
+		ReflectionTestUtils.setField(keyRotationManager, "convertApiSecretLegacy", "");
+		keyRotationManager.init();
+
+		keyRotationManager.reportError(KeyProvider.GEMINI, "keyA", 403);
+
+		assertEquals("keyA", keyRotationManager.getKey(KeyProvider.GEMINI));
+	}
+
+	@Test
 	void testAllKeysInCooldown() {
 		// Setup: 2 keys
 		ReflectionTestUtils.setField(keyRotationManager, "geminiKeysRaw", "keyX,keyY");

@@ -1,5 +1,8 @@
 package edu.cit.audioscholar.service;
 
+import java.time.Duration;
+import java.time.Instant;
+
 import edu.cit.audioscholar.model.KeyProvider;
 
 public interface KeyRotationManager {
@@ -27,6 +30,12 @@ public interface KeyRotationManager {
 	 *            The HTTP status code returned by the API
 	 */
 	void reportError(KeyProvider provider, String key, int statusCode);
+
+	void reportError(KeyProvider provider, String key, int statusCode, Duration cooldown);
+
+	Instant nextAvailableAt(KeyProvider provider);
+
+	int configuredKeyCount(KeyProvider provider);
 
 	/**
 	 * Reports a successful usage of a key. Useful for metrics or resetting failure

@@ -3,6 +3,7 @@ package edu.cit.audioscholar.controller;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -28,6 +29,7 @@ import edu.cit.audioscholar.model.Recording;
 import edu.cit.audioscholar.service.AudioProcessingService;
 import edu.cit.audioscholar.service.FirebaseService;
 import edu.cit.audioscholar.service.NhostStorageService;
+import edu.cit.audioscholar.service.ProcessingRetryService;
 import edu.cit.audioscholar.service.RecordingService;
 import edu.cit.audioscholar.service.UserService;
 
@@ -51,6 +53,9 @@ public class AudioControllerTest {
 
 	@Mock
 	private NhostStorageService nhostStorageService;
+
+	@Mock
+	private ProcessingRetryService processingRetryService;
 
 	@InjectMocks
 	private AudioController audioController;
@@ -150,5 +155,28 @@ public class AudioControllerTest {
 
 		mockMvc.perform(get("/api/audio/recordings/{recordingId}/audio", RECORDING_ID))
 				.andExpect(status().isNotFound());
+	}
+
+	@Test
+	void retryTranscription_AcceptsRetryableRecording() throws Exception {
+		when(processingRetryService.retry(RECORDING_ID, TEST_USER_ID))
+				.thenReturn(new edu.cit.audioscholar.dto.ProcessingRetryResponse("metadata-1", RECORDING_ID,
+						"PROCESSING_QUEUED", "TRANSCRIPTION", "Transcription retry queued", null));
+
+		mockMvc.perform(post("/api/audio/recordings/{recordingId}/retry-transcription", RECORDING_ID))
+				.andExpect(status().isAccepted()).andExpect(jsonPath("$.metadataId").value("metadata-1"))
+				.andExpect(jsonPath("$.status").value("PROCESSING_QUEUED"))
+				.andExpect(jsonPath("$.retryStage").value("TRANSCRIPTION"));
+	}
+
+	@Test
+	void retryProcessing_AcceptsRecoverableRecording() throws Exception {
+		when(processingRetryService.retry(RECORDING_ID, TEST_USER_ID))
+				.thenReturn(new edu.cit.audioscholar.dto.ProcessingRetryResponse("metadata-1", RECORDING_ID,
+						"PROCESSING_QUEUED", "SUMMARIZATION", "Summarization retry queued", null));
+
+		mockMvc.perform(post("/api/audio/recordings/{recordingId}/retry-processing", RECORDING_ID))
+				.andExpect(status().isAccepted()).andExpect(jsonPath("$.metadataId").value("metadata-1"))
+				.andExpect(jsonPath("$.retryStage").value("SUMMARIZATION"));
 	}
 }

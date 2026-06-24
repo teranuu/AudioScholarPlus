@@ -7,6 +7,7 @@ import static org.mockito.Mockito.*;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
@@ -23,12 +24,17 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.client.ClientHttpRequest;
 import org.springframework.http.client.ClientHttpResponse;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RequestCallback;
 import org.springframework.web.client.ResponseExtractor;
 import org.springframework.web.client.RestTemplate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import edu.cit.audioscholar.exception.StorageUploadException;
 
 @ExtendWith(MockitoExtension.class)
 class NhostStorageServiceTest {
@@ -46,6 +52,7 @@ class NhostStorageServiceTest {
 	void setUp() {
 		nhostStorageService = new NhostStorageService(restTemplate, STORAGE_URL, ADMIN_SECRET, BUCKET_ID,
 				new ObjectMapper());
+		ReflectionTestUtils.setField(nhostStorageService, "uploadRetryDelayMs", 0L);
 	}
 
 	@Test
@@ -92,6 +99,54 @@ class NhostStorageServiceTest {
 			HttpHeaders fileHeaders = fileEntity.getHeaders();
 			assertEquals("file[]", fileHeaders.getContentDisposition().getName());
 			assertEquals("lecture.mp3", fileHeaders.getContentDisposition().getFilename());
+		} finally {
+			Files.deleteIfExists(tempFilePath);
+		}
+	}
+
+	@Test
+	void uploadFile_retriesTransientServerErrorAndThenSucceeds() throws Exception {
+		Path tempFilePath = Files.createTempFile("nhost-retry", ".mp3");
+		Files.writeString(tempFilePath, "dummy audio");
+		String errorBody = "{\"error\":{\"data\":null,\"message\":\"an internal server error occurred\"},\"processedFiles\":[]}";
+		HttpServerErrorException serverError = HttpServerErrorException.create(HttpStatus.INTERNAL_SERVER_ERROR,
+				"Internal Server Error", HttpHeaders.EMPTY, errorBody.getBytes(StandardCharsets.UTF_8),
+				StandardCharsets.UTF_8);
+		String successBody = "{\"processedFiles\":[{\"id\":\"file-id-123\"}]}";
+
+		when(restTemplate.exchange(eq(STORAGE_URL), eq(HttpMethod.POST), any(HttpEntity.class), eq(String.class)))
+				.thenThrow(serverError).thenReturn(new ResponseEntity<>(successBody, HttpStatus.CREATED));
+
+		try {
+			assertEquals("file-id-123",
+					nhostStorageService.uploadFile(tempFilePath.toFile(), "lecture.mp3", "audio/mpeg"));
+			verify(restTemplate, times(2)).exchange(eq(STORAGE_URL), eq(HttpMethod.POST), any(HttpEntity.class),
+					eq(String.class));
+		} finally {
+			Files.deleteIfExists(tempFilePath);
+		}
+	}
+
+	@Test
+	void uploadFile_parsesNestedErrorAndDoesNotRetryClientError() throws Exception {
+		Path tempFilePath = Files.createTempFile("nhost-invalid", ".mp3");
+		Files.writeString(tempFilePath, "dummy audio");
+		String errorBody = "{\"error\":{\"data\":null,\"message\":\"file is too large\"},\"processedFiles\":[]}";
+		HttpClientErrorException clientError = HttpClientErrorException.create(HttpStatus.PAYLOAD_TOO_LARGE,
+				"Payload Too Large", HttpHeaders.EMPTY, errorBody.getBytes(StandardCharsets.UTF_8),
+				StandardCharsets.UTF_8);
+
+		when(restTemplate.exchange(eq(STORAGE_URL), eq(HttpMethod.POST), any(HttpEntity.class), eq(String.class)))
+				.thenThrow(clientError);
+
+		try {
+			StorageUploadException failure = assertThrows(StorageUploadException.class,
+					() -> nhostStorageService.uploadFile(tempFilePath.toFile(), "lecture.mp3", "audio/mpeg"));
+			assertEquals(413, failure.getStatusCode());
+			assertFalse(failure.isRetryable());
+			assertTrue(failure.getMessage().contains("file is too large"));
+			verify(restTemplate).exchange(eq(STORAGE_URL), eq(HttpMethod.POST), any(HttpEntity.class),
+					eq(String.class));
 		} finally {
 			Files.deleteIfExists(tempFilePath);
 		}

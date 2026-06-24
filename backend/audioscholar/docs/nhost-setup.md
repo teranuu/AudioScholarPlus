@@ -51,3 +51,9 @@ Reference docs:
 - Nhost Storage permissions tutorial: https://docs.nhost.io/getting-started/tutorials/react/5-file-uploads
 - Nhost admin secret guidance: https://docs.nhost.io/reference/javascript/nhost-js/fetch
 - Nhost CDN and file URLs: https://docs.nhost.io/products/storage/cdn
+# Large audio uploads
+
+The backend accepts audio files up to 100 MiB. The Nhost bucket must use the same limit or uploads will fail after
+the backend has accepted them. Set the configured bucket's `max_upload_file_size` to `104857600` bytes in the Nhost
+Dashboard under **Storage > Bucket settings**. The backend defaults to the `default` bucket through
+`NHOST_STORAGE_BUCKET_ID`.

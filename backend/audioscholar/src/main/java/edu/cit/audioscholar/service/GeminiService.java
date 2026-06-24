@@ -3,6 +3,10 @@ package edu.cit.audioscholar.service;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -36,6 +40,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import edu.cit.audioscholar.exception.GeminiRateLimitException;
+import edu.cit.audioscholar.exception.KeysExhaustedException;
+import edu.cit.audioscholar.exception.NonRetryableTaskException;
 import edu.cit.audioscholar.model.KeyProvider;
 
 @Service
@@ -50,6 +57,18 @@ public class GeminiService {
 
 	@Value("${gemini.api.model.summarization:gemini-2.5-flash}")
 	private String summarizationModelName;
+
+	@Value("${gemini.files.poll-interval-ms:2000}")
+	private long filePollIntervalMs;
+
+	@Value("${gemini.files.ready-timeout-ms:180000}")
+	private long fileReadyTimeoutMs;
+
+	@Value("${gemini.transcription.models:gemini-2.5-flash}")
+	private String transcriptionModels = "gemini-2.5-flash";
+
+	@Value("${gemini.keys.cooldown:60s}")
+	private Duration geminiCooldown = Duration.ofMinutes(1);
 
 	private static final String API_BASE_URL = "https://generativelanguage.googleapis.com";
 	private static final String FILES_API_UPLOAD_PATH = "/upload/v1beta/files";
@@ -203,25 +222,89 @@ public class GeminiService {
 		long fileSize = Files.size(audioFilePath);
 		String displayName = fileName;
 
+		String uploadKey = null;
+		String fileUri = null;
 		try {
-			String uploadKey = keyRotationManager.getKey(KeyProvider.GEMINI);
-			String fileUri = uploadFile(audioFilePath, mimeType, fileSize, displayName, uploadKey);
-			log.info("File uploaded successfully. URI: {}", fileUri);
+			uploadKey = keyRotationManager.getKey(KeyProvider.GEMINI);
+			fileUri = uploadFile(audioFilePath, mimeType, fileSize, displayName, uploadKey);
+			log.info("File uploaded successfully. Waiting for it to become ACTIVE. URI: {}", fileUri);
+			waitForFileActive(fileUri, uploadKey);
 
-			return rotationService.executeWithInfiniteRotation(targetModel -> {
-				String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
-				String result = callGeminiTranscriptionAPISingleModel(fileUri, mimeType, targetModel, currentKey);
-				keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
-				return result;
-			});
+			String activeFileUri = fileUri;
+			String activeFileKey = uploadKey;
+			String result = transcribeActiveFile(activeFileUri, mimeType, activeFileKey);
+			keyRotationManager.reportSuccess(KeyProvider.GEMINI, activeFileKey);
+			return result;
 
 		} catch (IOException e) {
 			log.error("IOException during file handling or upload: {}", e.getMessage(), e);
 			throw e;
+		} catch (KeysExhaustedException e) {
+			throw new GeminiRateLimitException(e.getMessage(), e.getRetryAt(), e);
+		} catch (NonRetryableTaskException e) {
+			log.error("Gemini permanently rejected the transcription request: {}", e.getMessage(), e);
+			throw e;
 		} catch (Exception e) {
 			log.error("Unexpected error during enhanced transcription process: {}", e.getMessage(), e);
-			return createErrorResponse("Unexpected Transcription Error", e.getMessage());
+			throw new IOException("Gemini transcription failed: " + e.getMessage(), e);
+		} finally {
+			if (fileUri != null && uploadKey != null) {
+				deleteGoogleFileQuietly(fileUri, uploadKey);
+			}
 		}
+	}
+
+	private String transcribeActiveFile(String fileUri, String mimeType, String apiKey)
+			throws GeminiRateLimitException {
+		RuntimeException lastFailure = null;
+		GeminiRateLimitException lastRateLimit = null;
+		for (String model : transcriptionModels.split(",")) {
+			String normalizedModel = model.trim();
+			if (normalizedModel.isEmpty())
+				continue;
+			try {
+				return callGeminiTranscriptionAPISingleModel(fileUri, mimeType, normalizedModel, apiKey);
+			} catch (HttpClientErrorException e) {
+				int statusCode = e.getStatusCode().value();
+				if (statusCode == 429) {
+					Duration retryDelay = retryDelay(e);
+					keyRotationManager.reportError(KeyProvider.GEMINI, apiKey, statusCode, retryDelay);
+					lastRateLimit = new GeminiRateLimitException("Gemini transcription quota is temporarily exhausted",
+							Instant.now().plus(retryDelay), e);
+					continue;
+				}
+				keyRotationManager.reportError(KeyProvider.GEMINI, apiKey, statusCode);
+				throw new NonRetryableTaskException(
+						"Gemini rejected the transcription request with status " + statusCode, e);
+			} catch (HttpServerErrorException e) {
+				lastFailure = e;
+			}
+		}
+		if (lastRateLimit != null) {
+			throw lastRateLimit;
+		}
+		throw lastFailure != null ? lastFailure : new IllegalStateException("No transcription models configured");
+	}
+
+	private Duration retryDelay(HttpClientErrorException exception) {
+		HttpHeaders headers = exception.getResponseHeaders();
+		if (headers != null) {
+			String retryAfter = headers.getFirst(HttpHeaders.RETRY_AFTER);
+			if (retryAfter != null) {
+				try {
+					return Duration.ofSeconds(Math.max(1, Long.parseLong(retryAfter.trim())));
+				} catch (NumberFormatException ignored) {
+					try {
+						Instant retryAt = ZonedDateTime.parse(retryAfter.trim(), DateTimeFormatter.RFC_1123_DATE_TIME)
+								.toInstant();
+						return Duration.ofMillis(Math.max(1_000, Duration.between(Instant.now(), retryAt).toMillis()));
+					} catch (java.time.format.DateTimeParseException invalidDate) {
+						log.debug("Gemini returned an invalid Retry-After header: {}", retryAfter);
+					}
+				}
+			}
+		}
+		return geminiCooldown;
 	}
 
 	/**
@@ -614,6 +697,52 @@ public class GeminiService {
 		} catch (JsonProcessingException e) {
 			log.error("Error parsing upload response JSON: {}", e.getMessage(), e);
 			throw new ApiException("Error parsing upload response JSON", e);
+		}
+	}
+
+	private void waitForFileActive(String fileUri, String apiKey) throws ApiException {
+		long deadline = System.currentTimeMillis() + fileReadyTimeoutMs;
+		String statusUrl = UriComponentsBuilder.fromUriString(fileUri).queryParam("key", apiKey).toUriString();
+
+		while (System.currentTimeMillis() < deadline) {
+			try {
+				ResponseEntity<String> response = restTemplate.exchange(statusUrl, HttpMethod.GET, HttpEntity.EMPTY,
+						String.class);
+				JsonNode fileNode = objectMapper.readTree(response.getBody());
+				String state = fileNode.path("state").asText("");
+				if ("ACTIVE".equalsIgnoreCase(state)) {
+					log.info("Gemini file is ACTIVE: {}", fileUri);
+					return;
+				}
+				if ("FAILED".equalsIgnoreCase(state)) {
+					throw new ApiException("Gemini failed to process the uploaded audio file.");
+				}
+				log.debug("Gemini file is not ready yet (state: {}). Polling again in {}ms.", state,
+						filePollIntervalMs);
+			} catch (ApiException e) {
+				throw e;
+			} catch (Exception e) {
+				throw new ApiException("Failed to check Gemini file readiness: " + e.getMessage(), e);
+			}
+
+			try {
+				Thread.sleep(filePollIntervalMs);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new ApiException("Interrupted while waiting for Gemini file readiness.", e);
+			}
+		}
+
+		throw new ApiException("Timed out waiting for Gemini to process the uploaded audio file.");
+	}
+
+	private void deleteGoogleFileQuietly(String fileUri, String apiKey) {
+		try {
+			String deleteUrl = UriComponentsBuilder.fromUriString(fileUri).queryParam("key", apiKey).toUriString();
+			restTemplate.exchange(deleteUrl, HttpMethod.DELETE, HttpEntity.EMPTY, Void.class);
+			log.debug("Deleted Gemini file after transcription: {}", fileUri);
+		} catch (Exception e) {
+			log.warn("Unable to delete Gemini file {} after transcription: {}", fileUri, e.getMessage());
 		}
 	}
 

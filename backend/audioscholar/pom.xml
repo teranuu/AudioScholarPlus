@@ -30,6 +30,7 @@
 		<java.version>24</java.version>
 		<dependency-check-maven.version>12.1.1</dependency-check-maven.version>
 		<jjwt.version>0.12.6</jjwt.version>
+		<jave.version>3.5.0</jave.version>
 	</properties>
 	<dependencyManagement>
 		<dependencies>
@@ -219,6 +220,12 @@
 		</dependency>
 
 		<dependency>
+			<groupId>ws.schild</groupId>
+			<artifactId>jave-core</artifactId>
+			<version>${jave.version}</version>
+		</dependency>
+
+		<dependency>
 			<groupId>com.optimaize.languagedetector</groupId>
 			<artifactId>language-detector</artifactId>
 			<version>0.6</version>
@@ -259,6 +266,35 @@
 		</dependency>
 
 	</dependencies>
+
+	<profiles>
+		<profile>
+			<id>managed-ffmpeg-windows-x64</id>
+			<activation>
+				<os><family>Windows</family><arch>amd64</arch></os>
+			</activation>
+			<dependencies>
+				<dependency>
+					<groupId>ws.schild</groupId>
+					<artifactId>jave-nativebin-win64</artifactId>
+					<version>${jave.version}</version>
+				</dependency>
+			</dependencies>
+		</profile>
+		<profile>
+			<id>managed-ffmpeg-linux-x64</id>
+			<activation>
+				<os><name>Linux</name><arch>amd64</arch></os>
+			</activation>
+			<dependencies>
+				<dependency>
+					<groupId>ws.schild</groupId>
+					<artifactId>jave-nativebin-linux64</artifactId>
+					<version>${jave.version}</version>
+				</dependency>
+			</dependencies>
+		</profile>
+	</profiles>
 
 	<build>
 		<plugins>

@@ -12,6 +12,18 @@ const getAuthHeaders = () => {
 };
 
 export const recordingService = {
+  retryProcessing: async (recordingId) => {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/${recordingId}/retry-processing`, {}, {
+        headers: getAuthHeaders()
+      });
+      return response.data;
+    } catch (error) {
+      console.error("Error retrying processing:", error);
+      throw error;
+    }
+  },
+
   toggleFavorite: async (recordingId) => {
     try {
       const response = await axios.post(`${API_BASE_URL}/${recordingId}/favorite`, {}, {

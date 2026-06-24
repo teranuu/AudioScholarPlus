@@ -16,6 +16,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ControllerAdvice;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.context.request.WebRequest;
+import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 @ControllerAdvice
@@ -66,6 +67,19 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 		log.warn("Invalid audio file detected for request [{}]: {}", request.getDescription(false), ex.getMessage());
 
 		return new ResponseEntity<>(body, HttpStatus.BAD_REQUEST);
+	}
+
+	@Override
+	protected ResponseEntity<Object> handleMaxUploadSizeExceededException(MaxUploadSizeExceededException ex,
+			HttpHeaders headers, HttpStatusCode status, WebRequest request) {
+		Map<String, Object> body = new HashMap<>();
+		body.put("timestamp", System.currentTimeMillis());
+		body.put("status", HttpStatus.PAYLOAD_TOO_LARGE.value());
+		body.put("error", "Payload Too Large");
+		body.put("message", "Audio files must not exceed 100 MB.");
+
+		log.warn("Upload exceeded the configured size limit for request [{}]", request.getDescription(false));
+		return new ResponseEntity<>(body, headers, HttpStatus.PAYLOAD_TOO_LARGE);
 	}
 
 	@ExceptionHandler(FirestoreInteractionException.class)

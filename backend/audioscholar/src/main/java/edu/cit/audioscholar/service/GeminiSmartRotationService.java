@@ -98,4 +98,32 @@ public class GeminiSmartRotationService {
 			}
 		}
 	}
+
+	/**
+	 * Tries each configured model for a bounded number of cycles. This is used by
+	 * queue workers so a permanently failing request cannot occupy a consumer
+	 * forever.
+	 */
+	public <T> T executeWithRotation(Function<String, T> apiCallFunction, int maxCycles) {
+		if (maxCycles < 1) {
+			throw new IllegalArgumentException("maxCycles must be at least 1");
+		}
+
+		RuntimeException lastFailure = null;
+		for (int cycle = 1; cycle <= maxCycles; cycle++) {
+			for (String model : modelHierarchy) {
+				try {
+					return apiCallFunction.apply(model);
+				} catch (HttpClientErrorException.TooManyRequests | HttpServerErrorException.ServiceUnavailable e) {
+					lastFailure = e;
+					logger.warn("Model {} is rate limited/overloaded ({}). Switching to next...", model,
+							e.getStatusCode());
+				} catch (RuntimeException e) {
+					throw e;
+				}
+			}
+		}
+
+		throw lastFailure != null ? lastFailure : new IllegalStateException("No Gemini models are configured");
+	}
 }

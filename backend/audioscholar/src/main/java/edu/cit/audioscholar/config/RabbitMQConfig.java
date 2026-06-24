@@ -140,6 +140,7 @@ public class RabbitMQConfig {
 	RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory, MessageConverter messageConverter) {
 		final RabbitTemplate rabbitTemplate = new RabbitTemplate(connectionFactory);
 		rabbitTemplate.setMessageConverter(messageConverter);
+		rabbitTemplate.setMandatory(true);
 		return rabbitTemplate;
 	}
 
@@ -153,6 +154,18 @@ public class RabbitMQConfig {
 		factory.setConcurrentConsumers(concurrency);
 		factory.setMaxConcurrentConsumers(maxConcurrency);
 
+		factory.setPrefetchCount(1);
+		return factory;
+	}
+
+	@Bean("transcriptionContainerFactory")
+	public SimpleRabbitListenerContainerFactory transcriptionContainerFactory(ConnectionFactory connectionFactory,
+			MessageConverter messageConverter) {
+		SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
+		factory.setConnectionFactory(connectionFactory);
+		factory.setMessageConverter(messageConverter);
+		factory.setConcurrentConsumers(1);
+		factory.setMaxConcurrentConsumers(1);
 		factory.setPrefetchCount(1);
 		return factory;
 	}

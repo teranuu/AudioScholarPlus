@@ -53,6 +53,7 @@ public class AudioProcessingService {
 	private final LearningMaterialRecommenderService learningMaterialRecommenderService;
 	private final RecordingService recordingService;
 	private final String maxFileSizeValue;
+	private final String tempMinFreeSpaceValue;
 	private final Path tempFileDir;
 	@SuppressWarnings("unused")
 	private final CacheManager cacheManager;
@@ -63,6 +64,7 @@ public class AudioProcessingService {
 			NhostStorageService nhostStorageService,
 			LearningMaterialRecommenderService learningMaterialRecommenderService, RecordingService recordingService,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue,
+			@Value("${app.temp-min-free-space:100MB}") String tempMinFreeSpaceValue,
 			@Value("${app.temp-file-dir}") String tempFileDirStr, CacheManager cacheManager,
 			ObjectMapper objectMapper) {
 		this.firebaseService = firebaseService;
@@ -71,6 +73,7 @@ public class AudioProcessingService {
 		this.learningMaterialRecommenderService = learningMaterialRecommenderService;
 		this.recordingService = recordingService;
 		this.maxFileSizeValue = maxFileSizeValue;
+		this.tempMinFreeSpaceValue = tempMinFreeSpaceValue;
 
 		this.tempFileDir = Paths.get(tempFileDirStr);
 		try {
@@ -123,6 +126,12 @@ public class AudioProcessingService {
 		AudioMetadata initialMetadata = null;
 
 		try {
+			long requiredTempBytes = audioFile.getSize() + (powerpointFile != null ? powerpointFile.getSize() : 0)
+					+ DataSize.parse(tempMinFreeSpaceValue).toBytes();
+			long usableTempBytes = Files.getFileStore(tempFileDir).getUsableSpace();
+			if (usableTempBytes < requiredTempBytes) {
+				throw new IOException("Insufficient temporary storage to process this upload.");
+			}
 			tempAudioPath = saveTemporaryFile(audioFile, "audio");
 			log.info("Audio file saved temporarily to: {}", tempAudioPath.toAbsolutePath());
 

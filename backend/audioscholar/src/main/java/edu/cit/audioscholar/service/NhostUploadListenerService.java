@@ -10,6 +10,8 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -17,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
@@ -29,6 +32,7 @@ import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.dto.AudioProcessingMessage;
 import edu.cit.audioscholar.dto.NhostUploadMessage;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
+import edu.cit.audioscholar.exception.StorageUploadException;
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
 
@@ -169,6 +173,12 @@ public class NhostUploadListenerService {
 					publicUrl = nhostStorageService.getPublicUrl(nhostFileId);
 					log.info("[{}] Nhost Public URL for audio: {}", metadataId, publicUrl);
 				}
+			} catch (StorageUploadException e) {
+				log.error("[{}] Nhost upload failed after retry handling. Status: {}, Retryable: {}, Error: {}",
+						metadataId, e.getStatusCode(), e.isRetryable(), e.getMessage(), e);
+				updateStatus(metadataId, userId, ProcessingStatus.FAILED, e.getMessage());
+				deleteTempFileHelper(tempFilePathStr, metadataId, fileType);
+				return;
 			} catch (IOException e) {
 				log.error("[{}] IOException during Nhost upload processing for temp file {}. Error: {}", metadataId,
 						tempFilePathStr, e.getMessage(), e);
@@ -261,20 +271,6 @@ public class NhostUploadListenerService {
 				log.info("[{}] Marking upload as audio-only (no PowerPoint file detected)", metadataId);
 			}
 
-			// Parallel Flow: Trigger Transcription immediately after audio upload
-			log.info("[{}] Audio upload complete. Triggering transcription immediately.", metadataId);
-			AudioProcessingMessage transcriptionMessage = new AudioProcessingMessage();
-			transcriptionMessage.setMetadataId(metadataId);
-			transcriptionMessage.setUserId(userId);
-
-			try {
-				rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME,
-						RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY, transcriptionMessage);
-				log.info("[{}] Message sent to transcription queue (Parallel Processing).", metadataId);
-			} catch (Exception e) {
-				log.error("[{}] Failed to send message to transcription queue: {}", metadataId, e.getMessage(), e);
-			}
-
 			String publicUrl = nhostStorageService.getPublicUrl(nhostFileId);
 			if (publicUrl != null) {
 				updates.put("audioUrl", publicUrl);
@@ -290,6 +286,7 @@ public class NhostUploadListenerService {
 				} catch (FirestoreInteractionException e) {
 					log.error("[{}] Failed to update Recording document {} with audioUrl: {}", metadataId, metadataId,
 							e.getMessage(), e);
+					throw e;
 				}
 			}
 		} else {
@@ -323,7 +320,14 @@ public class NhostUploadListenerService {
 			log.info("[{}] Successfully updated metadata for {} file upload.", metadataId,
 					isAudio ? "audio" : "PowerPoint");
 
-			if (!isAudio) {
+			if (isAudio) {
+				AudioProcessingMessage transcriptionMessage = new AudioProcessingMessage();
+				transcriptionMessage.setMetadataId(metadataId);
+				transcriptionMessage.setUserId(userId);
+				transcriptionMessage.setNhostFileId(nhostFileId);
+				publishConfirmed(RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY, transcriptionMessage);
+				log.info("[{}] Durable upload committed; transcription message published.", metadataId);
+			} else {
 				log.info("[{}] PowerPoint metadata updated. Sending message to PPTX conversion queue.", metadataId);
 				AudioProcessingMessage conversionMessage = new AudioProcessingMessage();
 				conversionMessage.setMetadataId(metadataId);
@@ -344,6 +348,18 @@ public class NhostUploadListenerService {
 			log.error("[{}] Failed to update metadata for {} file upload: {}", metadataId,
 					isAudio ? "audio" : "PowerPoint", e.getMessage(), e);
 			updateStatus(metadataId, userId, ProcessingStatus.FAILED, "Failed to update metadata after Nhost upload");
+			throw e;
+		} catch (Exception e) {
+			throw new IllegalStateException("Failed to publish processing message after durable upload", e);
+		}
+	}
+
+	private void publishConfirmed(String routingKey, AudioProcessingMessage message) throws Exception {
+		CorrelationData correlation = new CorrelationData(UUID.randomUUID().toString());
+		rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME, routingKey, message, correlation);
+		CorrelationData.Confirm confirm = correlation.getFuture().get(10, TimeUnit.SECONDS);
+		if (!confirm.isAck()) {
+			throw new IllegalStateException("RabbitMQ rejected message: " + confirm.getReason());
 		}
 	}
 

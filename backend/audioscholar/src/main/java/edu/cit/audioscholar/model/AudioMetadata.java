@@ -49,6 +49,12 @@ public class AudioMetadata {
 	private boolean pdfConversionComplete = false;
 	private boolean audioOnly = false;
 	private boolean audioUploadComplete = false;
+	private String processingStage;
+	private Integer transcriptionChunksTotal;
+	private Integer transcriptionChunksCompleted;
+	private Timestamp transcriptionStartedAt;
+	private Timestamp transcriptionDeadlineAt;
+	private Timestamp quotaRetryAt;
 
 	@JsonProperty("gptSummary")
 	private String gptSummary;
@@ -365,6 +371,54 @@ public class AudioMetadata {
 		this.audioUploadComplete = audioUploadComplete;
 	}
 
+	public String getProcessingStage() {
+		return processingStage;
+	}
+
+	public void setProcessingStage(String processingStage) {
+		this.processingStage = processingStage;
+	}
+
+	public Integer getTranscriptionChunksTotal() {
+		return transcriptionChunksTotal;
+	}
+
+	public void setTranscriptionChunksTotal(Integer transcriptionChunksTotal) {
+		this.transcriptionChunksTotal = transcriptionChunksTotal;
+	}
+
+	public Integer getTranscriptionChunksCompleted() {
+		return transcriptionChunksCompleted;
+	}
+
+	public void setTranscriptionChunksCompleted(Integer transcriptionChunksCompleted) {
+		this.transcriptionChunksCompleted = transcriptionChunksCompleted;
+	}
+
+	public Timestamp getTranscriptionStartedAt() {
+		return transcriptionStartedAt;
+	}
+
+	public void setTranscriptionStartedAt(Timestamp transcriptionStartedAt) {
+		this.transcriptionStartedAt = transcriptionStartedAt;
+	}
+
+	public Timestamp getTranscriptionDeadlineAt() {
+		return transcriptionDeadlineAt;
+	}
+
+	public void setTranscriptionDeadlineAt(Timestamp transcriptionDeadlineAt) {
+		this.transcriptionDeadlineAt = transcriptionDeadlineAt;
+	}
+
+	public Timestamp getQuotaRetryAt() {
+		return quotaRetryAt;
+	}
+
+	public void setQuotaRetryAt(Timestamp quotaRetryAt) {
+		this.quotaRetryAt = quotaRetryAt;
+	}
+
 	public String getGptSummary() {
 		return gptSummary;
 	}
@@ -459,6 +513,18 @@ public class AudioMetadata {
 		map.put("pdfConversionComplete", pdfConversionComplete);
 		map.put("audioOnly", audioOnly);
 		map.put("audioUploadComplete", audioUploadComplete);
+		if (processingStage != null)
+			map.put("processingStage", processingStage);
+		if (transcriptionChunksTotal != null)
+			map.put("transcriptionChunksTotal", transcriptionChunksTotal);
+		if (transcriptionChunksCompleted != null)
+			map.put("transcriptionChunksCompleted", transcriptionChunksCompleted);
+		if (transcriptionStartedAt != null)
+			map.put("transcriptionStartedAt", transcriptionStartedAt);
+		if (transcriptionDeadlineAt != null)
+			map.put("transcriptionDeadlineAt", transcriptionDeadlineAt);
+		if (quotaRetryAt != null)
+			map.put("quotaRetryAt", quotaRetryAt);
 
 		if (gptSummary != null)
 			map.put("gptSummary", gptSummary);
@@ -554,6 +620,17 @@ public class AudioMetadata {
 		else
 			meta.setAudioUploadComplete(false);
 
+		meta.setProcessingStage((String) map.get("processingStage"));
+		Object chunksTotal = map.get("transcriptionChunksTotal");
+		if (chunksTotal instanceof Number)
+			meta.setTranscriptionChunksTotal(((Number) chunksTotal).intValue());
+		Object chunksCompleted = map.get("transcriptionChunksCompleted");
+		if (chunksCompleted instanceof Number)
+			meta.setTranscriptionChunksCompleted(((Number) chunksCompleted).intValue());
+		meta.setTranscriptionStartedAt((Timestamp) map.get("transcriptionStartedAt"));
+		meta.setTranscriptionDeadlineAt((Timestamp) map.get("transcriptionDeadlineAt"));
+		meta.setQuotaRetryAt((Timestamp) map.get("quotaRetryAt"));
+
 		meta.setGptSummary((String) map.get("gptSummary"));
 		meta.setWaitingForPdf((Boolean) map.get("waitingForPdf"));
 
@@ -589,7 +666,13 @@ public class AudioMetadata {
 				&& transcriptionComplete == that.transcriptionComplete
 				&& pdfConversionComplete == that.pdfConversionComplete && audioOnly == that.audioOnly
 				&& audioUploadComplete == that.audioUploadComplete && Objects.equals(gptSummary, that.gptSummary)
-				&& Objects.equals(waitingForPdf, that.waitingForPdf);
+				&& Objects.equals(waitingForPdf, that.waitingForPdf)
+				&& Objects.equals(processingStage, that.processingStage)
+				&& Objects.equals(transcriptionChunksTotal, that.transcriptionChunksTotal)
+				&& Objects.equals(transcriptionChunksCompleted, that.transcriptionChunksCompleted)
+				&& Objects.equals(transcriptionStartedAt, that.transcriptionStartedAt)
+				&& Objects.equals(transcriptionDeadlineAt, that.transcriptionDeadlineAt)
+				&& Objects.equals(quotaRetryAt, that.quotaRetryAt);
 	}
 
 	@Override
@@ -599,7 +682,8 @@ public class AudioMetadata {
 				tempPptxFilePath, durationSeconds, favoriteCount, lastUpdated, originalPptxFileName, pptxFileSize,
 				pptxContentType, nhostPptxFileId, pptxNhostUrl, generatedPdfNhostFileId, generatedPdfUrl,
 				googleFilesApiPdfUri, convertApiPdfUrl, transcriptionComplete, pdfConversionComplete, audioOnly,
-				audioUploadComplete, gptSummary, waitingForPdf);
+				audioUploadComplete, gptSummary, waitingForPdf, processingStage, transcriptionChunksTotal,
+				transcriptionChunksCompleted, transcriptionStartedAt, transcriptionDeadlineAt, quotaRetryAt);
 	}
 
 	@Override

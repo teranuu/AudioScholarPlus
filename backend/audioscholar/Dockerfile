@@ -16,7 +16,7 @@ FROM eclipse-temurin:24-jre-alpine
 WORKDIR /app
 
 # Install font libraries (Required for Apache POI/PDFBox) - Alpine equivalent
-RUN apk add --no-cache fontconfig ttf-dejavu
+RUN apk add --no-cache fontconfig ttf-dejavu ffmpeg
 
 # Copy the built application
 COPY --from=builder /app/target/audioscholar-*.jar app.jar
