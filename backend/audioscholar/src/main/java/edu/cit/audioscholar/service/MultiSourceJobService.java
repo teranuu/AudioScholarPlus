@@ -41,6 +41,7 @@ public class MultiSourceJobService {
 	private final SourceTranscriptService sourceTranscriptService;
 	private final MergedSummaryRepository mergedSummaryRepository;
 	private final MultiSourceJobRepository multiSourceJobRepository;
+	private final AudioProcessingGuardrailService guardrailService;
 	private final Path tempDir;
 	private final String maxFileSizeValue;
 
@@ -48,7 +49,8 @@ public class MultiSourceJobService {
 			SummaryService summaryService, DeduplicationService deduplicationService,
 			SourceAttributionService sourceAttributionService, SourceFileService sourceFileService,
 			SourceTranscriptService sourceTranscriptService, MergedSummaryRepository mergedSummaryRepository,
-			MultiSourceJobRepository multiSourceJobRepository, @Value("${app.temp-file-dir}") String tempDirStr,
+			MultiSourceJobRepository multiSourceJobRepository, AudioProcessingGuardrailService guardrailService,
+			@Value("${app.temp-file-dir}") String tempDirStr,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue) throws IOException {
 		this.geminiService = geminiService;
 		this.qualityReportService = qualityReportService;
@@ -59,6 +61,7 @@ public class MultiSourceJobService {
 		this.sourceTranscriptService = sourceTranscriptService;
 		this.mergedSummaryRepository = mergedSummaryRepository;
 		this.multiSourceJobRepository = multiSourceJobRepository;
+		this.guardrailService = guardrailService;
 		this.tempDir = Path.of(tempDirStr);
 		this.maxFileSizeValue = maxFileSizeValue;
 		Files.createDirectories(this.tempDir);
@@ -80,14 +83,25 @@ public class MultiSourceJobService {
 
 		List<Path> tempFiles = new ArrayList<>();
 		try {
+			List<AudioProcessingGuardrailService.GuardrailResult> guardrailResults = new ArrayList<>();
+			for (MultipartFile file : files) {
+				Path tempFile = saveTemp(file);
+				tempFiles.add(tempFile);
+				guardrailResults.add(guardrailService.validateAudioFile(tempFile, file.getOriginalFilename()));
+			}
+			guardrailService.validateMultiSourceTotals(guardrailResults);
+
 			List<SourceFile> sourceFiles = new ArrayList<>();
 			for (int i = 0; i < files.size(); i++) {
 				MultipartFile file = files.get(i);
 				String sourceLabel = "Source " + (char) ('A' + i);
-				Path tempFile = saveTemp(file);
-				tempFiles.add(tempFile);
+				Path tempFile = tempFiles.get(i);
+				AudioProcessingGuardrailService.GuardrailResult guardrail = guardrailResults.get(i);
 
 				SourceFile sourceFile = sourceFileService.createSourceFile(job.getJobId(), sourceLabel, file, tempFile);
+				sourceFile.setDurationSeconds(guardrail.durationSeconds());
+				sourceFile.setEstimatedGeminiAudioTokens(guardrail.estimatedAudioTokens());
+				sourceFile.setAudioFingerprint(guardrail.fingerprint());
 				QualityReport report = qualityReportService.analyze(job.getJobId() + "-" + sourceLabel, tempFile);
 				sourceFile.setQualityReport(report);
 
@@ -207,12 +221,7 @@ public class MultiSourceJobService {
 	}
 
 	private void validateFiles(List<MultipartFile> files) {
-		if (files == null || files.size() < 2) {
-			throw new IllegalArgumentException("Select at least two audio or video sources.");
-		}
-		if (files.size() > 5) {
-			throw new IllegalArgumentException("Select no more than five sources.");
-		}
+		guardrailService.validateFileCount(files);
 		long maxBytes = DataSize.parse(maxFileSizeValue).toBytes();
 		for (MultipartFile file : files) {
 			if (file == null || file.isEmpty()) {

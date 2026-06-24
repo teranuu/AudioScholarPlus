@@ -25,6 +25,10 @@ public class RobustTaskExecutor {
 			try {
 				return task.get();
 			} catch (Exception e) {
+				if (containsNonRetryableFailure(e)) {
+					log.error("[{}] Cannot retry {}. Error: {}", contextId, taskDescription, e.getMessage());
+					throw e;
+				}
 				log.error("[{}] Failed to {}. Retrying in {}ms. Error: {}", contextId, taskDescription, delayMs,
 						e.getMessage());
 

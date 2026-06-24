@@ -1,6 +1,5 @@
 package edu.cit.audioscholar.service;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -24,9 +23,6 @@ public class RecommendationService {
 
 	@Autowired
 	private FirebaseService firebaseService;
-
-	@Autowired
-	private GeminiService geminiService;
 
 	@Autowired
 	private LearningMaterialRecommenderService learningMaterialRecommenderService;
@@ -114,29 +110,8 @@ public class RecommendationService {
 			firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
 			log.info("[{}] Updated metadata status to GENERATING_RECOMMENDATIONS", metadataId);
 
-			String recommendationsJson;
-			if (metadata.isAudioOnly()) {
-				log.info("[{}] Generating recommendations for audio-only recording", metadataId);
-				recommendationsJson = geminiService.generateRecommendationsAudioOnly(summaryText, transcriptText,
-						metadataId);
-			} else {
-				log.info("[{}] Generating recommendations for recording with PDF", metadataId);
-				log.warn("[{}] generateRecommendations method not found, using audio-only version as fallback",
-						metadataId);
-				recommendationsJson = geminiService.generateRecommendationsAudioOnly(summaryText, transcriptText,
-						metadataId);
-			}
-
-			List<LearningRecommendation> recommendations = parseRecommendationsResponse(recommendationsJson,
+			log.info("[{}] Generating recommendations from stored summary topics without an extra Gemini call.",
 					metadataId);
-			if (recommendations.isEmpty()) {
-				log.info(
-						"[{}] No recommendations parsed from Gemini response. Using learning material recommender service.",
-						metadataId);
-			} else {
-				log.info("[{}] Successfully parsed {} recommendations from Gemini response", metadataId,
-						recommendations.size());
-			}
 
 			List<LearningRecommendation> savedRecommendations = learningMaterialRecommenderService
 					.generateAndSaveRecommendations(userId, recordingId, metadata.getSummaryId());
@@ -168,35 +143,6 @@ public class RecommendationService {
 			log.error("[{}] {}", metadataId, errorMsg, e);
 			return errorResponseToString("Recommendation Error", errorMsg);
 		}
-	}
-
-	private List<LearningRecommendation> parseRecommendationsResponse(String recommendationsJson, String metadataId) {
-		List<LearningRecommendation> recommendations = new ArrayList<>();
-		try {
-			log.info("[{}] Parsing recommendations JSON (length: {})", metadataId,
-					recommendationsJson != null ? recommendationsJson.length() : 0);
-
-			if (recommendationsJson == null || recommendationsJson.isBlank()) {
-				log.warn("[{}] Recommendations JSON is null or empty", metadataId);
-				return recommendations;
-			}
-
-			try {
-				if (recommendationsJson.trim().startsWith("[")) {
-					recommendations = objectMapper.readValue(recommendationsJson, objectMapper.getTypeFactory()
-							.constructCollectionType(List.class, LearningRecommendation.class));
-					log.info("[{}] Successfully parsed {} recommendations from JSON array", metadataId,
-							recommendations.size());
-				} else {
-					log.warn("[{}] Non-array JSON format received, complex parsing required", metadataId);
-				}
-			} catch (JsonProcessingException jpe) {
-				log.warn("[{}] Could not parse JSON as recommendation array: {}", metadataId, jpe.getMessage());
-			}
-		} catch (Exception e) {
-			log.error("[{}] Error parsing recommendations JSON: {}", metadataId, e.getMessage(), e);
-		}
-		return recommendations;
 	}
 
 	private String getSummaryText(AudioMetadata metadata) {

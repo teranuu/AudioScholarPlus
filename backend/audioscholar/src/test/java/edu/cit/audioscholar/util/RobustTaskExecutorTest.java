@@ -55,4 +55,17 @@ class RobustTaskExecutorTest {
 
 		assertEquals(1, attempts.get());
 	}
+
+	@Test
+	void infiniteRetryStopsImmediatelyForPermanentFailure() {
+		AtomicInteger attempts = new AtomicInteger();
+
+		assertThrows(NonRetryableTaskException.class,
+				() -> executor.executeWithInfiniteRetry("recording-1", "summarize", (Supplier<String>) () -> {
+					attempts.incrementAndGet();
+					throw new NonRetryableTaskException("input too large");
+				}));
+
+		assertEquals(1, attempts.get());
+	}
 }

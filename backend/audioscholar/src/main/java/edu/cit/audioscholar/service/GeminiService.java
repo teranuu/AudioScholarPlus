@@ -40,6 +40,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
+import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.exception.KeysExhaustedException;
 import edu.cit.audioscholar.exception.NonRetryableTaskException;
@@ -97,13 +98,21 @@ public class GeminiService {
 	private final ObjectMapper objectMapper = new ObjectMapper();
 	private final GeminiSmartRotationService rotationService;
 	private final PromptTemplateService promptTemplateService;
+	private final GeminiBudgetService geminiBudgetService;
+	private final AudioProcessingGuardrailService guardrailService;
+
+	@Value("${gemini.rotation.max-cycles:2}")
+	private int rotationMaxCycles;
 
 	public GeminiService(RestTemplate restTemplate, KeyRotationManager keyRotationManager,
-			GeminiSmartRotationService rotationService, PromptTemplateService promptTemplateService) {
+			GeminiSmartRotationService rotationService, PromptTemplateService promptTemplateService,
+			GeminiBudgetService geminiBudgetService, AudioProcessingGuardrailService guardrailService) {
 		this.restTemplate = restTemplate;
 		this.keyRotationManager = keyRotationManager;
 		this.rotationService = rotationService;
 		this.promptTemplateService = promptTemplateService;
+		this.geminiBudgetService = geminiBudgetService;
+		this.guardrailService = guardrailService;
 	}
 
 	/**
@@ -111,9 +120,11 @@ public class GeminiService {
 	 */
 	public String callGeminiSummarizationAPIWithFallback(String promptText, String transcriptText) {
 		try {
-			return rotationService.executeWithInfiniteRotation(targetModel -> {
+			long estimatedInputTokens = guardrailService.validateSummaryInput(promptText + "\n" + transcriptText, 0);
+			return rotationService.executeWithRotation(targetModel -> {
 				try {
 					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
+					reserveGemini("summarization.generateContent", estimatedInputTokens, null);
 					String result = callGeminiSummarizationAPISingleModel(promptText, transcriptText, targetModel,
 							currentKey);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -129,7 +140,7 @@ public class GeminiService {
 						throw (RuntimeException) e;
 					throw new RuntimeException(e);
 				}
-			});
+			}, rotationMaxCycles);
 		} catch (Exception e) {
 			log.error("Unexpected error in enhanced summarization API: {}", e.getMessage(), e);
 			return createErrorResponse("Unexpected Error", e.getMessage());
@@ -221,6 +232,9 @@ public class GeminiService {
 		String mimeType = getAudioMimeType(fileName);
 		long fileSize = Files.size(audioFilePath);
 		String displayName = fileName;
+		AudioProcessingGuardrailService.GuardrailResult guardrail = guardrailService.validateAudioFile(audioFilePath,
+				displayName);
+		long estimatedInputTokens = guardrail.estimatedAudioTokens();
 
 		String uploadKey = null;
 		String fileUri = null;
@@ -232,7 +246,7 @@ public class GeminiService {
 
 			String activeFileUri = fileUri;
 			String activeFileKey = uploadKey;
-			String result = transcribeActiveFile(activeFileUri, mimeType, activeFileKey);
+			String result = transcribeActiveFile(activeFileUri, mimeType, activeFileKey, estimatedInputTokens);
 			keyRotationManager.reportSuccess(KeyProvider.GEMINI, activeFileKey);
 			return result;
 
@@ -240,6 +254,8 @@ public class GeminiService {
 			log.error("IOException during file handling or upload: {}", e.getMessage(), e);
 			throw e;
 		} catch (KeysExhaustedException e) {
+			throw new GeminiRateLimitException(e.getMessage(), e.getRetryAt(), e);
+		} catch (GeminiBudgetExceededException e) {
 			throw new GeminiRateLimitException(e.getMessage(), e.getRetryAt(), e);
 		} catch (NonRetryableTaskException e) {
 			log.error("Gemini permanently rejected the transcription request: {}", e.getMessage(), e);
@@ -254,7 +270,7 @@ public class GeminiService {
 		}
 	}
 
-	private String transcribeActiveFile(String fileUri, String mimeType, String apiKey)
+	private String transcribeActiveFile(String fileUri, String mimeType, String apiKey, long estimatedInputTokens)
 			throws GeminiRateLimitException {
 		RuntimeException lastFailure = null;
 		GeminiRateLimitException lastRateLimit = null;
@@ -263,6 +279,7 @@ public class GeminiService {
 			if (normalizedModel.isEmpty())
 				continue;
 			try {
+				reserveGemini("transcription.generateContent", estimatedInputTokens, null);
 				return callGeminiTranscriptionAPISingleModel(fileUri, mimeType, normalizedModel, apiKey);
 			} catch (HttpClientErrorException e) {
 				int statusCode = e.getStatusCode().value();
@@ -278,6 +295,8 @@ public class GeminiService {
 						"Gemini rejected the transcription request with status " + statusCode, e);
 			} catch (HttpServerErrorException e) {
 				lastFailure = e;
+			} catch (GeminiBudgetExceededException e) {
+				lastRateLimit = new GeminiRateLimitException(e.getMessage(), e.getRetryAt(), e);
 			}
 		}
 		if (lastRateLimit != null) {
@@ -476,6 +495,9 @@ public class GeminiService {
 		String mimeType = getAudioMimeType(fileName);
 		long fileSize = Files.size(audioFilePath);
 		String displayName = fileName;
+		AudioProcessingGuardrailService.GuardrailResult guardrail = guardrailService.validateAudioFile(audioFilePath,
+				displayName);
+		long estimatedInputTokens = guardrail.estimatedAudioTokens();
 
 		try {
 			String uploadKey = keyRotationManager.getKey(KeyProvider.GEMINI);
@@ -514,6 +536,7 @@ public class GeminiService {
 						.queryParam("key", currentKey).buildAndExpand(TRANSCRIPTION_MODEL_NAME).toUriString();
 
 				try {
+					reserveGemini("legacy-transcription.generateContent", estimatedInputTokens, null);
 					ResponseEntity<String> response = restTemplate.exchange(generateContentUrl, HttpMethod.POST,
 							requestEntity, String.class);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -620,6 +643,7 @@ public class GeminiService {
 
 	private String uploadFile(Path filePath, String mimeType, long fileSize, String displayName, String apiKey)
 			throws IOException, ApiException {
+		reserveGemini("files.upload", 0, null);
 		String initiateUrl = UriComponentsBuilder.fromUriString(FILES_API_BASE_URL + FILES_API_UPLOAD_PATH)
 				.queryParam("key", apiKey).toUriString();
 
@@ -746,6 +770,10 @@ public class GeminiService {
 		}
 	}
 
+	private void reserveGemini(String operation, long inputTokens, String contextId) {
+		geminiBudgetService.reserve(operation, inputTokens, null, contextId);
+	}
+
 	public String callGeminiSummarizationAPI(String promptText, String transcriptText) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
@@ -789,12 +817,14 @@ public class GeminiService {
 		log.info("Calling Gemini Summarization API (Model: {}, JSON Schema Mode)", SUMMARIZATION_MODEL_NAME);
 		log.trace("Summarization prompt text length: {}", updatedPromptText.length());
 		log.trace("Summarization transcript text length: {}", transcriptText.length());
+		long estimatedInputTokens = guardrailService.validateSummaryInput(updatedPromptText + "\n" + transcriptText, 0);
 
 		for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 			String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 			String summarizationUrl = UriComponentsBuilder.fromUriString(API_BASE_URL + GENERATE_CONTENT_PATH)
 					.queryParam("key", currentKey).buildAndExpand(SUMMARIZATION_MODEL_NAME).toUriString();
 			try {
+				reserveGemini("legacy-summarization.generateContent", estimatedInputTokens, null);
 				ResponseEntity<String> response = restTemplate.exchange(summarizationUrl, HttpMethod.POST,
 						requestEntity, String.class);
 				keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -873,24 +903,27 @@ public class GeminiService {
 		}
 
 		String pdfFileUri = null;
+		String uploadKey = null;
 
 		try {
 			log.info("[{}] Using local PDF file: {}", metadataId, pdfFilePath.getFileName());
 
 			long pdfSize = Files.size(pdfFilePath);
+			long estimatedInputTokens = guardrailService.validateSummaryInput(transcriptText, pdfSize);
 			String pdfDisplayName = "context_" + metadataId + ".pdf";
 			log.info("[{}] Uploading PDF ({}) to Google Files API...", metadataId, pdfDisplayName);
 
-			String uploadKey = keyRotationManager.getKey(KeyProvider.GEMINI);
+			uploadKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 			pdfFileUri = uploadFile(pdfFilePath, "application/pdf", pdfSize, pdfDisplayName, uploadKey);
 			log.info("[{}] PDF uploaded successfully to Google Files API. URI: {}", metadataId, pdfFileUri);
 
 			// Make the file URI effectively final for the lambda
 			final String finalPdfFileUri = pdfFileUri;
 
-			return rotationService.executeWithInfiniteRotation(targetModel -> {
+			return rotationService.executeWithRotation(targetModel -> {
 				try {
 					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
+					reserveGemini("summary-with-pdf.generateContent", estimatedInputTokens, metadataId);
 					String result = callGeminiSummarizationWithPdfContextSingleModel(transcriptText, finalPdfFileUri,
 							metadataId, targetModel, currentKey, outputType);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -900,7 +933,7 @@ public class GeminiService {
 						throw (RuntimeException) e;
 					throw new RuntimeException(e);
 				}
-			});
+			}, rotationMaxCycles);
 
 		} catch (IOException e) {
 			log.error("[{}] IOException during PDF upload: {}", metadataId, e.getMessage(), e);
@@ -911,6 +944,10 @@ public class GeminiService {
 		} catch (Exception e) {
 			log.error("[{}] Unexpected error during combined summarization setup: {}", metadataId, e.getMessage(), e);
 			return createErrorResponse("Unexpected Summarization Setup Error", e.getMessage());
+		} finally {
+			if (pdfFileUri != null && uploadKey != null) {
+				deleteGoogleFileQuietly(pdfFileUri, uploadKey);
+			}
 		}
 	}
 
@@ -1006,10 +1043,12 @@ public class GeminiService {
 
 		try {
 			log.info("[{}] Using Google Files API URI directly: {}", metadataId, googleFileUri);
+			long estimatedInputTokens = guardrailService.validateSummaryInput(transcriptText, 0);
 
-			return rotationService.executeWithInfiniteRotation(targetModel -> {
+			return rotationService.executeWithRotation(targetModel -> {
 				try {
 					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
+					reserveGemini("summary-with-google-file.generateContent", estimatedInputTokens, metadataId);
 					String result = callGeminiSummarizationWithPdfContextSingleModel(transcriptText, googleFileUri,
 							metadataId, targetModel, currentKey, outputType);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -1019,7 +1058,7 @@ public class GeminiService {
 						throw (RuntimeException) e;
 					throw new RuntimeException(e);
 				}
-			});
+			}, rotationMaxCycles);
 
 		} catch (Exception e) {
 			log.error("[{}] Unexpected error during combined summarization setup: {}", metadataId, e.getMessage(), e);
@@ -1262,9 +1301,11 @@ public class GeminiService {
 		}
 
 		try {
-			return rotationService.executeWithInfiniteRotation(targetModel -> {
+			long estimatedInputTokens = guardrailService.validateSummaryInput(transcriptText, 0);
+			return rotationService.executeWithRotation(targetModel -> {
 				try {
 					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
+					reserveGemini("transcript-summary.generateContent", estimatedInputTokens, metadataId);
 					String result = callGeminiTranscriptOnlySummarizationSingleModel(transcriptText, metadataId,
 							targetModel, currentKey, outputType);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -1274,7 +1315,7 @@ public class GeminiService {
 						throw (RuntimeException) e;
 					throw new RuntimeException(e);
 				}
-			});
+			}, rotationMaxCycles);
 		} catch (Exception e) {
 			log.error("[{}] Unexpected error during transcript-only summarization: {}", metadataId, e.getMessage(), e);
 			return createErrorResponse("Summarization Error", "Unexpected error: " + e.getMessage());
@@ -1420,6 +1461,8 @@ public class GeminiService {
 
 			log.info("[{}] Calling Gemini API (Model: {}) for audio-only recommendations with schema...", metadataId,
 					SUMMARIZATION_MODEL_NAME);
+			long estimatedInputTokens = guardrailService
+					.validateSummaryInput(summaryText + "\n" + (transcriptText != null ? transcriptText : ""), 0);
 
 			for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
 				String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
@@ -1427,6 +1470,7 @@ public class GeminiService {
 						.queryParam("key", currentKey).buildAndExpand(SUMMARIZATION_MODEL_NAME).toUriString();
 
 				try {
+					reserveGemini("recommendations.generateContent", estimatedInputTokens, metadataId);
 					ResponseEntity<String> response = restTemplate.exchange(generateContentUrl, HttpMethod.POST,
 							requestEntity, String.class);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);

@@ -58,13 +58,23 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
 	@ExceptionHandler(InvalidAudioFileException.class)
 	public ResponseEntity<Object> handleInvalidAudioFileException(InvalidAudioFileException ex, WebRequest request) {
+		return badRequest(ex.getMessage(), request, "Invalid audio file detected");
+	}
+
+	@ExceptionHandler(ProcessingGuardrailException.class)
+	public ResponseEntity<Object> handleProcessingGuardrailException(ProcessingGuardrailException ex,
+			WebRequest request) {
+		return badRequest(ex.getMessage(), request, "Processing guardrail rejected request");
+	}
+
+	private ResponseEntity<Object> badRequest(String message, WebRequest request, String logPrefix) {
 		Map<String, Object> body = new HashMap<>();
 		body.put("timestamp", System.currentTimeMillis());
 		body.put("status", HttpStatus.BAD_REQUEST.value());
 		body.put("error", "Bad Request");
-		body.put("message", ex.getMessage());
+		body.put("message", message);
 
-		log.warn("Invalid audio file detected for request [{}]: {}", request.getDescription(false), ex.getMessage());
+		log.warn("{} for request [{}]: {}", logPrefix, request.getDescription(false), message);
 
 		return new ResponseEntity<>(body, HttpStatus.BAD_REQUEST);
 	}

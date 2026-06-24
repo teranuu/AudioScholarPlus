@@ -52,6 +52,7 @@ public class AudioProcessingService {
 	private final NhostStorageService nhostStorageService;
 	private final LearningMaterialRecommenderService learningMaterialRecommenderService;
 	private final RecordingService recordingService;
+	private final AudioProcessingGuardrailService guardrailService;
 	private final String maxFileSizeValue;
 	private final String tempMinFreeSpaceValue;
 	private final Path tempFileDir;
@@ -63,6 +64,7 @@ public class AudioProcessingService {
 	public AudioProcessingService(FirebaseService firebaseService, RabbitTemplate rabbitTemplate,
 			NhostStorageService nhostStorageService,
 			LearningMaterialRecommenderService learningMaterialRecommenderService, RecordingService recordingService,
+			AudioProcessingGuardrailService guardrailService,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue,
 			@Value("${app.temp-min-free-space:100MB}") String tempMinFreeSpaceValue,
 			@Value("${app.temp-file-dir}") String tempFileDirStr, CacheManager cacheManager,
@@ -72,6 +74,7 @@ public class AudioProcessingService {
 		this.nhostStorageService = nhostStorageService;
 		this.learningMaterialRecommenderService = learningMaterialRecommenderService;
 		this.recordingService = recordingService;
+		this.guardrailService = guardrailService;
 		this.maxFileSizeValue = maxFileSizeValue;
 		this.tempMinFreeSpaceValue = tempMinFreeSpaceValue;
 
@@ -134,6 +137,8 @@ public class AudioProcessingService {
 			}
 			tempAudioPath = saveTemporaryFile(audioFile, "audio");
 			log.info("Audio file saved temporarily to: {}", tempAudioPath.toAbsolutePath());
+			AudioProcessingGuardrailService.GuardrailResult audioGuardrail = guardrailService
+					.validateAudioFile(tempAudioPath, audioFile.getOriginalFilename());
 
 			if (powerpointFile != null) {
 				tempPptxPath = saveTemporaryFile(powerpointFile, "pptx");
@@ -161,6 +166,9 @@ public class AudioProcessingService {
 			initialMetadata.setFileSize(audioFile.getSize());
 			initialMetadata.setContentType(originalAudioContentType);
 			initialMetadata.setTempFilePath(tempAudioPath.toAbsolutePath().toString());
+			initialMetadata.setDurationSeconds(Math.toIntExact(audioGuardrail.durationSeconds()));
+			initialMetadata.setEstimatedGeminiAudioTokens(audioGuardrail.estimatedAudioTokens());
+			initialMetadata.setAudioFingerprint(audioGuardrail.fingerprint());
 
 			initialMetadata.setTitle(StringUtils.hasText(title) ? title : originalAudioFilename);
 			initialMetadata.setDescription(description);
@@ -297,6 +305,10 @@ public class AudioProcessingService {
 		} catch (IOException | FirestoreInteractionException e) {
 			log.error("Error during initial file saving or metadata creation for user {}: {}", userId, e.getMessage(),
 					e);
+			deleteTemporaryFile(tempAudioPath);
+			deleteTemporaryFile(tempPptxPath);
+			throw e;
+		} catch (RuntimeException e) {
 			deleteTemporaryFile(tempAudioPath);
 			deleteTemporaryFile(tempPptxPath);
 			throw e;

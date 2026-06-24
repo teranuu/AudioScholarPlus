@@ -49,6 +49,7 @@ public class AudioTranscriptionListenerService {
 	private final NhostStorageService nhostStorageService;
 	private final TranscriptionOrchestrator transcriptionOrchestrator;
 	private final QualityReportService qualityReportService;
+	private final AudioProcessingGuardrailService guardrailService;
 	private final CacheManager cacheManager;
 	private final Path tempFileDir;
 	private final RabbitTemplate rabbitTemplate;
@@ -63,12 +64,14 @@ public class AudioTranscriptionListenerService {
 
 	public AudioTranscriptionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
 			TranscriptionOrchestrator transcriptionOrchestrator, QualityReportService qualityReportService,
-			CacheManager cacheManager, @Value("${app.temp-file-dir}") String tempFileDirStr,
-			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor) {
+			AudioProcessingGuardrailService guardrailService, CacheManager cacheManager,
+			@Value("${app.temp-file-dir}") String tempFileDirStr, RabbitTemplate rabbitTemplate,
+			RobustTaskExecutor robustTaskExecutor) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
 		this.transcriptionOrchestrator = transcriptionOrchestrator;
 		this.qualityReportService = qualityReportService;
+		this.guardrailService = guardrailService;
 		this.cacheManager = cacheManager;
 		this.tempFileDir = Paths.get(tempFileDirStr);
 		this.rabbitTemplate = rabbitTemplate;
@@ -151,6 +154,15 @@ public class AudioTranscriptionListenerService {
 										"Failed to download audio file (downloadAudioToFile returned null)");
 							}
 							downloadedAudioPath.set(tempFilePath);
+							AudioProcessingGuardrailService.GuardrailResult audioGuardrail = guardrailService
+									.validateAudioFile(tempFilePath, originalFileName);
+							Map<String, Object> guardrailUpdates = new HashMap<>();
+							guardrailUpdates.put("durationSeconds", Math.toIntExact(audioGuardrail.durationSeconds()));
+							guardrailUpdates.put("estimatedGeminiAudioTokens", audioGuardrail.estimatedAudioTokens());
+							guardrailUpdates.put("audioFingerprint", audioGuardrail.fingerprint());
+							guardrailUpdates.put("lastUpdated", Timestamp.now());
+							firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(),
+									metadataId, guardrailUpdates);
 
 							Integer durationSeconds = metadata.getDurationSeconds();
 							if (durationSeconds == null || durationSeconds <= 0) {

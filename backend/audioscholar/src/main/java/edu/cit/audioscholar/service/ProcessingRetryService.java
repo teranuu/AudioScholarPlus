@@ -122,6 +122,15 @@ public class ProcessingRetryService {
 				|| status == ProcessingStatus.PROCESSING_HALTED_UNSUITABLE_CONTENT) {
 			throw new IllegalStateException("This processing failure is not retryable");
 		}
+		String failureReason = metadata.getFailureReason();
+		if (StringUtils.hasText(failureReason)) {
+			String normalizedFailure = failureReason.toLowerCase(java.util.Locale.ROOT);
+			if (normalizedFailure.contains("duration exceeds") || normalizedFailure.contains("input exceeds")
+					|| normalizedFailure.contains("guardrail") || normalizedFailure.contains("unsupported")
+					|| normalizedFailure.contains("too large")) {
+				throw new IllegalStateException("This processing failure is not retryable");
+			}
+		}
 		if (status != ProcessingStatus.FAILED && status != ProcessingStatus.SUMMARY_FAILED) {
 			throw new IllegalStateException("Processing is active or already queued");
 		}

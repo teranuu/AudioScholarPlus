@@ -63,8 +63,11 @@ public class PptxConversionListenerService {
 			AudioMetadata metadata = AudioMetadata.fromMap(metadataMap);
 			ProcessingStatus currentStatus = metadata.getStatus();
 
+			boolean pdfAlreadyConverted = metadata.isPdfConversionComplete()
+					|| (metadata.getGeneratedPdfUrl() != null && !metadata.getGeneratedPdfUrl().isBlank())
+					|| (metadata.getConvertApiPdfUrl() != null && !metadata.getConvertApiPdfUrl().isBlank());
 			if (currentStatus == ProcessingStatus.SUMMARY_COMPLETE || currentStatus == ProcessingStatus.SUMMARIZING
-					|| currentStatus == ProcessingStatus.SUMMARIZATION_QUEUED) {
+					|| (currentStatus == ProcessingStatus.SUMMARIZATION_QUEUED && pdfAlreadyConverted)) {
 				logger.info("Skipping PDF conversion as summarization is already in progress or complete (status: {})",
 						currentStatus);
 				return;
