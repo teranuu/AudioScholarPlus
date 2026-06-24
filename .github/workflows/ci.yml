@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend Maven checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend/audioscholar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '24'
+          cache: maven
+      - name: Make Maven wrapper executable
+        run: chmod +x ./mvnw
+      - name: Run tests
+        run: ./mvnw -B test
+      - name: Check formatting
+        run: ./mvnw -B spotless:check
+      - name: Dependency vulnerability scan
+        env:
+          NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
+        run: |
+          if [ -z "$NVD_API_KEY" ]; then
+            echo "::warning::Skipping OWASP Dependency-Check because NVD_API_KEY is not configured."
+            exit 0
+          fi
+          ./mvnw -B dependency-check:check
+
+  web:
+    name: Web npm checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend_web/audioscholar-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend_web/audioscholar-app/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Test
+        run: npm run test
+      - name: Build
+        run: npm run build
+      - name: Audit production dependency risk
+        run: npm audit --audit-level=high
+
+  mobile:
+    name: Mobile Gradle checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend_mobile/AudioScholar
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+      - name: Check required Firebase config
+        id: firebase_config
+        run: |
+          if [ -f app/google-services.json ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping mobile Gradle checks because app/google-services.json is intentionally untracked. Add it through repository/CI secrets before enforcing mobile CI."
+          fi
+      - name: Unit tests
+        if: steps.firebase_config.outputs.available == 'true'
+        run: ./gradlew test
+      - name: Android lint
+        if: steps.firebase_config.outputs.available == 'true'
+        run: ./gradlew lint
+      - name: Assemble debug APK
+        if: steps.firebase_config.outputs.available == 'true'
+        env:
+          BASE_URL: http://10.0.2.2:8080/
+        run: ./gradlew assembleDebug

@@ -17,6 +17,7 @@ import java.util.concurrent.locks.ReentrantLock;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
@@ -37,6 +38,7 @@ import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
 
 @Service
+@ConditionalOnProperty(name = "app.rabbitmq.enabled", havingValue = "true")
 public class NhostUploadListenerService {
 
 	private static final Logger log = LoggerFactory.getLogger(NhostUploadListenerService.class);

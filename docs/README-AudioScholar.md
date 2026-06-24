@@ -110,8 +110,14 @@ GITHUB_CLIENT_ID=       # OAuth Client ID for GitHub
 GITHUB_CLIENT_SECRET=   # OAuth Client Secret for GitHub
 JWT_SECRET=             # Secret key for signing JWT tokens
 CONVERTAPI_SECRET=      # Secret for ConvertAPI (PPT to PDF)
+FIREBASE_WEB_API_KEY=   # Firebase web/API key loaded from environment
+FIREBASE_DATABASE_URL=  # Firebase Realtime Database URL
+GOOGLE_ANDROID_CLIENT_ID= # Android OAuth client ID
+NHOST_STORAGE_URL=     # Nhost storage endpoint
+APP_CORS_ALLOWED_ORIGINS= # Comma-separated allowed web/mobile origins
 GEMINI_API_KEYS=        # (Optional) Comma-separated list for key rotation
 CONVERTAPI_SECRETS=     # (Optional) Comma-separated list for key rotation
+NVD_API_KEY=             # Optional NVD key for OWASP dependency scanning
 ```
 
 ### 2. Backend Deployment (Render)
@@ -125,7 +131,7 @@ CONVERTAPI_SECRETS=     # (Optional) Comma-separated list for key rotation
 1.  Import the project into Vercel.
 2.  Set the **Root Directory** to `frontend_web/audioscholar-app`.
 3.  The build command should be detected automatically (`vite build`).
-4.  Configure any necessary public environment variables (e.g., Firebase config if not hardcoded).
+4.  Configure public Firebase values (`VITE_FIREBASE_*`) and the GitHub OAuth browser client ID (`VITE_GITHUB_CLIENT_ID`) through Vercel environment variables rather than hardcoding them.
 5.  Deploy.
 
 ### 4. Mobile App Build
@@ -142,17 +148,17 @@ Use these credentials to test the different user roles and access levels during 
 
 ### ADMIN USER
 *   **Email:** `admin@audioscholar.edu`
-*   **Password:** `Admin@2024Demo`
+*   **Password:** Provided through the approved demo secret channel (do not commit passwords).
 *   *Access:* Full system control, user management, analytics dashboard.
 
 ### REGULAR USER (Free Tier)
 *   **Email:** `student@audioscholar.edu`
-*   **Password:** `Student@2024Demo`
+*   **Password:** Provided through the approved demo secret channel (do not commit passwords).
 *   *Access:* Basic recording, standard summarization, foreground recording only.
 
 ### PREMIUM USER
 *   **Email:** `premium@audioscholar.edu`
-*   **Password:** `Premium@2024Demo`
+*   **Password:** Provided through the approved demo secret channel (do not commit passwords).
 *   *Access:* Background recording, auto-cloud sync, advanced summarization models.
 
 ---

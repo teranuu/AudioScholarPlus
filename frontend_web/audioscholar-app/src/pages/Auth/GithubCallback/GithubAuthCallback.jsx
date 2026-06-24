@@ -52,7 +52,7 @@ const GithubAuthCallback = () => {
 
         const response = await axios.post(verifyUrl, { code });
 
-        console.log('Backend verification response:', response.data);
+        console.log('Backend GitHub verification succeeded; auth response payload omitted from logs.');
 
         if (response.data && response.data.success && response.data.token && response.data.userId) {
           localStorage.setItem('AuthToken', response.data.token);

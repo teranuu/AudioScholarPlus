@@ -8,7 +8,7 @@ The Subscription System allows users to upgrade their accounts to unlock premium
 -   **Payment Methods:** Credit/Debit Card and E-Wallet (GCash/PayMaya).
 -   **Integration:**
     -   Frontend handles the UI and temporary storage of payment details.
-    -   Backend (`api/users/:id/role`) is called to update the user's role upon successful "payment" (Mocked).
+    -   Role changes are not client-authoritative. Premium roles must be granted by an admin or trusted server-side payment verification flow.
 
 ## Workflow
 
@@ -40,11 +40,11 @@ The Subscription System allows users to upgrade their accounts to unlock premium
 -   **Review:** Displays selected plan, price, and payment method summary.
 -   **Confirmation:**
     -   Clicking "Confirm and Pay" simulates a payment process (1.5s delay).
-    -   On success, it calls `PUT api/users/:id/role` to update the user's role to `ROLE_PREMIUM`.
-    -   A success modal confirms the upgrade and links to the user profile.
--   **Error Handling:** Handles API failures (e.g., auth issues) and displays appropriate error messages.
+    -   The checkout page records a non-authoritative `pendingSubscriptionTier` locally for UX only.
+    -   A confirmation modal explains that Premium access activates after server-side verification.
+-   **Error Handling:** Invalid or missing temporary checkout state redirects the user back to the appropriate setup step.
 
 ## Data Persistence
 
--   **Temporary:** `localStorage` is used to persist `selectedTier` and `paymentDetails` between steps in the funnel. These are cleared upon successful checkout.
+-   **Temporary:** `localStorage` is used to persist `selectedTier` and `paymentDetails` between steps in the funnel. These are cleared upon checkout confirmation; `pendingSubscriptionTier` may remain temporarily for non-authoritative UX messaging.
 -   **Permanent:** The user's role in the database is the source of truth for their subscription status.

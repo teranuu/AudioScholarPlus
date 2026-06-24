@@ -11,7 +11,7 @@ object FcmTokenProvider {
     suspend fun getCurrentToken(): String? {
         return try {
             val token = FirebaseMessaging.getInstance().token.await()
-            Log.d(TAG, "FCM token retrieved successfully via FcmTokenProvider: $token")
+            Log.d(TAG, "FCM token retrieved successfully via FcmTokenProvider (token omitted).")
             token
         } catch (e: Exception) {
             Log.e(TAG, "Failed to retrieve FCM token via FcmTokenProvider", e)

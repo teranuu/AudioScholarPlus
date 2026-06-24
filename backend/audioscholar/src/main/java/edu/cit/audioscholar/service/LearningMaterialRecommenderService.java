@@ -19,18 +19,9 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import com.google.api.core.ApiFuture;
 import com.google.api.services.youtube.model.ResourceId;
 import com.google.api.services.youtube.model.SearchResult;
 import com.google.api.services.youtube.model.SearchResultSnippet;
-import com.google.cloud.firestore.CollectionReference;
-import com.google.cloud.firestore.DocumentReference;
-import com.google.cloud.firestore.Firestore;
-import com.google.cloud.firestore.Query;
-import com.google.cloud.firestore.QueryDocumentSnapshot;
-import com.google.cloud.firestore.QuerySnapshot;
-import com.google.cloud.firestore.WriteBatch;
-import com.google.cloud.firestore.WriteResult;
 import com.google.common.base.Optional;
 import com.google.firebase.messaging.MulticastMessage;
 import com.optimaize.langdetect.LanguageDetector;
@@ -56,7 +47,6 @@ public class LearningMaterialRecommenderService {
 	private static final Logger log = LoggerFactory.getLogger(LearningMaterialRecommenderService.class);
 	private final LectureContentAnalyzerService lectureContentAnalyzerService;
 	private final YouTubeAPIClient youTubeAPIClient;
-	private final Firestore firestore;
 	private final RecordingService recordingService;
 	private final FirebaseService firebaseService;
 	private final UserService userService;
@@ -71,13 +61,12 @@ public class LearningMaterialRecommenderService {
 	private TextObjectFactory textObjectFactory;
 
 	public LearningMaterialRecommenderService(LectureContentAnalyzerService lectureContentAnalyzerService,
-			YouTubeAPIClient youTubeAPIClient, Firestore firestore, RecordingService recordingService,
+			YouTubeAPIClient youTubeAPIClient, RecordingService recordingService,
 			FirebaseService firebaseService, UserService userService,
 			@Value("${firebase.firestore.collection.recommendations}") String recommendationsCollectionName,
 			RobustTaskExecutor robustTaskExecutor) {
 		this.lectureContentAnalyzerService = lectureContentAnalyzerService;
 		this.youTubeAPIClient = youTubeAPIClient;
-		this.firestore = firestore;
 		this.recordingService = recordingService;
 		this.firebaseService = firebaseService;
 		this.userService = userService;
@@ -217,18 +206,25 @@ public class LearningMaterialRecommenderService {
 	}
 
 	private void updateStatusToCompletedWithWarnings(String recordingId) {
+
 		try {
-			// We need metadataId to update status. recordingId IS metadataId in this
-			// context usually.
-			// Let's assume recordingId == metadataId (which is true in this app structure)
+
 			Map<String, Object> updates = new HashMap<>();
+
 			updates.put("status", ProcessingStatus.COMPLETED_WITH_WARNINGS.name());
-			updates.put("lastUpdated", new Date()); // Using Date here, Firestore handles it
-			firestore.collection("audio_metadata").document(Objects.requireNonNull(recordingId)).update(updates);
+
+			updates.put("lastUpdated", new Date());
+
+			firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), recordingId, updates);
+
 			log.info("Updated status to COMPLETED_WITH_WARNINGS for recording ID: {}", recordingId);
+
 		} catch (Exception e) {
+
 			log.error("Failed to update status to COMPLETED_WITH_WARNINGS for recording ID: {}", recordingId, e);
+
 		}
+
 	}
 
 	private void notifyProcessingComplete(String userId, String recordingId, String summaryId) {
@@ -253,37 +249,29 @@ public class LearningMaterialRecommenderService {
 	}
 
 	private List<LearningRecommendation> saveRecommendationsBatch(List<LearningRecommendation> recommendations) {
+
 		if (recommendations == null || recommendations.isEmpty()) {
+
 			return Collections.emptyList();
+
 		}
-		String recordingId = recommendations.get(0).getRecordingId();
-		List<LearningRecommendation> recommendationsWithIds = new ArrayList<>();
+
 		try {
-			WriteBatch batch = firestore.batch();
-			for (LearningRecommendation recommendation : recommendations) {
-				DocumentReference docRef = firestore.collection(Objects.requireNonNull(recommendationsCollectionName))
-						.document();
-				recommendation.setRecommendationId(docRef.getId());
-				batch.set(docRef, recommendation);
-				recommendationsWithIds.add(recommendation);
-			}
-			log.info("Attempting to commit batch write of {} recommendations to Firestore for recording ID: {}",
-					recommendationsWithIds.size(), recordingId);
-			ApiFuture<List<WriteResult>> future = batch.commit();
-			List<WriteResult> results = future.get();
-			log.info("Successfully committed batch write to Firestore for recording ID: {}. Results count: {}",
-					recordingId, results.size());
-			return recommendationsWithIds;
-		} catch (ExecutionException | InterruptedException e) {
-			log.error("Error committing batch write to Firestore for recording ID: {}", recordingId, e);
-			if (e instanceof InterruptedException) {
-				Thread.currentThread().interrupt();
-			}
-			return Collections.emptyList();
+
+			firebaseService.saveLearningRecommendations(recommendations);
+
+			return recommendations;
+
 		} catch (Exception e) {
-			log.error("Unexpected error during native Firestore batch save for recording ID: {}", recordingId, e);
+
+			log.error("Unexpected error saving recommendations for recording ID: {}",
+
+					recommendations.get(0).getRecordingId(), e);
+
 			return Collections.emptyList();
+
 		}
+
 	}
 
 	private void linkRecommendationsAndNotify(String userId, String recordingId, String summaryId,
@@ -348,16 +336,23 @@ public class LearningMaterialRecommenderService {
 					} catch (IllegalArgumentException e) {
 						log.error("Failed to update recording - validation error: {}", e.getMessage());
 						try {
+
 							Map<String, Object> updates = new HashMap<>();
+
 							updates.put("recommendationIds", currentIds);
+
 							updates.put("updatedAt", new Date());
-							firestore.collection("recordings").document(recordingId).update(updates).get();
-							log.info(
-									"Successfully updated recommendations using direct Firestore update for recordingId {}",
-									recordingId);
+
+							firebaseService.updateData("recordings", recordingId, updates);
+
+							log.info("Successfully updated recommendations for recordingId {}", recordingId);
+
 							linkSuccess = true;
+
 						} catch (Exception ex) {
-							log.error("Failed even with direct Firestore update: {}", ex.getMessage());
+
+							log.error("Failed direct recording update: {}", ex.getMessage());
+
 						}
 					}
 				} else {
@@ -519,47 +514,11 @@ public class LearningMaterialRecommenderService {
 	}
 
 	public List<LearningRecommendation> getRecommendationsByRecordingId(String recordingId) {
-		log.info("Attempting to retrieve recommendations for recording ID: {} using native client", recordingId);
-		List<LearningRecommendation> recommendations = new ArrayList<>();
+		log.info("Retrieving recommendations for recording ID: {}", recordingId);
 		try {
-			ApiFuture<QuerySnapshot> future = firestore
-					.collection(Objects.requireNonNull(recommendationsCollectionName))
-					.whereEqualTo("recordingId", recordingId).get();
-			QuerySnapshot querySnapshot = future.get();
-			List<QueryDocumentSnapshot> documents = querySnapshot.getDocuments();
-			if (documents.isEmpty()) {
-				log.info("No recommendations found in Firestore for recording ID: {}", recordingId);
-				return Collections.emptyList();
-			}
-			log.info("Found {} potential recommendation document(s) for recording ID: {}", documents.size(),
-					recordingId);
-			for (QueryDocumentSnapshot document : documents) {
-				try {
-					LearningRecommendation rec = LearningRecommendation.fromMap(document.getData());
-					if (rec != null) {
-						rec.setRecommendationId(document.getId());
-						recommendations.add(rec);
-						log.debug("Successfully mapped document {} to recommendation: {}", document.getId(), rec);
-					} else {
-						log.warn("Failed to map Firestore document {} to LearningRecommendation object.",
-								document.getId());
-					}
-				} catch (Exception e) {
-					log.error("Error mapping Firestore document {} to LearningRecommendation for recording ID: {}",
-							document.getId(), recordingId, e);
-				}
-			}
-			log.info("Successfully retrieved and mapped {} recommendations for recording ID: {}",
-					recommendations.size(), recordingId);
-			return recommendations;
-		} catch (ExecutionException | InterruptedException e) {
-			log.error("Error retrieving recommendations from Firestore for recording ID: {}", recordingId, e);
-			if (e instanceof InterruptedException) {
-				Thread.currentThread().interrupt();
-			}
-			return Collections.emptyList();
+			return firebaseService.getLearningRecommendationsByRecordingId(recordingId);
 		} catch (Exception e) {
-			log.error("Unexpected error during native Firestore retrieval for recording ID: {}", recordingId, e);
+			log.error("Unexpected error retrieving recommendations for recording ID: {}", recordingId, e);
 			return Collections.emptyList();
 		}
 	}
@@ -569,65 +528,43 @@ public class LearningMaterialRecommenderService {
 			log.warn("Attempted to delete recommendations with null or empty recordingId.");
 			return;
 		}
-		log.warn("Attempting to delete ALL recommendations for recording ID: {}", recordingId);
-		CollectionReference recommendationsRef = firestore
-				.collection(Objects.requireNonNull(recommendationsCollectionName));
-		Query query = recommendationsRef.whereEqualTo("recordingId", recordingId);
-		ApiFuture<QuerySnapshot> future = query.get();
-		int deletedCount = 0;
-		try {
-			QuerySnapshot snapshot = future.get();
-			List<QueryDocumentSnapshot> documents = snapshot.getDocuments();
-			if (documents.isEmpty()) {
-				log.info("No recommendations found for recording ID {} to delete.", recordingId);
-				return;
+		List<LearningRecommendation> recommendations = firebaseService.getLearningRecommendationsByRecordingId(recordingId);
+		for (LearningRecommendation recommendation : recommendations) {
+			if (StringUtils.hasText(recommendation.getRecommendationId())) {
+				firebaseService.deleteData(recommendationsCollectionName, recommendation.getRecommendationId());
 			}
-			WriteBatch batch = firestore.batch();
-			for (QueryDocumentSnapshot document : documents) {
-				log.debug("Adding recommendation {} to delete batch for recordingId {}.", document.getId(),
-						recordingId);
-				batch.delete(document.getReference());
-				deletedCount++;
-			}
-			ApiFuture<List<WriteResult>> batchFuture = batch.commit();
-			batchFuture.get();
-			log.info("Successfully deleted {} recommendations for recording ID: {}", deletedCount, recordingId);
-		} catch (ExecutionException | InterruptedException e) {
-			log.error("Error deleting recommendations for recording ID {}: {}", recordingId, e.getMessage(), e);
-			if (e instanceof InterruptedException) {
-				Thread.currentThread().interrupt();
-			}
-		} catch (Exception e) {
-			log.error("Unexpected error deleting recommendations for recording ID {}: {}", recordingId, e.getMessage(),
-					e);
 		}
+		log.info("Deleted {} recommendations for recording ID: {}", recommendations.size(), recordingId);
 	}
 
 	@SuppressWarnings("null")
+
 	public boolean deleteRecommendation(String recommendationId) {
+
 		if (!StringUtils.hasText(recommendationId)) {
+
 			log.warn("Attempted to delete recommendation with null or empty ID.");
+
 			return false;
+
 		}
-		log.info("Attempting to delete LearningRecommendation with ID: {}", recommendationId);
+
 		try {
-			DocumentReference docRef = firestore.collection(Objects.requireNonNull(recommendationsCollectionName))
-					.document(recommendationId);
-			ApiFuture<WriteResult> future = docRef.delete();
-			future.get();
+
+			firebaseService.deleteData(recommendationsCollectionName, recommendationId);
+
 			log.info("Successfully deleted LearningRecommendation with ID: {}", recommendationId);
+
 			return true;
-		} catch (ExecutionException e) {
-			log.error("ExecutionException while deleting recommendation {}: {}", recommendationId, e.getMessage(), e);
-			return false;
-		} catch (InterruptedException e) {
-			log.error("InterruptedException while deleting recommendation {}: {}", recommendationId, e.getMessage(), e);
-			Thread.currentThread().interrupt();
-			return false;
+
 		} catch (Exception e) {
+
 			log.error("Unexpected error deleting recommendation {}: {}", recommendationId, e.getMessage(), e);
+
 			return false;
+
 		}
+
 	}
 
 	private List<String> enhanceKeywordsWithEducationalContext(List<String> originalKeywords) {

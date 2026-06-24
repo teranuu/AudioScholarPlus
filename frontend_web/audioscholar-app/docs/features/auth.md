@@ -7,7 +7,7 @@ AudioScholar uses a hybrid authentication system combining **Firebase Authentica
 The authentication flow ensures that users can securely sign up, log in, and access protected resources.
 
 - **Frontend:** React (handling forms, Firebase SDK interaction, and token storage).
-- **Backend:** Node.js/Express (verifying Firebase tokens, issuing custom JWTs).
+- **Backend:** Spring Boot (verifying Firebase tokens, issuing custom JWTs).
 - **Identity Provider:** Firebase Auth (Email/Password, Google, GitHub).
 
 ## Key Workflows
@@ -91,4 +91,4 @@ Contains the API calls for authentication:
 - `verifyFirebaseTokenWithBackend(idToken)`: Verifies Firebase ID tokens.
 - `verifyGoogleTokenWithBackend(googleIdToken)`: Verifies Google tokens.
 - `signUp(userData)`: Registers a new user.
-- `API_BASE_URL`: Dynamically determines backend URL (localhost vs. production).
+- `VITE_API_URL`: Configures the backend API base URL for local or deployed environments.

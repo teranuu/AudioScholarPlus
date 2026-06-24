@@ -1,111 +1,60 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { Header } from '../Home/HomePage';
-import axios from 'axios';
-import { API_BASE_URL } from '../../services/authService';
 
 const CheckoutPage = () => {
     const [tier, setTier] = useState(null);
-    const [paymentDetails, setPaymentDetails] = useState(null);
+    const [paymentSummary, setPaymentSummary] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [showSuccessModal, setShowSuccessModal] = useState(false);
     const [successMessage, setSuccessMessage] = useState('');
     const [secondaryMessage, setSecondaryMessage] = useState('');
     const navigate = useNavigate();
+    const location = useLocation();
 
     useEffect(() => {
-        // Retrieve selected tier and payment details from localStorage
+        // Retrieve selected tier only; payment metadata is transient route state.
         const selectedTier = localStorage.getItem('selectedTier');
-        const details = localStorage.getItem('paymentDetails');
+        const summary = location.state?.paymentSummary;
 
-        if (!selectedTier || !details) {
-            // If data is missing, redirect back to subscription selection
-            console.error('Missing subscription or payment details. Redirecting...');
-            navigate('/subscribe'); 
+        localStorage.removeItem('paymentDetails');
+        localStorage.removeItem('paymentMethod');
+
+        if (!selectedTier) {
+            console.error('Missing subscription tier. Redirecting...');
+            navigate('/subscribe');
+            return;
+        }
+
+        if (!summary) {
+            console.error('Missing payment selection. Redirecting...');
+            navigate('/payment');
             return;
         }
 
         setTier(selectedTier);
-        try {
-            setPaymentDetails(JSON.parse(details));
-        } catch (error) {
-            console.error('Error parsing payment details:', error);
-            navigate('/payment'); // Redirect if details are corrupted
-        }
+        setPaymentSummary(summary);
 
-    }, [navigate]);
+    }, [navigate, location.state]);
 
     const handleConfirm = () => {
         setIsLoading(true);
 
-        console.log('Confirming subscription...', { tier, paymentDetails });
-
-        // --- Mock Backend Call ---
-        // Simulate API call delay
-        setTimeout(async () => {
-            console.log('Subscription Confirmed (Mocked)!');
-
-            const token = localStorage.getItem('AuthToken');
-            const userId = localStorage.getItem('userId');
-
-            if (!token || !userId) {
-                console.error('AuthToken or UserId not found. Cannot update role.');
-                setSuccessMessage('We encountered an issue updating your account');
-                setSecondaryMessage('Critical user information is missing to update your role. Please re-login or contact support.');
-                setShowSuccessModal(true);
-                setIsLoading(false);
-                localStorage.removeItem('selectedTier');
-                localStorage.removeItem('paymentDetails');
-                return;
-            }
-
-            try {
-                const roleUpdateUrl = `${API_BASE_URL}api/users/${userId}/role`;
-                const roleUpdatePayload = { role: 'ROLE_PREMIUM' };
-                
-                console.log(`Attempting to update role for user ${userId} to ROLE_PREMIUM at ${roleUpdateUrl}`);
-
-                const response = await axios.put(roleUpdateUrl, roleUpdatePayload, {
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    }
-                });
-
-                if (response.status === 200 || response.status === 204) {
-                    console.log('Successfully updated user role to ROLE_PREMIUM');
-                    localStorage.setItem('userSubscriptionTier', tier);
-                    setSuccessMessage('Thank you for your purchase!');
-                    setSecondaryMessage('Your Premium membership is now active and your account has been upgraded.');
-                    setShowSuccessModal(true);
-                } else {
-                    console.error('Role update API call was not successful, status:', response.status);
-                    localStorage.setItem('userSubscriptionTier', tier);
-                    setSuccessMessage('Subscription completed, but with an issue');
-                    setSecondaryMessage('Your payment went through, but we could not update your account privileges automatically. Please contact support.');
-                    setShowSuccessModal(true);
-                }
-
-            } catch (err) {
-                console.error('Error updating user role:', err);
-                localStorage.setItem('userSubscriptionTier', tier);
-                let errorMessage = 'Subscription payment processed, but failed to update your account privileges.';
-                if (err.response) {
-                    errorMessage += ` (Server responded with ${err.response.status}).`;
-                    if (err.response.status === 403) {
-                        errorMessage += ' It seems there was a permission issue.';
-                    }
-                }
-                setSuccessMessage('We encountered an issue updating your account');
-                setSecondaryMessage(errorMessage + ' Please contact support if this persists.');
-                setShowSuccessModal(true);
-            }
-            
+        // This checkout flow is intentionally non-authoritative. Premium role
+        // changes must be granted only by an admin or trusted payment webhook
+        // after server-side payment verification.
+        setTimeout(() => {
+            localStorage.setItem('pendingSubscriptionTier', tier);
             localStorage.removeItem('selectedTier');
-            localStorage.removeItem('paymentDetails');
-            setIsLoading(false);
+            localStorage.removeItem('paymentMethod');
 
-        }, 1500); // Simulate 1.5 seconds delay
+            setSuccessMessage('Subscription request received');
+            setSecondaryMessage(
+                'Your subscription is pending server-side verification. Premium access will be activated after payment is verified.'
+            );
+            setShowSuccessModal(true);
+            setIsLoading(false);
+        }, 1500);
     };
 
     const handleCloseSuccessModal = () => {
@@ -114,15 +63,7 @@ const CheckoutPage = () => {
     };
 
     const getPaymentDisplay = () => {
-        if (!paymentDetails) return 'N/A';
-
-        if (paymentDetails.type === 'card') {
-            return `Card ending in ${paymentDetails.last4}, expires ${paymentDetails.expiry}`;
-        } else if (paymentDetails.type === 'ewallet') {
-            // Use masked number if available, otherwise show full (though masking is better)
-            return `E-Wallet: ${paymentDetails.maskedNumber || paymentDetails.number}`;
-        }
-        return 'Unknown Payment Method';
+        return paymentSummary?.displayName || 'Payment method selected';
     };
 
     const getPrice = () => {
@@ -131,7 +72,7 @@ const CheckoutPage = () => {
         return tier === 'Premium' ? '₱150 / month' : 'Free';
     }
 
-    if (!tier || !paymentDetails) {
+    if (!tier || !paymentSummary) {
         // Show loading or placeholder while retrieving data
         return (
             <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900 transition-colors duration-200">
@@ -207,7 +148,7 @@ const CheckoutPage = () => {
                                     </div>
                                     <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">{successMessage || 'Purchase Complete!'}</h2>
                                     <p className="text-gray-600 dark:text-gray-300 mb-8 leading-relaxed">
-                                        {secondaryMessage || 'Your Premium membership is now active. Enjoy your enhanced learning experience!'}
+                                        {secondaryMessage || 'Your subscription request has been received and is pending verification.'}
                                     </p>
                                     <button
                                         onClick={handleCloseSuccessModal}

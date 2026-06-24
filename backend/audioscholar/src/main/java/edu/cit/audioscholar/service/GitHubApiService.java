@@ -46,8 +46,7 @@ public class GitHubApiService {
 	@Cacheable(value = GITHUB_CACHE, key = "#accessToken", unless = "#result == null")
 	public Mono<GitHubUser> fetchUserDetails(String accessToken) {
 		Instant start = Instant.now();
-		log.info("Fetching GitHub user details from API (cache miss) for token starting with: {}",
-				accessToken.substring(0, Math.min(accessToken.length(), 8)));
+		log.info("Fetching GitHub user details from API (cache miss).");
 		return webClient.get().uri(githubUserUrl).header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
 				.accept(MediaType.APPLICATION_JSON).retrieve()
 				.bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {
@@ -73,8 +72,7 @@ public class GitHubApiService {
 	@Cacheable(value = GITHUB_CACHE, key = "#accessToken + '-primaryEmail'", unless = "#result == null")
 	public Mono<String> fetchPrimaryEmail(String accessToken) {
 		Instant start = Instant.now();
-		log.info("Fetching GitHub primary email from API (cache miss) for token starting with: {}",
-				accessToken.substring(0, Math.min(accessToken.length(), 8)));
+		log.info("Fetching GitHub primary email from API (cache miss).");
 		return webClient.get().uri(githubEmailsUrl).header(HttpHeaders.AUTHORIZATION, "Bearer " + accessToken)
 				.accept(MediaType.APPLICATION_JSON).retrieve()
 				.bodyToMono(new ParameterizedTypeReference<List<Map<String, Object>>>() {

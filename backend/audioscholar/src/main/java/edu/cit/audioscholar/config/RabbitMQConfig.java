@@ -1,5 +1,6 @@
 package edu.cit.audioscholar.config;
 
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.Queue;
@@ -19,6 +20,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 
 @Configuration
+@ConditionalOnProperty(name = "app.rabbitmq.enabled", havingValue = "true")
 public class RabbitMQConfig {
 
 	public static final String PROCESSING_QUEUE_NAME = "audio.processing.queue";

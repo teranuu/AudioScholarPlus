@@ -27,7 +27,7 @@
 		<url/>
 	</scm>
 	<properties>
-		<java.version>24</java.version>
+		<java.version>21</java.version>
 		<dependency-check-maven.version>12.1.1</dependency-check-maven.version>
 		<jjwt.version>0.12.6</jjwt.version>
 		<jave.version>3.5.0</jave.version>
@@ -48,6 +48,28 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-data-jpa</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-core</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+		<dependency>
+			<groupId>com.h2database</groupId>
+			<artifactId>h2</artifactId>
+			<scope>test</scope>
 		</dependency>
 
 		<dependency>
@@ -76,32 +98,26 @@
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-context</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-netty-shaded</artifactId>
-			<version>1.75.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-core</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-api</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-protobuf</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>io.grpc</groupId>
 			<artifactId>grpc-stub</artifactId>
-			<version>1.72.0</version>
 		</dependency>
 		<dependency>
 			<groupId>com.google.http-client</groupId>
@@ -248,7 +264,7 @@
 		<dependency>
 		          <groupId>org.projectlombok</groupId>
 		          <artifactId>lombok</artifactId>
-		          <scope>compile</scope>
+		          <scope>provided</scope>
 		      </dependency>
 
 		<!-- Dotenv for .env file support -->
@@ -297,6 +313,22 @@
 	</profiles>
 
 	<build>
+		<resources>
+			<resource>
+				<directory>src/main/resources</directory>
+				<filtering>false</filtering>
+				<excludes>
+					<!-- Prevent Firebase private key from being packaged into build artifacts -->
+					<exclude>firebase-service-account.json</exclude>
+				</excludes>
+			</resource>
+		</resources>
+		<testResources>
+			<testResource>
+				<directory>src/test/resources</directory>
+				<filtering>false</filtering>
+			</testResource>
+		</testResources>
 		<plugins>
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
@@ -359,16 +391,7 @@
 				</configuration>
 				
 				<executions>
-					<!-- Format during compile phase (before spring-boot:run) -->
-					<execution>
-						<id>format</id>
-						<goals>
-							<goal>apply</goal>
-						</goals>
-						<phase>compile</phase>
-					</execution>
-					
-					<!-- Validate during verify phase (for CI/CD) -->
+					<!-- Validate formatting during verify/CI without mutating source files -->
 					<execution>
 						<id>check</id>
 						<goals>

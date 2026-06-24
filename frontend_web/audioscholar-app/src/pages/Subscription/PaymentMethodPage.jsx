@@ -9,16 +9,12 @@ const PaymentMethodPage = () => {
     const [paymentMethod, setPaymentMethod] = useState('card'); // Default to 'card'
     const navigate = useNavigate();
 
-    const handlePaymentSubmit = (paymentDetails) => {
-        console.log('Payment Method:', paymentMethod);
-        console.log('Payment Details:', paymentDetails);
-        // Store payment details temporarily (e.g., localStorage or state management)
-        // Be cautious about storing sensitive data like full card numbers in localStorage
-        localStorage.setItem('paymentMethod', paymentMethod);
-        localStorage.setItem('paymentDetails', JSON.stringify(paymentDetails)); // Store details (potentially masked later)
+    const handlePaymentSubmit = (paymentSummary) => {
+        localStorage.removeItem('paymentDetails');
+        localStorage.removeItem('paymentMethod');
 
-        // Mock successful payment and navigate to checkout/summary
-        navigate('/checkout');
+        // Keep checkout non-authoritative and avoid persisting sensitive payment data.
+        navigate('/checkout', { state: { paymentSummary } });
     };
 
     return (

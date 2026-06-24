@@ -49,6 +49,14 @@ const Dashboard = () => {
     fetchUserData();
   }, [navigate]);
 
+  if (loadingUser) {
+    return <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 text-gray-700 dark:text-gray-200">Loading dashboard...</div>;
+  }
+
+  if (errorUser) {
+    return <div className="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 text-red-600">{errorUser}</div>;
+  }
+
   return (
     <div className="min-h-screen flex flex-col bg-gray-50 dark:bg-gray-900">
 

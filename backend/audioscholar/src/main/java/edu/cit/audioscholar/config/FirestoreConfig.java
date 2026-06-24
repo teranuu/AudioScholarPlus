@@ -3,6 +3,7 @@ package edu.cit.audioscholar.config;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Configuration;
 
 import com.google.cloud.firestore.Firestore;
@@ -10,6 +11,7 @@ import com.google.firebase.FirebaseApp;
 import com.google.firebase.cloud.FirestoreClient;
 
 @Configuration
+@ConditionalOnProperty(name = "app.firestore.enabled", havingValue = "true")
 public class FirestoreConfig {
 
 	private static final Logger logger = LoggerFactory.getLogger(FirestoreConfig.class);

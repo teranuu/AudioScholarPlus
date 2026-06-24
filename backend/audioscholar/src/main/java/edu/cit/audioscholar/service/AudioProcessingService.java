@@ -15,8 +15,6 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.amqp.AmqpException;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.CacheEvict;
@@ -28,12 +26,9 @@ import org.springframework.util.StringUtils;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.multipart.MultipartFile;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.FieldValue;
 
-import edu.cit.audioscholar.config.RabbitMQConfig;
-import edu.cit.audioscholar.dto.NhostUploadMessage;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
 import edu.cit.audioscholar.exception.InvalidAudioFileException;
 import edu.cit.audioscholar.model.AudioMetadata;
@@ -48,8 +43,8 @@ public class AudioProcessingService {
 	private static final String CACHE_METADATA_BY_USER = "audioMetadataByUser";
 
 	private final FirebaseService firebaseService;
-	private final RabbitTemplate rabbitTemplate;
-	private final NhostStorageService nhostStorageService;
+	private final SupabaseStorageService storageService;
+	private final PortfolioAsyncProcessingService portfolioAsyncProcessingService;
 	private final LearningMaterialRecommenderService learningMaterialRecommenderService;
 	private final RecordingService recordingService;
 	private final AudioProcessingGuardrailService guardrailService;
@@ -58,20 +53,22 @@ public class AudioProcessingService {
 	private final Path tempFileDir;
 	@SuppressWarnings("unused")
 	private final CacheManager cacheManager;
-	@SuppressWarnings("unused")
-	private final ObjectMapper objectMapper;
 
-	public AudioProcessingService(FirebaseService firebaseService, RabbitTemplate rabbitTemplate,
-			NhostStorageService nhostStorageService,
+	public AudioProcessingService(FirebaseService firebaseService, SupabaseStorageService storageService,
+			PortfolioAsyncProcessingService portfolioAsyncProcessingService,
 			LearningMaterialRecommenderService learningMaterialRecommenderService, RecordingService recordingService,
 			AudioProcessingGuardrailService guardrailService,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue,
+<<<<<<< HEAD
 			@Value("${app.temp-min-free-space:100MB}") String tempMinFreeSpaceValue,
 			@Value("${app.temp-file-dir}") String tempFileDirStr, CacheManager cacheManager,
 			ObjectMapper objectMapper) {
+=======
+			@Value("${app.temp-file-dir}") String tempFileDirStr, CacheManager cacheManager) {
+>>>>>>> a991831ed45f0ec696832d73e09c89256a68cadd
 		this.firebaseService = firebaseService;
-		this.rabbitTemplate = rabbitTemplate;
-		this.nhostStorageService = nhostStorageService;
+		this.storageService = storageService;
+		this.portfolioAsyncProcessingService = portfolioAsyncProcessingService;
 		this.learningMaterialRecommenderService = learningMaterialRecommenderService;
 		this.recordingService = recordingService;
 		this.guardrailService = guardrailService;
@@ -88,7 +85,6 @@ public class AudioProcessingService {
 		}
 
 		this.cacheManager = cacheManager;
-		this.objectMapper = objectMapper;
 	}
 
 	private long getMaxFileSizeInBytes() {
@@ -224,73 +220,25 @@ public class AudioProcessingService {
 
 			try {
 				initialMetadata = updateMetadataStatus(metadataId, userId, ProcessingStatus.UPLOAD_IN_PROGRESS, null,
-						true);
-
-				String audioTempPathStr = tempAudioPath.toAbsolutePath().toString();
-				sendUploadMessage(metadataId, "audio", audioTempPathStr, RabbitMQConfig.UPLOAD_AUDIO_ROUTING_KEY,
-						originalAudioFilename, originalAudioContentType);
-
-				String pptxTempPathStr = null;
-				if (powerpointFile != null && tempPptxPath != null) {
-					pptxTempPathStr = tempPptxPath.toAbsolutePath().toString();
-					sendUploadMessage(metadataId, "powerpoint", pptxTempPathStr, RabbitMQConfig.UPLOAD_PPTX_ROUTING_KEY,
-							originalPptxFilename, originalPptxContentType);
-				}
-
-				try {
-					Map<String, Object> updates = new HashMap<>();
-					updates.put("status", ProcessingStatus.UPLOAD_IN_PROGRESS);
-					updates.put("lastUpdated", Timestamp.of(new Date()));
-					updates.put("tempFilePath", null);
-					updates.put("tempPptxFilePath", null);
-
-					firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
-					log.info("Updated metadata {} status to UPLOAD_IN_PROGRESS and cleared temp paths.", metadataId);
-
-					initialMetadata.setStatus(ProcessingStatus.UPLOAD_IN_PROGRESS);
-					initialMetadata.setTempFilePath(null);
-					initialMetadata.setTempPptxFilePath(null);
-				} catch (Exception e) {
-					log.error("Firestore error updating metadata {} status to UPLOAD_IN_PROGRESS for user {}: {}",
-							metadataId, userId, e.getMessage(), e);
-					try {
-						Map<String, Object> failureUpdates = new HashMap<>();
-						failureUpdates.put("status", ProcessingStatus.FAILED);
-						failureUpdates.put("failureReason", "Failed during post-queue update: " + e.getMessage());
-						failureUpdates.put("lastUpdated", Timestamp.of(new Date()));
-						failureUpdates.put("tempFilePath", null);
-						failureUpdates.put("tempPptxFilePath", null);
-						firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId,
-								failureUpdates);
-					} catch (Exception finalFailEx) {
-						log.error(
-								"CRITICAL: Failed even to update metadata {} status to FAILED after UPLOAD_IN_PROGRESS update failure: {}",
-								metadataId, finalFailEx.getMessage(), finalFailEx);
-					}
-					throw new FirestoreInteractionException("Failed to update metadata status after queueing.", e);
-				}
-
-				log.info("Successfully queued file(s) for upload. Metadata ID: {}, Status: {}, User ID: {}",
-						initialMetadata.getId(), initialMetadata.getStatus(), userId);
+						false);
+				portfolioAsyncProcessingService.processUploadAsync(metadataId, tempAudioPath, tempPptxPath,
+						originalAudioFilename, originalAudioContentType, originalPptxFilename, originalPptxContentType);
+				log.info("Started bounded async demo processing. Metadata ID: {}, User ID: {}", metadataId, userId);
 				return initialMetadata;
 
-			} catch (AmqpException | FirestoreInteractionException e) {
-				log.error("Error during file processing trigger for user {}: {}", userId, e.getMessage(), e);
+			} catch (RuntimeException e) {
+				log.error("Error during async processing startup for user {}: {}", userId, e.getMessage(), e);
 				if (initialMetadata != null && initialMetadata.getId() != null
 						&& initialMetadata.getStatus() != ProcessingStatus.FAILED) {
 					try {
 						Map<String, Object> failureUpdates = new HashMap<>();
 						failureUpdates.put("status", ProcessingStatus.FAILED);
-						failureUpdates.put("failureReason", "Failed during processing trigger: " + e.getMessage());
+						failureUpdates.put("failureReason", "Failed to start async processing: " + e.getMessage());
 						failureUpdates.put("lastUpdated", Timestamp.of(new Date()));
-						failureUpdates.put("tempFilePath", null);
-						failureUpdates.put("tempPptxFilePath", null);
-						firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(),
-								initialMetadata.getId(), failureUpdates);
-						log.warn("Updated metadata {} status to FAILED due to trigger error: {}",
-								initialMetadata.getId(), e.getMessage());
+						firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), initialMetadata.getId(),
+								failureUpdates);
 					} catch (Exception updateEx) {
-						log.error("Failed to update metadata {} status to FAILED after trigger error: {}",
+						log.error("Failed to update metadata {} status to FAILED after async startup error: {}",
 								initialMetadata.getId(), updateEx.getMessage(), updateEx);
 					}
 				}
@@ -298,9 +246,7 @@ public class AudioProcessingService {
 				deleteTemporaryFile(tempPptxPath);
 				if (e instanceof FirestoreInteractionException)
 					throw (FirestoreInteractionException) e;
-				if (e instanceof AmqpException)
-					throw new RuntimeException("Failed to send message to upload queue.", e);
-				throw new RuntimeException("Failed to queue files for processing.", e);
+				throw new RuntimeException("Failed to start async processing.", e);
 			}
 		} catch (IOException | FirestoreInteractionException e) {
 			log.error("Error during initial file saving or metadata creation for user {}: {}", userId, e.getMessage(),
@@ -345,23 +291,6 @@ public class AudioProcessingService {
 			log.error("Failed to save uploaded file temporarily to {}: {}", tempFilePath.toAbsolutePath(),
 					e.getMessage(), e);
 			throw new IOException("Failed to save temporary " + prefix + " file.", e);
-		}
-	}
-
-	private void sendUploadMessage(String metadataId, String fileType, String tempFilePath, String routingKey,
-			String originalFilename, String originalContentType) {
-		try {
-			NhostUploadMessage message = new NhostUploadMessage(metadataId, fileType, tempFilePath, originalFilename,
-					originalContentType);
-
-			rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME, routingKey, message);
-			log.info("Sent {} upload message for metadataId {} to exchange '{}' with routing key '{}'", fileType,
-					metadataId, RabbitMQConfig.PROCESSING_EXCHANGE_NAME, routingKey);
-		} catch (Exception e) {
-			log.error("Failed to send {} upload message for metadataId {} to queue. Error: {}", fileType, metadataId,
-					e.getMessage(), e);
-			updateMetadataStatus(metadataId, null, ProcessingStatus.FAILED,
-					"Failed to queue file for upload: " + e.getMessage(), true);
 		}
 	}
 
@@ -444,7 +373,7 @@ public class AudioProcessingService {
 				try {
 					log.info("Attempting to delete Nhost file ID: {} associated with metadata {}", nhostFileId,
 							metadataId);
-					nhostStorageService.deleteFile(nhostFileId);
+					storageService.deleteFile(nhostFileId);
 					log.info("Successfully requested deletion of Nhost file ID: {}", nhostFileId);
 				} catch (Exception e) {
 					log.error("Failed to delete Nhost file ID {} for metadata {}. Error: {}", nhostFileId, metadataId,
@@ -459,7 +388,7 @@ public class AudioProcessingService {
 				try {
 					log.info("Attempting to delete PowerPoint Nhost file ID: {} associated with metadata {}",
 							nhostPptxFileId, metadataId);
-					nhostStorageService.deleteFile(nhostPptxFileId);
+					storageService.deleteFile(nhostPptxFileId);
 					log.info("Successfully requested deletion of PowerPoint Nhost file ID: {}", nhostPptxFileId);
 				} catch (Exception e) {
 					log.error("Failed to delete PowerPoint Nhost file ID {} for metadata {}. Error: {}",
@@ -474,7 +403,7 @@ public class AudioProcessingService {
 				try {
 					log.info("Attempting to delete generated PDF Nhost file ID: {} associated with metadata {}",
 							generatedPdfNhostFileId, metadataId);
-					nhostStorageService.deleteFile(generatedPdfNhostFileId);
+					storageService.deleteFile(generatedPdfNhostFileId);
 					log.info("Successfully requested deletion of generated PDF Nhost file ID: {}",
 							generatedPdfNhostFileId);
 				} catch (Exception e) {

@@ -19,6 +19,7 @@ import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
@@ -43,6 +44,7 @@ import edu.cit.audioscholar.model.Summary;
 import edu.cit.audioscholar.util.RobustTaskExecutor;
 
 @Service
+@ConditionalOnProperty(name = "app.rabbitmq.enabled", havingValue = "true")
 public class SummarizationListenerService {
 
 	private static final Logger log = LoggerFactory.getLogger(SummarizationListenerService.class);

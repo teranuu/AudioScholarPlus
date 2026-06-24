@@ -64,12 +64,10 @@ const CardPaymentForm = ({ onSubmit }) => {
     const handleSubmit = (e) => {
         e.preventDefault();
         if (validateForm()) {
-            // Pass relevant (potentially masked) details up
+            // Pass only minimal display metadata; never submit or persist full card data.
             onSubmit({
                 type: 'card',
-                last4: cardDetails.cardNumber.slice(-4), // Only pass last 4 digits
-                expiry: cardDetails.expiryDate,
-                name: cardDetails.nameOnCard
+                displayName: `Card ending in ${cardDetails.cardNumber.slice(-4)}`
             });
         }
     };
