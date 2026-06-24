@@ -5,31 +5,20 @@ import { FaHeart, FaRegHeart } from 'react-icons/fa';
 import { Link, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../services/authService';
 import { recordingService } from '../../services/recordingService';
+import {
+    canRetryProcessingStatus,
+    getProcessingStatusCopy,
+    isTerminalProcessingStatus,
+    isUploadStatus,
+} from '../../utils/processingStatus';
 import { Header } from '../Home/HomePage';
 
-const TERMINAL_STATUSES = ['COMPLETE', 'COMPLETED', 'FAILED', 'PROCESSING_HALTED_UNSUITABLE_CONTENT', 'PROCESSING_HALTED_NO_SPEECH', 'SUMMARY_FAILED', 'COMPLETED_WITH_WARNINGS'];
-const UPLOADING_STATUSES = ['UPLOAD_PENDING', 'UPLOAD_IN_PROGRESS', 'UPLOADING_TO_STORAGE', 'UPLOADED'];
-const PROCESSING_STATUSES = [
-  'PROCESSING_QUEUED',
-  'TRANSCRIBING',
-  'PDF_CONVERTING',
-  'PDF_CONVERTING_API',
-  'TRANSCRIPTION_COMPLETE',
-  'PDF_CONVERSION_COMPLETE',
-  'SUMMARIZATION_QUEUED',
-  'SUMMARIZING',
-  'SUMMARY_COMPLETE',
-  'RECOMMENDATIONS_QUEUED',
-  'GENERATING_RECOMMENDATIONS',
-  'PROCESSING'
-];
 const UPLOAD_TIMEOUT_SECONDS = 10 * 60;
-const RETRYABLE_FAILURE_STATUSES = ['FAILED', 'SUMMARY_FAILED'];
 
 const canRetryProcessing = (recording) => {
     const statusUpper = recording.status?.toUpperCase() ?? '';
     const hasDurableAudio = Boolean(recording.nhostFileId || recording.audioUrl || recording.storageUrl);
-    return RETRYABLE_FAILURE_STATUSES.includes(statusUpper) && hasDurableAudio;
+    return canRetryProcessingStatus(statusUpper) && hasDurableAudio;
 };
 
 const RecordingList = () => {
@@ -110,10 +99,10 @@ const RecordingList = () => {
 
         const needsPolling = initialData?.some(rec => {
             const statusUpper = rec.status?.toUpperCase();
-            const isTerminal = TERMINAL_STATUSES.includes(statusUpper);
+            const isTerminal = isTerminalProcessingStatus(statusUpper);
             if (isTerminal) return false;
 
-            const isUploading = UPLOADING_STATUSES.includes(statusUpper);
+            const isUploading = isUploadStatus(statusUpper);
             if (isUploading) {
                 const elapsedSeconds = rec.uploadTimestamp?.seconds
                     ? (Date.now() / 1000) - rec.uploadTimestamp.seconds
@@ -158,10 +147,10 @@ const RecordingList = () => {
                     // Update polling status
                      const stillNeedsPolling = sortedRecordings.some(rec => {
                         const statusUpper = rec.status?.toUpperCase();
-                        const isTerminal = TERMINAL_STATUSES.includes(statusUpper);
+                        const isTerminal = isTerminalProcessingStatus(statusUpper);
                         if (isTerminal) return false;
 
-                        const isUploading = UPLOADING_STATUSES.includes(statusUpper);
+                        const isUploading = isUploadStatus(statusUpper);
                         if (isUploading) {
                             const elapsedSeconds = rec.uploadTimestamp?.seconds
                                 ? (Date.now() / 1000) - rec.uploadTimestamp.seconds
@@ -391,15 +380,15 @@ const RecordingList = () => {
         const { status, failureReason, uploadTimestamp } = recording;
         const originalStatus = status;
         const statusUpper = status?.toUpperCase() ?? 'UNKNOWN';
+        const statusCopy = getProcessingStatusCopy(statusUpper);
         let bgColor = 'bg-gray-100';
         let textColor = 'text-gray-800';
         let Icon = FiClock;
-        let displayStatus = 'Unknown';
-        let isSpinning = false;
+        let displayStatus = statusCopy.label;
+        let isSpinning = statusCopy.isSpinning;
         let titleText = '';
 
-        const isUploadingOrPending = UPLOADING_STATUSES.includes(statusUpper);
-        const isProcessing = PROCESSING_STATUSES.includes(statusUpper);
+        const isUploadingOrPending = isUploadStatus(statusUpper);
         const elapsedSeconds = uploadTimestamp?.seconds
             ? (Date.now() / 1000) - uploadTimestamp.seconds
             : 0;
@@ -413,37 +402,28 @@ const RecordingList = () => {
             isSpinning = false;
             titleText = `Upload received ${Math.round(elapsedSeconds / 60)} mins ago, processing initiated. Status: ${originalStatus}`;
         } else {
-            if (TERMINAL_STATUSES.includes(statusUpper)) {
-                if (statusUpper === 'COMPLETE' || statusUpper === 'COMPLETED') {
+            if (statusCopy.tone === 'success') {
                     bgColor = 'bg-green-100';
                     textColor = 'text-green-800';
                     Icon = FiCheckCircle;
-                    displayStatus = 'Completed';
-                } else if (statusUpper === 'COMPLETED_WITH_WARNINGS') {
+            } else if (statusCopy.tone === 'warning') {
                     bgColor = 'bg-yellow-100';
                     textColor = 'text-yellow-800';
                     Icon = FiAlertTriangle;
                     displayStatus = 'Completed w/ Warn';
-                } else {
+            } else if (statusCopy.tone === 'failure') {
                     bgColor = 'bg-red-100';
                     textColor = 'text-red-800';
                     Icon = FiAlertTriangle;
-                    displayStatus = 'Failed';
-                }
-            } else if (isProcessing) {
+            } else if (statusCopy.tone === 'processing') {
                 bgColor = 'bg-yellow-100';
                 textColor = 'text-yellow-800';
                 Icon = FiLoader;
-                displayStatus = 'Processing';
-                isSpinning = true;
-            } else if (isUploadingOrPending) {
+            } else if (statusCopy.tone === 'upload') {
                 bgColor = 'bg-blue-100';
                 textColor = 'text-blue-800';
                 Icon = FiUploadCloud;
-                displayStatus = 'Uploading';
-                isSpinning = true;
             } else {
-                displayStatus = 'Unknown';
                 if (statusUpper !== 'UNKNOWN') {
                     console.warn('[Badge] Unknown recording status received:', originalStatus);
                 }

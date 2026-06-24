@@ -1,5 +1,5 @@
 import axios from 'axios';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { FiExternalLink, FiCopy, FiCheck, FiEdit, FiSave, FiX, FiLoader, FiAlertTriangle, FiCheckCircle, FiUploadCloud, FiClock, FiHeadphones, FiDownload, FiEye, FiEdit2, FiRefreshCw } from 'react-icons/fi';
 import { FaHeart, FaRegHeart } from 'react-icons/fa';
@@ -7,41 +7,22 @@ import ReactMarkdown from 'react-markdown';
 import { API_BASE_URL } from '../../services/authService';
 import { noteService } from '../../services/noteService';
 import { recordingService } from '../../services/recordingService';
+import {
+  canRetryProcessingStatus,
+  getProcessingStatusCopy,
+  isActiveProcessingStatus,
+  isFailureProcessingStatus,
+} from '../../utils/processingStatus';
 import { Header } from '../Home/HomePage';
 
 const DownloadIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>;
 
-const UPLOADING_STATUSES = ['UPLOADING_TO_STORAGE', 'UPLOAD_IN_PROGRESS', 'UPLOAD_PENDING'];
-const UPLOAD_TIMEOUT_SECONDS = 10 * 60;
-const TERMINAL_STATUSES = [
-  'COMPLETED', 
-  'COMPLETE', 
-  'FAILED', 
-  'PROCESSING_HALTED_UNSUITABLE_CONTENT', 
-  'PROCESSING_HALTED_NO_SPEECH',
-  'SUMMARY_FAILED',
-  'COMPLETED_WITH_WARNINGS'
-];
-const PROCESSING_STATUSES = [
-  'PROCESSING_QUEUED',
-  'TRANSCRIBING',
-  'PDF_CONVERTING',
-  'PDF_CONVERTING_API',
-  'TRANSCRIPTION_COMPLETE',
-  'PDF_CONVERSION_COMPLETE',
-  'SUMMARIZATION_QUEUED',
-  'SUMMARIZING',
-  'SUMMARY_COMPLETE',
-  'RECOMMENDATIONS_QUEUED',
-  'GENERATING_RECOMMENDATIONS',
-  'PROCESSING'
-];
-const RETRYABLE_FAILURE_STATUSES = ['FAILED', 'SUMMARY_FAILED'];
+const METADATA_POLL_INTERVAL_MS = 15000;
 
 const canRetryProcessing = (recording) => {
   const statusUpper = recording?.status?.toUpperCase() ?? '';
   const hasDurableAudio = Boolean(recording?.nhostFileId || recording?.audioUrl || recording?.storageUrl);
-  return RETRYABLE_FAILURE_STATUSES.includes(statusUpper) && hasDurableAudio;
+  return canRetryProcessingStatus(statusUpper) && hasDurableAudio;
 };
 
 const formatDuration = (seconds) => {
@@ -114,6 +95,13 @@ const hasUsableSummary = (summary) => {
   );
 };
 
+const normalizeFavoriteStatus = (recording) => ({
+  ...recording,
+  isFavorite: recording?.isFavorite !== undefined
+    ? recording.isFavorite
+    : (recording?.favorite !== undefined ? recording.favorite : false),
+});
+
 const QualityReportSection = ({ report }) => {
   if (!report) {
     return (
@@ -171,121 +159,31 @@ const StatusBadge = ({ recording }) => {
   const { status, failureReason } = recording;
   const originalStatus = status;
   const statusUpper = status?.toUpperCase() ?? 'UNKNOWN';
-  let bgColor = 'bg-gray-100';
-  let textColor = 'text-gray-800';
-  let Icon = FiClock;
-  let displayStatus = 'Unknown';
-  let isSpinning = false;
-  let titleText = '';
-
-  const isUploadingOrPending = UPLOADING_STATUSES.includes(statusUpper);
-  const isProcessing = PROCESSING_STATUSES.includes(statusUpper);
-
-  const getStatusInfo = () => {
-    const statusInfo = {
-      bgColor: 'bg-gray-100',
-      textColor: 'text-gray-800',
-      Icon: FiClock,
-      displayStatus: 'Unknown',
-      isSpinning: false,
-      progress: null
-    };
-
-    if (TERMINAL_STATUSES.includes(statusUpper)) {
-      statusInfo.bgColor = 'bg-green-100';
-      statusInfo.textColor = 'text-green-800';
-      statusInfo.Icon = FiCheckCircle;
-      statusInfo.displayStatus = 'Completed';
-      
-      if (statusUpper === 'FAILED' || statusUpper === 'PROCESSING_HALTED_NO_SPEECH' || 
-          statusUpper === 'PROCESSING_HALTED_UNSUITABLE_CONTENT' || statusUpper === 'SUMMARY_FAILED') {
-        statusInfo.bgColor = 'bg-red-100';
-        statusInfo.textColor = 'text-red-800';
-        statusInfo.Icon = FiAlertTriangle;
-        statusInfo.displayStatus = 'Failed';
-      } else if (statusUpper === 'COMPLETED_WITH_WARNINGS') {
-        statusInfo.bgColor = 'bg-yellow-100';
-        statusInfo.textColor = 'text-yellow-800';
-        statusInfo.Icon = FiAlertTriangle;
-        statusInfo.displayStatus = 'Completed with Warnings';
-      }
-      return statusInfo;
-    }
-
-    if (isProcessing) {
-      statusInfo.bgColor = 'bg-blue-100';
-      statusInfo.textColor = 'text-blue-800';
-      statusInfo.Icon = FiLoader;
-      statusInfo.isSpinning = true;
-      
-      const statusMap = {
-        'PROCESSING_QUEUED': 'Queued for Processing',
-        'TRANSCRIBING': 'Transcribing Audio',
-        'PDF_CONVERTING': 'Converting Document',
-        'PDF_CONVERTING_API': 'Converting Document',
-        'TRANSCRIPTION_COMPLETE': 'Processing Transcript',
-        'PDF_CONVERSION_COMPLETE': 'Processing Document',
-        'SUMMARIZATION_QUEUED': 'Queued for Summarization',
-        'SUMMARIZING': 'Generating Summary',
-        'SUMMARY_COMPLETE': 'Generating Recommendations',
-        'RECOMMENDATIONS_QUEUED': 'Queued for Recommendations',
-        'GENERATING_RECOMMENDATIONS': 'Generating Recommendations',
-        'PROCESSING': 'Processing',
-        'UPLOADED': 'Starting Processing'
-      };
-      
-      statusInfo.displayStatus = statusMap[statusUpper] || 'Processing';
-      
-      if (statusUpper === 'TRANSCRIBING') {
-        statusInfo.progress = 'This may take a few minutes...';
-      } else if (statusUpper === 'SUMMARIZING') {
-        statusInfo.progress = 'Generating AI summary...';
-      } else if (statusUpper === 'GENERATING_RECOMMENDATIONS') {
-        statusInfo.progress = 'Finding relevant learning resources...';
-      }
-      
-      return statusInfo;
-    }
-
-    if (isUploadingOrPending) {
-      statusInfo.bgColor = 'bg-blue-100';
-      statusInfo.textColor = 'text-blue-800';
-      statusInfo.Icon = FiUploadCloud;
-      statusInfo.isSpinning = true;
-      statusInfo.displayStatus = 'Uploading';
-      
-      if (statusUpper === 'UPLOADED') {
-        statusInfo.displayStatus = 'Upload Complete';
-        statusInfo.progress = 'Starting processing...';
-      }
-      
-      return statusInfo;
-    }
-
-    return statusInfo;
+  const statusInfo = getProcessingStatusCopy(statusUpper);
+  const toneMap = {
+    success: { bgColor: 'bg-green-100', textColor: 'text-green-800', Icon: FiCheckCircle },
+    warning: { bgColor: 'bg-yellow-100', textColor: 'text-yellow-800', Icon: FiAlertTriangle },
+    failure: { bgColor: 'bg-red-100', textColor: 'text-red-800', Icon: FiAlertTriangle },
+    processing: { bgColor: 'bg-blue-100', textColor: 'text-blue-800', Icon: FiLoader },
+    upload: { bgColor: 'bg-blue-100', textColor: 'text-blue-800', Icon: FiUploadCloud },
+    unknown: { bgColor: 'bg-gray-100', textColor: 'text-gray-800', Icon: FiClock },
   };
-
-  const statusInfo = getStatusInfo();
-  
-  bgColor = statusInfo.bgColor;
-  textColor = statusInfo.textColor;
-  Icon = statusInfo.Icon;
-  displayStatus = statusInfo.displayStatus;
-  isSpinning = statusInfo.isSpinning;
+  const { bgColor, textColor, Icon } = toneMap[statusInfo.tone] || toneMap.unknown;
+  const displayStatus = statusInfo.label;
+  const isSpinning = statusInfo.isSpinning;
   
   const statusContext = [];
   if (statusInfo.progress) {
     statusContext.push(statusInfo.progress);
   }
-  if (failureReason && (statusUpper === 'FAILED' || statusUpper === 'SUMMARY_FAILED' || 
-      statusUpper === 'PROCESSING_HALTED_NO_SPEECH' || statusUpper === 'PROCESSING_HALTED_UNSUITABLE_CONTENT')) {
+  if (failureReason && isFailureProcessingStatus(statusUpper)) {
     statusContext.push(`Reason: ${failureReason}`);
   }
   if (displayStatus !== originalStatus && originalStatus) {
     statusContext.push(`(Status: ${originalStatus})`);
   }
   
-  titleText = statusContext.join(' - ');
+  const titleText = statusContext.join(' - ');
 
   return (
     <div className="flex flex-col">
@@ -347,6 +245,7 @@ const Skeleton = ({ className }) => (
 const RecordingData = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const metadataPollIntervalRef = useRef(null);
 
   const [recordingData, setRecordingData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -476,6 +375,35 @@ const RecordingData = () => {
     }
   };
 
+  const fetchRecordingMetadataByRecordingId = React.useCallback(async (recordingId) => {
+    if (!recordingId) return null;
+
+    const token = localStorage.getItem('AuthToken');
+    if (!token) {
+      setError("User not authenticated. Please log in.");
+      navigate('/signin');
+      return null;
+    }
+
+    try {
+      const response = await axios.get(`${API_BASE_URL}api/audio/recordings/${recordingId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const freshRecording = normalizeFavoriteStatus(response.data);
+      localStorage.setItem(`recording_metadata_${id}`, JSON.stringify(freshRecording));
+      setRecordingData(prev => ({ ...prev, ...freshRecording }));
+      return freshRecording;
+    } catch (err) {
+      console.error('Error polling recording metadata:', err);
+      if (err.response?.status === 401 || err.response?.status === 403) {
+        setError("Session expired or not authorized. Please log in again.");
+        localStorage.removeItem('AuthToken');
+        navigate('/signin');
+      }
+      return null;
+    }
+  }, [id, navigate]);
+
   const fetchRecordingData = React.useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -504,12 +432,11 @@ const RecordingData = () => {
       const foundRecording = allRecordings.find(rec => rec.id === id);
 
       if (foundRecording) {
-        // Normalize favorite status
-        foundRecording.isFavorite = foundRecording.isFavorite !== undefined ? foundRecording.isFavorite : (foundRecording.favorite !== undefined ? foundRecording.favorite : false);
+        const normalizedRecording = normalizeFavoriteStatus(foundRecording);
         
-        localStorage.setItem(`recording_metadata_${id}`, JSON.stringify(foundRecording));
-        setRecordingData(foundRecording);
-        console.log("Found recording metadata:", foundRecording);
+        localStorage.setItem(`recording_metadata_${id}`, JSON.stringify(normalizedRecording));
+        setRecordingData(normalizedRecording);
+        console.log("Found recording metadata:", normalizedRecording);
       } else {
         console.error(`Metadata with ID ${id} not found in the fetched list.`);
         setError("Recording metadata not found or access denied.");
@@ -595,6 +522,8 @@ const RecordingData = () => {
           console.log(`Summary status 202 Accepted: ${message}`);
           setSummaryError(message);
           setSummaryData(null);
+          setRecommendationsError(null);
+          setRecommendationsData([]);
         } else {
           console.warn(`Unexpected success status for summary: ${summaryResponse.status}`);
           setSummaryError(`Unexpected status: ${summaryResponse.status}`);
@@ -633,7 +562,7 @@ const RecordingData = () => {
       }
     }
 
-    const shouldFetchRecommendations = summaryStatus === 200 || summaryStatus === 202;
+    const shouldFetchRecommendations = summaryStatus === 200;
 
     if (shouldFetchRecommendations) {
       if (cachedRecommendations) {
@@ -681,7 +610,9 @@ const RecordingData = () => {
       }
     } else {
       console.log("Skipping recommendations fetch because summary was not successful or processing.");
-      setRecommendationsError("Recommendations not available as processing did not complete successfully.");
+      setRecommendationsError(summaryStatus === 202
+        ? null
+        : "Recommendations not available as processing did not complete successfully.");
       setRecommendationsLoading(false);
       setRecommendationsData([]);
     }
@@ -708,6 +639,28 @@ const RecordingData = () => {
       setRecommendationsError("Cannot fetch details: Critical recording identifier is missing.");
     }
   }, [recordingData, fetchDetails]);
+
+  useEffect(() => {
+    if (metadataPollIntervalRef.current) {
+      clearInterval(metadataPollIntervalRef.current);
+      metadataPollIntervalRef.current = null;
+    }
+
+    if (!recordingData?.recordingId || !isActiveProcessingStatus(recordingData.status)) {
+      return undefined;
+    }
+
+    metadataPollIntervalRef.current = setInterval(() => {
+      fetchRecordingMetadataByRecordingId(recordingData.recordingId);
+    }, METADATA_POLL_INTERVAL_MS);
+
+    return () => {
+      if (metadataPollIntervalRef.current) {
+        clearInterval(metadataPollIntervalRef.current);
+        metadataPollIntervalRef.current = null;
+      }
+    };
+  }, [fetchRecordingMetadataByRecordingId, recordingData?.recordingId, recordingData?.status]);
 
   useEffect(() => {
     if (!recordingData?.recordingId) {

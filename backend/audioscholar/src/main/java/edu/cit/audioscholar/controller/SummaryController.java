@@ -100,6 +100,14 @@ public class SummaryController {
 
 				Summary summary = summaryService.getSummaryByRecordingId(recordingId);
 				if (summary == null) {
+					AudioMetadata metadata = firebaseService.getAudioMetadataByRecordingId(recordingId);
+					if (metadata != null && currentUserId.equals(metadata.getUserId())) {
+						ResponseEntity<?> pendingOrFailedResponse = responseForMissingSummary(recordingId, metadata);
+						if (pendingOrFailedResponse != null) {
+							return pendingOrFailedResponse;
+						}
+					}
+
 					log.warn("Summary not found for recording ID: {} (Recording exists)", recordingId);
 					return ResponseEntity.notFound().build();
 				}
@@ -128,61 +136,7 @@ public class SummaryController {
 				log.info("Recording {} not found, but owned metadata {} found with status: {}", recordingId,
 						metadata.getId(), status);
 
-				return switch (status) {
-					case UPLOAD_PENDING, UPLOAD_IN_PROGRESS, UPLOADED, PROCESSING_QUEUED, TRANSCRIBING, PDF_CONVERTING,
-							TRANSCRIPTION_COMPLETE, PDF_CONVERSION_COMPLETE, SUMMARIZATION_QUEUED, SUMMARIZING -> {
-						log.info("Summary for recording {} not ready. Metadata status: {}. Returning ACCEPTED.",
-								recordingId, status.name());
-						yield ResponseEntity.status(HttpStatus.ACCEPTED)
-								.body(Map.of("status", status.name(), "message", "Processing is ongoing."));
-					}
-					case COMPLETE -> {
-						String summaryId = metadata.getSummaryId();
-						if (summaryId == null || summaryId.isEmpty()) {
-							log.error(
-									"Inconsistent State: Metadata status is COMPLETE for recording {}, but summaryId is missing in metadata.",
-									recordingId);
-							yield ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("status", "ERROR",
-									"message",
-									"Inconsistent server state: Completed status but missing summary reference."));
-						}
-						try {
-							Summary fetchedSummary = summaryService.getSummaryById(summaryId);
-							if (fetchedSummary != null) {
-								log.info("Summary {} retrieved successfully via metadata for recordingId: {}",
-										summaryId, recordingId);
-								yield ResponseEntity.ok(SummaryDto.fromModel(fetchedSummary));
-							} else {
-								log.error(
-										"Inconsistent State: Metadata status is COMPLETE for recording {}, summaryId {} found, but summary object could not be fetched.",
-										recordingId, summaryId);
-								yield ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("status",
-										"ERROR", "message",
-										"Inconsistent server state: Summary data missing despite completed status."));
-							}
-						} catch (ExecutionException | InterruptedException e) {
-							log.error("Error fetching summary {} via metadata for recording {}: {}", summaryId,
-									recordingId, e.getMessage(), e);
-							Thread.currentThread().interrupt();
-							yield ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-									.body(Map.of("status", "ERROR", "message", "Failed to retrieve summary data."));
-						}
-					}
-					case FAILED, PROCESSING_HALTED_NO_SPEECH, PROCESSING_HALTED_UNSUITABLE_CONTENT -> {
-						log.error(
-								"Processing failed or halted for recording ID {} (Metadata ID {}). Status: {}. Reason: {}",
-								recordingId, metadata.getId(), status.name(), metadata.getFailureReason());
-						yield ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-								.body(Map.of("status", status.name(), "message",
-										"Processing failed or halted: " + metadata.getFailureReason()));
-					}
-					default -> {
-						log.error("Unexpected metadata status {} found for recording ID {}.", status.name(),
-								recordingId);
-						yield ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(
-								Map.of("status", "UNKNOWN", "message", "Unexpected processing status encountered."));
-					}
-				};
+				return responseForMetadataSummary(recordingId, metadata);
 			}
 
 		} catch (ResponseStatusException e) {
@@ -196,6 +150,93 @@ public class SummaryController {
 			log.error("Unexpected error processing getSummaryByRecordingId for {}: {}", recordingId, e.getMessage(), e);
 			throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "An unexpected error occurred.");
 		}
+	}
+
+	private ResponseEntity<?> responseForMissingSummary(String recordingId, AudioMetadata metadata) {
+		ProcessingStatus status = metadata.getStatus();
+		if (status == null) {
+			log.warn("Metadata {} for recording {} has no processing status.", metadata.getId(), recordingId);
+			return null;
+		}
+
+		if (isActiveSummaryStatus(status)) {
+			log.info("Summary for recording {} not ready. Metadata status: {}. Returning ACCEPTED.", recordingId,
+					status.name());
+			return ResponseEntity.status(HttpStatus.ACCEPTED)
+					.body(Map.of("status", status.name(), "message", "Processing is ongoing."));
+		}
+
+		if (isFailedSummaryStatus(status)) {
+			log.error("Processing failed or halted for recording ID {} (Metadata ID {}). Status: {}. Reason: {}",
+					recordingId, metadata.getId(), status.name(), metadata.getFailureReason());
+			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("status", status.name(),
+					"message", "Processing failed or halted: " + metadata.getFailureReason()));
+		}
+
+		return null;
+	}
+
+	private ResponseEntity<?> responseForMetadataSummary(String recordingId, AudioMetadata metadata) {
+		ProcessingStatus status = metadata.getStatus();
+		ResponseEntity<?> missingSummaryResponse = responseForMissingSummary(recordingId, metadata);
+		if (missingSummaryResponse != null) {
+			return missingSummaryResponse;
+		}
+
+		if (status == ProcessingStatus.COMPLETE || status == ProcessingStatus.COMPLETED_WITH_WARNINGS) {
+			return responseForCompletedMetadataSummary(recordingId, metadata);
+		}
+
+		log.error("Unexpected metadata status {} found for recording ID {}.", status != null ? status.name() : "null",
+				recordingId);
+		return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+				.body(Map.of("status", "UNKNOWN", "message", "Unexpected processing status encountered."));
+	}
+
+	private ResponseEntity<?> responseForCompletedMetadataSummary(String recordingId, AudioMetadata metadata) {
+		String summaryId = metadata.getSummaryId();
+		if (summaryId == null || summaryId.isEmpty()) {
+			log.error("Inconsistent State: Metadata status is complete for recording {}, but summaryId is missing.",
+					recordingId);
+			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("status", "ERROR", "message",
+					"Inconsistent server state: Completed status but missing summary reference."));
+		}
+		try {
+			Summary fetchedSummary = summaryService.getSummaryById(summaryId);
+			if (fetchedSummary != null) {
+				log.info("Summary {} retrieved successfully via metadata for recordingId: {}", summaryId, recordingId);
+				return ResponseEntity.ok(SummaryDto.fromModel(fetchedSummary));
+			}
+
+			log.error(
+					"Inconsistent State: Metadata status is complete for recording {}, summaryId {} found, but summary object could not be fetched.",
+					recordingId, summaryId);
+			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("status", "ERROR", "message",
+					"Inconsistent server state: Summary data missing despite completed status."));
+		} catch (ExecutionException | InterruptedException e) {
+			log.error("Error fetching summary {} via metadata for recording {}: {}", summaryId, recordingId,
+					e.getMessage(), e);
+			Thread.currentThread().interrupt();
+			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+					.body(Map.of("status", "ERROR", "message", "Failed to retrieve summary data."));
+		}
+	}
+
+	private boolean isActiveSummaryStatus(ProcessingStatus status) {
+		return switch (status) {
+			case UPLOAD_PENDING, UPLOAD_IN_PROGRESS, UPLOADED, PROCESSING_QUEUED, TRANSCRIBING, PDF_CONVERTING,
+					PDF_CONVERTING_API, TRANSCRIPTION_COMPLETE, PDF_CONVERSION_COMPLETE, SUMMARIZATION_QUEUED,
+					SUMMARIZING, SUMMARY_COMPLETE, RECOMMENDATIONS_QUEUED, GENERATING_RECOMMENDATIONS ->
+				true;
+			default -> false;
+		};
+	}
+
+	private boolean isFailedSummaryStatus(ProcessingStatus status) {
+		return switch (status) {
+			case FAILED, SUMMARY_FAILED, PROCESSING_HALTED_NO_SPEECH, PROCESSING_HALTED_UNSUITABLE_CONTENT -> true;
+			default -> false;
+		};
 	}
 
 	@DeleteMapping("/summaries/{summaryId}")
