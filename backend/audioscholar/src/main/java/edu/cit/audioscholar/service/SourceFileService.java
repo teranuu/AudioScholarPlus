@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import edu.cit.audioscholar.model.SourceFile;
+import edu.cit.audioscholar.model.SourceKind;
 
 @Service
 public class SourceFileService {
@@ -18,11 +19,12 @@ public class SourceFileService {
 		this.sourceFileRepository = sourceFileRepository;
 	}
 
-	public SourceFile createSourceFile(String jobId, String sourceLabel, MultipartFile file, Path localPath)
-			throws IOException {
+	public SourceFile createSourceFile(String jobId, String sourceLabel, SourceKind sourceKind, MultipartFile file,
+			Path localPath) throws IOException {
 		SourceFile sourceFile = new SourceFile();
 		sourceFile.setJobId(jobId);
 		sourceFile.setSourceLabel(sourceLabel);
+		sourceFile.setSourceKind(sourceKind.name());
 		sourceFile.setFileName(file.getOriginalFilename());
 		sourceFile.setContentType(file.getContentType());
 		sourceFile.setFileType(file.getContentType());

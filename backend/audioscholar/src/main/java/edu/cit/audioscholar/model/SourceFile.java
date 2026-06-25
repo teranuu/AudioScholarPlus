@@ -9,6 +9,7 @@ public class SourceFile {
 	private String sourceFileId = UUID.randomUUID().toString();
 	private String jobId;
 	private String sourceLabel;
+	private String sourceKind;
 	private String fileUrl;
 	private String fileType;
 	private String uploadStatus;
@@ -36,6 +37,12 @@ public class SourceFile {
 	}
 	public void setSourceLabel(String sourceLabel) {
 		this.sourceLabel = sourceLabel;
+	}
+	public String getSourceKind() {
+		return sourceKind;
+	}
+	public void setSourceKind(String sourceKind) {
+		this.sourceKind = sourceKind;
 	}
 	public String getFileUrl() {
 		return fileUrl;
@@ -97,6 +104,7 @@ public class SourceFile {
 		map.put("sourceFileId", sourceFileId);
 		map.put("jobId", jobId);
 		map.put("sourceLabel", sourceLabel);
+		map.put("sourceKind", sourceKind);
 		map.put("fileUrl", fileUrl);
 		map.put("fileType", fileType);
 		map.put("uploadStatus", uploadStatus);

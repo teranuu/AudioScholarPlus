@@ -29,13 +29,14 @@ public class MultiSourceController {
 
 	@PostMapping
 	@PreAuthorize("isAuthenticated()")
-	public ResponseEntity<?> createJob(@RequestParam("files") List<MultipartFile> files,
+	public ResponseEntity<?> createJob(@RequestParam("mediaFiles") List<MultipartFile> mediaFiles,
+			@RequestParam(value = "documentFiles", required = false) List<MultipartFile> documentFiles,
 			@RequestParam(value = "title", required = false) String title,
 			@RequestParam(value = "description", required = false) String description,
 			@RequestParam(value = "outputType", required = false) String outputType, Authentication authentication) {
 		try {
-			MultiSourceJob job = multiSourceJobService.createAndProcess(authentication.getName(), files, title,
-					description, outputType);
+			MultiSourceJob job = multiSourceJobService.createAndProcess(authentication.getName(), mediaFiles,
+					documentFiles, title, description, outputType);
 			return ResponseEntity.status(HttpStatus.ACCEPTED).body(job.toMap());
 		} catch (IllegalArgumentException e) {
 			return ResponseEntity.badRequest().body(Map.of("status", "FAILED", "message", e.getMessage()));

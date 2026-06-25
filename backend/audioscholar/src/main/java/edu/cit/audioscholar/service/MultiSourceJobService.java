@@ -24,13 +24,20 @@ import edu.cit.audioscholar.model.ProcessingStatus;
 import edu.cit.audioscholar.model.QualityReport;
 import edu.cit.audioscholar.model.SourceAttribution;
 import edu.cit.audioscholar.model.SourceFile;
+import edu.cit.audioscholar.model.SourceKind;
 import edu.cit.audioscholar.model.Summary;
 
 @Service
 public class MultiSourceJobService {
-	private static final Set<String> ALLOWED_TYPES = Set.of("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
+	private static final Set<String> ALLOWED_MEDIA_TYPES = Set.of("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
 			"audio/aac", "audio/x-aac", "audio/ogg", "application/ogg", "audio/flac", "audio/x-flac", "audio/aiff",
 			"audio/x-aiff", "audio/mp4", "audio/m4a", "video/mp4", "video/webm", "video/quicktime");
+	private static final Set<String> ALLOWED_MEDIA_EXTENSIONS = Set.of("mp3", "wav", "aac", "ogg", "flac", "aiff",
+			"m4a", "mp4", "webm", "mov");
+	private static final Set<String> ALLOWED_DOCUMENT_TYPES = Set.of("application/pdf", "application/msword",
+			"application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/vnd.ms-powerpoint",
+			"application/vnd.openxmlformats-officedocument.presentationml.presentation");
+	private static final Set<String> ALLOWED_DOCUMENT_EXTENSIONS = Set.of("pdf", "ppt", "pptx", "doc", "docx");
 
 	private final GeminiService geminiService;
 	private final QualityReportService qualityReportService;
@@ -39,6 +46,7 @@ public class MultiSourceJobService {
 	private final SourceAttributionService sourceAttributionService;
 	private final SourceFileService sourceFileService;
 	private final SourceTranscriptService sourceTranscriptService;
+	private final DocumentTextExtractionService documentTextExtractionService;
 	private final MergedSummaryRepository mergedSummaryRepository;
 	private final MultiSourceJobRepository multiSourceJobRepository;
 	private final Path tempDir;
@@ -47,8 +55,10 @@ public class MultiSourceJobService {
 	public MultiSourceJobService(GeminiService geminiService, QualityReportService qualityReportService,
 			SummaryService summaryService, DeduplicationService deduplicationService,
 			SourceAttributionService sourceAttributionService, SourceFileService sourceFileService,
-			SourceTranscriptService sourceTranscriptService, MergedSummaryRepository mergedSummaryRepository,
-			MultiSourceJobRepository multiSourceJobRepository, @Value("${app.temp-file-dir}") String tempDirStr,
+			SourceTranscriptService sourceTranscriptService,
+			DocumentTextExtractionService documentTextExtractionService,
+			MergedSummaryRepository mergedSummaryRepository, MultiSourceJobRepository multiSourceJobRepository,
+			@Value("${app.temp-file-dir}") String tempDirStr,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue) throws IOException {
 		this.geminiService = geminiService;
 		this.qualityReportService = qualityReportService;
@@ -57,6 +67,7 @@ public class MultiSourceJobService {
 		this.sourceAttributionService = sourceAttributionService;
 		this.sourceFileService = sourceFileService;
 		this.sourceTranscriptService = sourceTranscriptService;
+		this.documentTextExtractionService = documentTextExtractionService;
 		this.mergedSummaryRepository = mergedSummaryRepository;
 		this.multiSourceJobRepository = multiSourceJobRepository;
 		this.tempDir = Path.of(tempDirStr);
@@ -64,10 +75,13 @@ public class MultiSourceJobService {
 		Files.createDirectories(this.tempDir);
 	}
 
-	public MultiSourceJob createAndProcess(String userId, List<MultipartFile> files, String title, String description,
-			String outputTypeValue) throws Exception {
+	public MultiSourceJob createAndProcess(String userId, List<MultipartFile> mediaFiles,
+			List<MultipartFile> documentFiles, String title, String description, String outputTypeValue)
+			throws Exception {
 		OutputType outputType = OutputType.fromValue(outputTypeValue);
-		validateFiles(files);
+		List<MultipartFile> normalizedMediaFiles = normalizeFiles(mediaFiles);
+		List<MultipartFile> normalizedDocumentFiles = normalizeFiles(documentFiles);
+		validateFiles(normalizedMediaFiles, normalizedDocumentFiles);
 
 		MultiSourceJob job = new MultiSourceJob();
 		job.setUserId(userId);
@@ -75,24 +89,33 @@ public class MultiSourceJobService {
 		job.setDescription(description);
 		job.setOutputType(outputType.name());
 		job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
-		job.setSourceCount(files.size());
+		job.setSourceCount(normalizedMediaFiles.size() + normalizedDocumentFiles.size());
 		save(job);
 
 		List<Path> tempFiles = new ArrayList<>();
 		try {
 			List<SourceFile> sourceFiles = new ArrayList<>();
-			for (int i = 0; i < files.size(); i++) {
-				MultipartFile file = files.get(i);
+			List<MultipartFile> allFiles = new ArrayList<>();
+			allFiles.addAll(normalizedMediaFiles);
+			allFiles.addAll(normalizedDocumentFiles);
+			for (int i = 0; i < allFiles.size(); i++) {
+				MultipartFile file = allFiles.get(i);
 				String sourceLabel = "Source " + (char) ('A' + i);
 				Path tempFile = saveTemp(file);
 				tempFiles.add(tempFile);
+				SourceKind sourceKind = i < normalizedMediaFiles.size() ? SourceKind.MEDIA : SourceKind.DOCUMENT;
 
-				SourceFile sourceFile = sourceFileService.createSourceFile(job.getJobId(), sourceLabel, file, tempFile);
-				QualityReport report = qualityReportService.analyze(job.getJobId() + "-" + sourceLabel, tempFile);
+				SourceFile sourceFile = sourceFileService.createSourceFile(job.getJobId(), sourceLabel, sourceKind,
+						file, tempFile);
+				QualityReport report = SourceKind.MEDIA == sourceKind
+						? qualityReportService.analyze(job.getJobId() + "-" + sourceLabel, tempFile)
+						: QualityReport.unavailable(job.getJobId() + "-" + sourceLabel);
 				sourceFile.setQualityReport(report);
 
-				String transcript = geminiService.callGeminiTranscriptionAPIWithFallback(tempFile,
-						file.getOriginalFilename());
+				String transcript = SourceKind.MEDIA == sourceKind
+						? geminiService.callGeminiTranscriptionAPIWithFallback(tempFile, file.getOriginalFilename())
+						: documentTextExtractionService.extractText(tempFile, file.getOriginalFilename(),
+								file.getContentType());
 				sourceFile.setTranscriptText(transcript);
 				sourceFiles.add(sourceFile);
 				sourceFileService.save(sourceFile);
@@ -206,26 +229,70 @@ public class MultiSourceJobService {
 		return null;
 	}
 
-	private void validateFiles(List<MultipartFile> files) {
-		if (files == null || files.size() < 2) {
+	private List<MultipartFile> normalizeFiles(List<MultipartFile> files) {
+		if (files == null) {
+			return List.of();
+		}
+		return files;
+	}
+
+	private void validateFiles(List<MultipartFile> mediaFiles, List<MultipartFile> documentFiles) {
+		if (mediaFiles.size() < 2) {
 			throw new IllegalArgumentException("Select at least two audio or video sources.");
 		}
-		if (files.size() > 5) {
+		if (mediaFiles.size() + documentFiles.size() > 5) {
 			throw new IllegalArgumentException("Select no more than five sources.");
 		}
 		long maxBytes = DataSize.parse(maxFileSizeValue).toBytes();
-		for (MultipartFile file : files) {
+		for (MultipartFile file : mediaFiles) {
 			if (file == null || file.isEmpty()) {
-				throw new IllegalArgumentException("One of the selected source files is empty.");
+				throw new IllegalArgumentException("One of the selected media source files is empty.");
 			}
-			String type = file.getContentType() == null ? "" : file.getContentType().toLowerCase();
-			if (!ALLOWED_TYPES.contains(type)) {
-				throw new IllegalArgumentException("Unsupported source file type: " + type);
+			if (!isAllowedMedia(file)) {
+				throw new IllegalArgumentException("Unsupported media source file type: " + describeType(file));
 			}
 			if (file.getSize() > maxBytes) {
-				throw new IllegalArgumentException("A source file exceeds the maximum allowed size.");
+				throw new IllegalArgumentException("A media source file exceeds the maximum allowed size.");
 			}
 		}
+		for (MultipartFile file : documentFiles) {
+			if (file == null || file.isEmpty()) {
+				throw new IllegalArgumentException("One of the selected document source files is empty.");
+			}
+			if (!isAllowedDocument(file)) {
+				throw new IllegalArgumentException("Unsupported document source file type: " + describeType(file));
+			}
+			if (file.getSize() > maxBytes) {
+				throw new IllegalArgumentException("A document source file exceeds the maximum allowed size.");
+			}
+		}
+	}
+
+	private boolean isAllowedMedia(MultipartFile file) {
+		String type = file.getContentType() == null ? "" : file.getContentType().toLowerCase();
+		return ALLOWED_MEDIA_TYPES.contains(type) || ALLOWED_MEDIA_EXTENSIONS.contains(extensionOf(file));
+	}
+
+	private boolean isAllowedDocument(MultipartFile file) {
+		String type = file.getContentType() == null ? "" : file.getContentType().toLowerCase();
+		return ALLOWED_DOCUMENT_TYPES.contains(type) || ALLOWED_DOCUMENT_EXTENSIONS.contains(extensionOf(file));
+	}
+
+	private String extensionOf(MultipartFile file) {
+		String extension = StringUtils.getFilenameExtension(file.getOriginalFilename());
+		return extension != null ? extension.toLowerCase() : "";
+	}
+
+	private String describeType(MultipartFile file) {
+		String type = file.getContentType();
+		String extension = extensionOf(file);
+		if (StringUtils.hasText(type) && StringUtils.hasText(extension)) {
+			return type + " (." + extension + ")";
+		}
+		if (StringUtils.hasText(type)) {
+			return type;
+		}
+		return StringUtils.hasText(extension) ? "." + extension : "unknown";
 	}
 
 	private Path saveTemp(MultipartFile file) throws IOException {
