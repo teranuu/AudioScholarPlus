@@ -53,6 +53,7 @@ public class AudioTranscriptionListenerService {
 	private final Path tempFileDir;
 	private final RabbitTemplate rabbitTemplate;
 	private final RobustTaskExecutor robustTaskExecutor;
+	private final AudioProcessingGuardrailService guardrailService;
 	private final Map<String, ReentrantLock> metadataLocks = new ConcurrentHashMap<>();
 
 	@Value("${gemini.transcription.max-attempts:3}")
@@ -64,7 +65,8 @@ public class AudioTranscriptionListenerService {
 	public AudioTranscriptionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
 			TranscriptionOrchestrator transcriptionOrchestrator, QualityReportService qualityReportService,
 			CacheManager cacheManager, @Value("${app.temp-file-dir}") String tempFileDirStr,
-			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor) {
+			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor,
+			AudioProcessingGuardrailService guardrailService) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
 		this.transcriptionOrchestrator = transcriptionOrchestrator;
@@ -73,6 +75,7 @@ public class AudioTranscriptionListenerService {
 		this.tempFileDir = Paths.get(tempFileDirStr);
 		this.rabbitTemplate = rabbitTemplate;
 		this.robustTaskExecutor = robustTaskExecutor;
+		this.guardrailService = guardrailService;
 		try {
 			Files.createDirectories(this.tempFileDir);
 		} catch (IOException e) {
@@ -151,6 +154,15 @@ public class AudioTranscriptionListenerService {
 										"Failed to download audio file (downloadAudioToFile returned null)");
 							}
 							downloadedAudioPath.set(tempFilePath);
+							AudioProcessingGuardrailService.GuardrailResult guardrail = guardrailService
+									.validateAudioFile(tempFilePath, originalFileName);
+							Map<String, Object> guardrailUpdates = new HashMap<>();
+							guardrailUpdates.put("durationSeconds", Math.toIntExact(guardrail.durationSeconds()));
+							guardrailUpdates.put("estimatedGeminiAudioTokens", guardrail.estimatedAudioTokens());
+							guardrailUpdates.put("audioFingerprint", guardrail.fingerprint());
+							guardrailUpdates.put("lastUpdated", Timestamp.now());
+							firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(),
+									metadataId, guardrailUpdates);
 
 							Integer durationSeconds = metadata.getDurationSeconds();
 							if (durationSeconds == null || durationSeconds <= 0) {

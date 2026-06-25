@@ -16,6 +16,9 @@ public class SourceFile {
 	private String fileName;
 	private String contentType;
 	private long fileSize;
+	private Long durationSeconds;
+	private Long estimatedGeminiAudioTokens;
+	private String audioFingerprint;
 	private String transcriptText;
 	private QualityReport qualityReport;
 	private Date createdAt = new Date();
@@ -80,6 +83,24 @@ public class SourceFile {
 	public void setFileSize(long fileSize) {
 		this.fileSize = fileSize;
 	}
+	public Long getDurationSeconds() {
+		return durationSeconds;
+	}
+	public void setDurationSeconds(Long durationSeconds) {
+		this.durationSeconds = durationSeconds;
+	}
+	public Long getEstimatedGeminiAudioTokens() {
+		return estimatedGeminiAudioTokens;
+	}
+	public void setEstimatedGeminiAudioTokens(Long estimatedGeminiAudioTokens) {
+		this.estimatedGeminiAudioTokens = estimatedGeminiAudioTokens;
+	}
+	public String getAudioFingerprint() {
+		return audioFingerprint;
+	}
+	public void setAudioFingerprint(String audioFingerprint) {
+		this.audioFingerprint = audioFingerprint;
+	}
 	public String getTranscriptText() {
 		return transcriptText;
 	}
@@ -111,6 +132,9 @@ public class SourceFile {
 		map.put("fileName", fileName);
 		map.put("contentType", contentType);
 		map.put("fileSize", fileSize);
+		map.put("durationSeconds", durationSeconds);
+		map.put("estimatedGeminiAudioTokens", estimatedGeminiAudioTokens);
+		map.put("audioFingerprint", audioFingerprint);
 		map.put("transcriptText", transcriptText);
 		map.put("qualityReport", qualityReport != null ? qualityReport.toMap() : null);
 		map.put("createdAt", createdAt);

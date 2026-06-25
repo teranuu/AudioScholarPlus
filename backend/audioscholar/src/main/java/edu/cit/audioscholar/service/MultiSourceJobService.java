@@ -49,6 +49,7 @@ public class MultiSourceJobService {
 	private final DocumentTextExtractionService documentTextExtractionService;
 	private final MergedSummaryRepository mergedSummaryRepository;
 	private final MultiSourceJobRepository multiSourceJobRepository;
+	private final AudioProcessingGuardrailService guardrailService;
 	private final Path tempDir;
 	private final String maxFileSizeValue;
 
@@ -58,7 +59,7 @@ public class MultiSourceJobService {
 			SourceTranscriptService sourceTranscriptService,
 			DocumentTextExtractionService documentTextExtractionService,
 			MergedSummaryRepository mergedSummaryRepository, MultiSourceJobRepository multiSourceJobRepository,
-			@Value("${app.temp-file-dir}") String tempDirStr,
+			AudioProcessingGuardrailService guardrailService, @Value("${app.temp-file-dir}") String tempDirStr,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue) throws IOException {
 		this.geminiService = geminiService;
 		this.qualityReportService = qualityReportService;
@@ -70,6 +71,7 @@ public class MultiSourceJobService {
 		this.documentTextExtractionService = documentTextExtractionService;
 		this.mergedSummaryRepository = mergedSummaryRepository;
 		this.multiSourceJobRepository = multiSourceJobRepository;
+		this.guardrailService = guardrailService;
 		this.tempDir = Path.of(tempDirStr);
 		this.maxFileSizeValue = maxFileSizeValue;
 		Files.createDirectories(this.tempDir);
@@ -82,6 +84,8 @@ public class MultiSourceJobService {
 		List<MultipartFile> normalizedMediaFiles = normalizeFiles(mediaFiles);
 		List<MultipartFile> normalizedDocumentFiles = normalizeFiles(documentFiles);
 		validateFiles(normalizedMediaFiles, normalizedDocumentFiles);
+		guardrailService.validateFileCount(normalizedMediaFiles, normalizedDocumentFiles);
+		guardrailService.validateUploadBytes(normalizedMediaFiles, normalizedDocumentFiles);
 
 		MultiSourceJob job = new MultiSourceJob();
 		job.setUserId(userId);
@@ -94,7 +98,8 @@ public class MultiSourceJobService {
 
 		List<Path> tempFiles = new ArrayList<>();
 		try {
-			List<SourceFile> sourceFiles = new ArrayList<>();
+			List<PendingSource> pendingSources = new ArrayList<>();
+			List<AudioProcessingGuardrailService.GuardrailResult> mediaGuardrails = new ArrayList<>();
 			List<MultipartFile> allFiles = new ArrayList<>();
 			allFiles.addAll(normalizedMediaFiles);
 			allFiles.addAll(normalizedDocumentFiles);
@@ -107,6 +112,25 @@ public class MultiSourceJobService {
 
 				SourceFile sourceFile = sourceFileService.createSourceFile(job.getJobId(), sourceLabel, sourceKind,
 						file, tempFile);
+				AudioProcessingGuardrailService.GuardrailResult guardrail = null;
+				if (SourceKind.MEDIA == sourceKind) {
+					guardrail = guardrailService.validateAudioFile(tempFile, file.getOriginalFilename());
+					sourceFile.setDurationSeconds(guardrail.durationSeconds());
+					sourceFile.setEstimatedGeminiAudioTokens(guardrail.estimatedAudioTokens());
+					sourceFile.setAudioFingerprint(guardrail.fingerprint());
+					mediaGuardrails.add(guardrail);
+				}
+				pendingSources.add(new PendingSource(file, tempFile, sourceKind, sourceFile, sourceLabel));
+			}
+			guardrailService.validateMultiSourceAggregate(mediaGuardrails);
+
+			List<SourceFile> sourceFiles = new ArrayList<>();
+			for (PendingSource pending : pendingSources) {
+				MultipartFile file = pending.file();
+				Path tempFile = pending.tempFile();
+				SourceKind sourceKind = pending.sourceKind();
+				SourceFile sourceFile = pending.sourceFile();
+				String sourceLabel = pending.sourceLabel();
 				QualityReport report = SourceKind.MEDIA == sourceKind
 						? qualityReportService.analyze(job.getJobId() + "-" + sourceLabel, tempFile)
 						: QualityReport.unavailable(job.getJobId() + "-" + sourceLabel);
@@ -308,5 +332,9 @@ public class MultiSourceJobService {
 
 	private void save(MultiSourceJob job) throws Exception {
 		multiSourceJobRepository.save(job);
+	}
+
+	private record PendingSource(MultipartFile file, Path tempFile, SourceKind sourceKind, SourceFile sourceFile,
+			String sourceLabel) {
 	}
 }

@@ -38,10 +38,13 @@ public class GoogleFilesApiService {
 
 	private final RestTemplate restTemplate;
 	private final ObjectMapper objectMapper;
+	private final GeminiBudgetService geminiBudgetService;
 
-	public GoogleFilesApiService(RestTemplate restTemplate, ObjectMapper objectMapper) {
+	public GoogleFilesApiService(RestTemplate restTemplate, ObjectMapper objectMapper,
+			GeminiBudgetService geminiBudgetService) {
 		this.restTemplate = restTemplate;
 		this.objectMapper = objectMapper;
+		this.geminiBudgetService = geminiBudgetService;
 	}
 
 	public static class ApiException extends Exception {
@@ -73,6 +76,7 @@ public class GoogleFilesApiService {
 	 */
 	public String uploadFile(Path filePath, String mimeType, long fileSize, String displayName)
 			throws IOException, ApiException {
+		geminiBudgetService.reserve("files.upload", 0, null, displayName);
 		String initiateUrl = UriComponentsBuilder.fromUriString(API_BASE_URL + FILES_API_UPLOAD_PATH)
 				.queryParam("key", apiKey).toUriString();
 

@@ -128,6 +128,16 @@ public class ProcessingRetryService {
 		if (!StringUtils.hasText(metadata.getNhostFileId()) || !metadata.isAudioUploadComplete()) {
 			throw new IllegalStateException("Recording has no durable uploaded audio source");
 		}
+		String failureReason = metadata.getFailureReason();
+		if (StringUtils.hasText(failureReason)) {
+			String normalizedReason = failureReason.toLowerCase(java.util.Locale.ROOT);
+			if (normalizedReason.contains("duration exceeds") || normalizedReason.contains("input exceeds")
+					|| normalizedReason.contains("guardrail") || normalizedReason.contains("unsupported")
+					|| normalizedReason.contains("maximum allowed file size")
+					|| normalizedReason.contains("estimated gemini")) {
+				throw new IllegalStateException("This processing failure is not retryable");
+			}
+		}
 		Timestamp quotaRetryAt = metadata.getQuotaRetryAt();
 		if (quotaRetryAt != null) {
 			Instant retryAt = Instant.ofEpochSecond(quotaRetryAt.getSeconds(), quotaRetryAt.getNanos());

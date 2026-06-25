@@ -64,6 +64,12 @@ public class SummarizationListenerService {
 	private final Map<String, Lock> metadataLocks = new ConcurrentHashMap<>();
 	private static final long MESSAGE_ID_EXPIRATION_TIME = 10 * 60 * 1000;
 
+	@Value("${gemini.summarization.max-attempts:2}")
+	private int summarizationMaxAttempts;
+
+	@Value("${gemini.summarization.retry-delay-ms:2000}")
+	private long summarizationRetryDelayMs;
+
 	public SummarizationListenerService(FirebaseService firebaseService, GeminiService geminiService,
 			NhostStorageService nhostStorageService, @Lazy SummaryService summaryService, CacheManager cacheManager,
 			ObjectMapper objectMapper, @Value("${app.temp-file-dir:./temp_files}") String tempDirStr,
@@ -140,234 +146,252 @@ public class SummarizationListenerService {
 			lock.lock();
 			log.debug("[{}] Acquired lock for summarization processing", metadataId);
 
-			robustTaskExecutor.executeWithInfiniteRetry(metadataId, "summarization", () -> {
-				Map<String, Object> latestMetadataMap;
-				try {
-					latestMetadataMap = firebaseService.getData(firebaseService.getAudioMetadataCollectionName(),
-							metadataId);
-				} catch (Exception e) {
-					throw new RuntimeException("Failed to fetch metadata from Firestore: " + e.getMessage(), e);
-				}
-
-				if (latestMetadataMap == null) {
-					throw new RuntimeException("AudioMetadata not found for ID. Retrying...");
-				}
-
-				AudioMetadata metadata = AudioMetadata.fromMap(latestMetadataMap);
-				String userId = metadata.getUserId();
-
-				log.info("[{}] Found metadata. Current status: {}, User: {}", metadataId, metadata.getStatus(), userId);
-
-				ProcessingStatus currentStatus = metadata.getStatus();
-				if (currentStatus == ProcessingStatus.SUMMARIZING || currentStatus == ProcessingStatus.SUMMARY_COMPLETE
-						|| currentStatus == ProcessingStatus.RECOMMENDATIONS_QUEUED
-						|| currentStatus == ProcessingStatus.GENERATING_RECOMMENDATIONS
-						|| currentStatus == ProcessingStatus.COMPLETE
-						|| currentStatus == ProcessingStatus.COMPLETED_WITH_WARNINGS) {
-
-					log.info(
-							"[{}] Summarization already in progress or complete (current status: {}). Skipping duplicate processing.",
-							metadataId, currentStatus);
-					return;
-				}
-
-				if (currentStatus != ProcessingStatus.SUMMARIZATION_QUEUED) {
-					log.warn("[{}] Metadata status is not SUMMARIZATION_QUEUED (it's {}). Skipping summarization.",
-							metadataId, metadata.getStatus());
-					return;
-				}
-
-				String transcript = metadata.getTranscriptText();
-				if (transcript == null || transcript.isBlank()) {
-					log.warn("[{}] Transcript text is missing. Retrying...", metadataId);
-					throw new RuntimeException("Transcript text is missing");
-				}
-
-				String googleFilesApiPdfUri = metadata.getGoogleFilesApiPdfUri();
-				if (googleFilesApiPdfUri != null && !googleFilesApiPdfUri.isBlank()) {
-					log.info("[{}] Found Google Files API URI for PDF, using it directly for summarization: {}",
-							metadataId, googleFilesApiPdfUri);
-
-					updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
-
-					try {
-						String summarizationJson = geminiService.generateSummaryWithGoogleFileUri(transcript,
-								googleFilesApiPdfUri, metadataId, metadata.getOutputType());
-						processSummarizationResult(summarizationJson, metadataId, userId, metadata);
-					} catch (Exception e) {
-						throw new RuntimeException("Summarization with Google Files API failed: " + e.getMessage(), e);
-					}
-					return;
-				}
-
-				String convertApiPdfUrl = metadata.getConvertApiPdfUrl();
-				if (convertApiPdfUrl != null && !convertApiPdfUrl.isBlank()) {
-					log.info("[{}] Found ConvertAPI PDF URL, using it for summarization: {}", metadataId,
-							convertApiPdfUrl);
-
-					updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
-
-					Path tempPdfPath = null;
-					try {
-						String tempPdfFilename = metadataId + "_context.pdf";
-						tempPdfPath = tempDir.resolve(tempPdfFilename);
-						log.info("[{}] Downloading PDF from ConvertAPI URL to local file: {}", metadataId,
-								tempPdfPath.getFileName());
-
-						downloadFileFromUrl(convertApiPdfUrl, tempPdfPath);
-						log.info("[{}] Successfully downloaded PDF from ConvertAPI to local file", metadataId);
-
-						log.info("[{}] Calling GeminiService to generate summary with PDF context...", metadataId);
-
+			robustTaskExecutor.executeWithRetry(metadataId, "summarization", summarizationMaxAttempts,
+					summarizationRetryDelayMs, () -> {
+						Map<String, Object> latestMetadataMap;
 						try {
-							String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
-									tempPdfPath, metadataId, metadata.getOutputType());
-							processSummarizationResult(summarizationJson, metadataId, userId, metadata);
+							latestMetadataMap = firebaseService
+									.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
 						} catch (Exception e) {
-							throw new RuntimeException(
-									"Summarization with ConvertAPI PDF context failed: " + e.getMessage(), e);
-						}
-					} catch (IOException e) {
-						throw new RuntimeException("Error downloading PDF from ConvertAPI: " + e.getMessage(), e);
-					} finally {
-						if (tempPdfPath != null) {
-							try {
-								Files.deleteIfExists(tempPdfPath);
-							} catch (IOException e) {
-								log.warn("[{}] Failed to delete temporary PDF file", metadataId);
-							}
-						}
-					}
-					return;
-				}
-
-				if (metadata.isAudioOnly()) {
-					log.info("[{}] Audio-only upload detected. Processing summarization without PDF context.",
-							metadataId);
-					updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
-
-					try {
-						String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript, metadataId,
-								metadata.getOutputType());
-						processSummarizationResult(summarizationJson, metadataId, userId, metadata);
-					} catch (Exception e) {
-						throw new RuntimeException("Transcript-only summarization failed: " + e.getMessage(), e);
-					}
-					return;
-				} else if (StringUtils.hasText(metadata.getNhostPptxFileId())) {
-					String pdfUrl = metadata.getGeneratedPdfUrl();
-					if (pdfUrl == null || pdfUrl.isBlank()) {
-						log.info(
-								"[{}] PowerPoint was uploaded but PDF conversion is not complete yet. Waiting for PDF...",
-								metadataId);
-
-						Map<String, Object> statusUpdate = new HashMap<>();
-						statusUpdate.put("status", ProcessingStatus.SUMMARIZATION_QUEUED.name());
-						statusUpdate.put("lastUpdated", Timestamp.now());
-						statusUpdate.put("waitingForPdf", true);
-						try {
-							firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(),
-									metadataId, statusUpdate);
-						} catch (Exception e) {
-							log.warn("Failed to update status to waitingForPdf", e);
-						}
-						// Throw exception to trigger retry (loop)
-						throw new RuntimeException("Waiting for PDF conversion to complete...");
-					}
-
-					updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
-
-					String pdfNhostId = extractNhostIdFromUrl(pdfUrl);
-					if (pdfNhostId == null) {
-						boolean isConvertApiUrl = pdfUrl != null
-								&& (pdfUrl.contains("convertapi.com") || pdfUrl.contains("v2.convertapi.com"));
-
-						if (!isConvertApiUrl) {
-							throw new RuntimeException("Invalid PDF URL format and not a ConvertAPI URL: " + pdfUrl);
+							throw new RuntimeException("Failed to fetch metadata from Firestore: " + e.getMessage(), e);
 						}
 
-						log.info("[{}] Detected ConvertAPI PDF URL in generatedPdfUrl, downloading directly: {}",
-								metadataId, pdfUrl);
+						if (latestMetadataMap == null) {
+							throw new RuntimeException("AudioMetadata not found for ID. Retrying...");
+						}
 
-						Path tempPdfPath = null;
-						try {
-							String tempPdfFilename = metadataId + "_context.pdf";
-							tempPdfPath = tempDir.resolve(tempPdfFilename);
-							log.info("[{}] Downloading PDF from ConvertAPI URL to local file: {}", metadataId,
-									tempPdfPath.getFileName());
+						AudioMetadata metadata = AudioMetadata.fromMap(latestMetadataMap);
+						String userId = metadata.getUserId();
 
-							downloadFileFromUrl(pdfUrl, tempPdfPath);
-							log.info("[{}] Successfully downloaded PDF from ConvertAPI to local file", metadataId);
+						log.info("[{}] Found metadata. Current status: {}, User: {}", metadataId, metadata.getStatus(),
+								userId);
 
-							log.info("[{}] Calling GeminiService to generate summary with PDF context...", metadataId);
+						ProcessingStatus currentStatus = metadata.getStatus();
+						if (currentStatus == ProcessingStatus.SUMMARIZING
+								|| currentStatus == ProcessingStatus.SUMMARY_COMPLETE
+								|| currentStatus == ProcessingStatus.RECOMMENDATIONS_QUEUED
+								|| currentStatus == ProcessingStatus.GENERATING_RECOMMENDATIONS
+								|| currentStatus == ProcessingStatus.COMPLETE
+								|| currentStatus == ProcessingStatus.COMPLETED_WITH_WARNINGS) {
+
+							log.info(
+									"[{}] Summarization already in progress or complete (current status: {}). Skipping duplicate processing.",
+									metadataId, currentStatus);
+							return;
+						}
+
+						if (currentStatus != ProcessingStatus.SUMMARIZATION_QUEUED) {
+							log.warn(
+									"[{}] Metadata status is not SUMMARIZATION_QUEUED (it's {}). Skipping summarization.",
+									metadataId, metadata.getStatus());
+							return;
+						}
+
+						String transcript = metadata.getTranscriptText();
+						if (transcript == null || transcript.isBlank()) {
+							log.warn("[{}] Transcript text is missing. Retrying...", metadataId);
+							throw new RuntimeException("Transcript text is missing");
+						}
+
+						String googleFilesApiPdfUri = metadata.getGoogleFilesApiPdfUri();
+						if (googleFilesApiPdfUri != null && !googleFilesApiPdfUri.isBlank()) {
+							log.info("[{}] Found Google Files API URI for PDF, using it directly for summarization: {}",
+									metadataId, googleFilesApiPdfUri);
+
+							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
 
 							try {
-								String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
-										tempPdfPath, metadataId, metadata.getOutputType());
+								String summarizationJson = geminiService.generateSummaryWithGoogleFileUri(transcript,
+										googleFilesApiPdfUri, metadataId, metadata.getOutputType());
 								processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 							} catch (Exception e) {
 								throw new RuntimeException(
-										"Summarization with ConvertAPI PDF failed: " + e.getMessage(), e);
+										"Summarization with Google Files API failed: " + e.getMessage(), e);
 							}
-						} catch (IOException e) {
-							throw new RuntimeException("Error downloading PDF from ConvertAPI: " + e.getMessage(), e);
-						} finally {
-							if (tempPdfPath != null) {
+							return;
+						}
+
+						String convertApiPdfUrl = metadata.getConvertApiPdfUrl();
+						if (convertApiPdfUrl != null && !convertApiPdfUrl.isBlank()) {
+							log.info("[{}] Found ConvertAPI PDF URL, using it for summarization: {}", metadataId,
+									convertApiPdfUrl);
+
+							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
+
+							Path tempPdfPath = null;
+							try {
+								String tempPdfFilename = metadataId + "_context.pdf";
+								tempPdfPath = tempDir.resolve(tempPdfFilename);
+								log.info("[{}] Downloading PDF from ConvertAPI URL to local file: {}", metadataId,
+										tempPdfPath.getFileName());
+
+								downloadFileFromUrl(convertApiPdfUrl, tempPdfPath);
+								log.info("[{}] Successfully downloaded PDF from ConvertAPI to local file", metadataId);
+
+								log.info("[{}] Calling GeminiService to generate summary with PDF context...",
+										metadataId);
+
 								try {
-									Files.deleteIfExists(tempPdfPath);
-								} catch (IOException e) {
-									log.warn("Failed to delete temp PDF", e);
+									String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
+											tempPdfPath, metadataId, metadata.getOutputType());
+									processSummarizationResult(summarizationJson, metadataId, userId, metadata);
+								} catch (Exception e) {
+									throw new RuntimeException(
+											"Summarization with ConvertAPI PDF context failed: " + e.getMessage(), e);
+								}
+							} catch (IOException e) {
+								throw new RuntimeException("Error downloading PDF from ConvertAPI: " + e.getMessage(),
+										e);
+							} finally {
+								if (tempPdfPath != null) {
+									try {
+										Files.deleteIfExists(tempPdfPath);
+									} catch (IOException e) {
+										log.warn("[{}] Failed to delete temporary PDF file", metadataId);
+									}
 								}
 							}
+							return;
 						}
-						return;
-					}
 
-					Path tempPdfPath = null;
-					try {
-						String tempPdfFilename = metadataId + "_context.pdf";
-						tempPdfPath = tempDir.resolve(tempPdfFilename);
-						log.info("[{}] Downloading PDF from Nhost (ID: {}) to local file: {}", metadataId, pdfNhostId,
-								tempPdfPath.getFileName());
+						if (metadata.isAudioOnly()) {
+							log.info("[{}] Audio-only upload detected. Processing summarization without PDF context.",
+									metadataId);
+							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
 
-						nhostStorageService.downloadFileToPath(pdfNhostId, tempPdfPath);
-						log.info("[{}] Successfully downloaded PDF to local file", metadataId);
-
-						log.info("[{}] Calling GeminiService to generate summary with PDF context...", metadataId);
-
-						try {
-							String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
-									tempPdfPath, metadataId, metadata.getOutputType());
-							processSummarizationResult(summarizationJson, metadataId, userId, metadata);
-						} catch (Exception e) {
-							throw new RuntimeException("Summarization with PDF context failed: " + e.getMessage(), e);
-						}
-					} catch (Exception e) {
-						throw new RuntimeException("Error downloading or processing PDF: " + e.getMessage(), e);
-					} finally {
-						if (tempPdfPath != null) {
 							try {
-								Files.deleteIfExists(tempPdfPath);
-							} catch (IOException e) {
-								log.warn("Failed to delete temp PDF", e);
+								String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript,
+										metadataId, metadata.getOutputType());
+								processSummarizationResult(summarizationJson, metadataId, userId, metadata);
+							} catch (Exception e) {
+								throw new RuntimeException("Transcript-only summarization failed: " + e.getMessage(),
+										e);
+							}
+							return;
+						} else if (StringUtils.hasText(metadata.getNhostPptxFileId())) {
+							String pdfUrl = metadata.getGeneratedPdfUrl();
+							if (pdfUrl == null || pdfUrl.isBlank()) {
+								log.info(
+										"[{}] PowerPoint was uploaded but PDF conversion is not complete yet. Waiting for PDF...",
+										metadataId);
+
+								Map<String, Object> statusUpdate = new HashMap<>();
+								statusUpdate.put("status", ProcessingStatus.SUMMARIZATION_QUEUED.name());
+								statusUpdate.put("lastUpdated", Timestamp.now());
+								statusUpdate.put("waitingForPdf", true);
+								try {
+									firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(),
+											metadataId, statusUpdate);
+								} catch (Exception e) {
+									log.warn("Failed to update status to waitingForPdf", e);
+								}
+								return;
+							}
+
+							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
+
+							String pdfNhostId = extractNhostIdFromUrl(pdfUrl);
+							if (pdfNhostId == null) {
+								boolean isConvertApiUrl = pdfUrl != null
+										&& (pdfUrl.contains("convertapi.com") || pdfUrl.contains("v2.convertapi.com"));
+
+								if (!isConvertApiUrl) {
+									throw new RuntimeException(
+											"Invalid PDF URL format and not a ConvertAPI URL: " + pdfUrl);
+								}
+
+								log.info(
+										"[{}] Detected ConvertAPI PDF URL in generatedPdfUrl, downloading directly: {}",
+										metadataId, pdfUrl);
+
+								Path tempPdfPath = null;
+								try {
+									String tempPdfFilename = metadataId + "_context.pdf";
+									tempPdfPath = tempDir.resolve(tempPdfFilename);
+									log.info("[{}] Downloading PDF from ConvertAPI URL to local file: {}", metadataId,
+											tempPdfPath.getFileName());
+
+									downloadFileFromUrl(pdfUrl, tempPdfPath);
+									log.info("[{}] Successfully downloaded PDF from ConvertAPI to local file",
+											metadataId);
+
+									log.info("[{}] Calling GeminiService to generate summary with PDF context...",
+											metadataId);
+
+									try {
+										String summarizationJson = geminiService.generateSummaryWithPdfContext(
+												transcript, tempPdfPath, metadataId, metadata.getOutputType());
+										processSummarizationResult(summarizationJson, metadataId, userId, metadata);
+									} catch (Exception e) {
+										throw new RuntimeException(
+												"Summarization with ConvertAPI PDF failed: " + e.getMessage(), e);
+									}
+								} catch (IOException e) {
+									throw new RuntimeException(
+											"Error downloading PDF from ConvertAPI: " + e.getMessage(), e);
+								} finally {
+									if (tempPdfPath != null) {
+										try {
+											Files.deleteIfExists(tempPdfPath);
+										} catch (IOException e) {
+											log.warn("Failed to delete temp PDF", e);
+										}
+									}
+								}
+								return;
+							}
+
+							Path tempPdfPath = null;
+							try {
+								String tempPdfFilename = metadataId + "_context.pdf";
+								tempPdfPath = tempDir.resolve(tempPdfFilename);
+								log.info("[{}] Downloading PDF from Nhost (ID: {}) to local file: {}", metadataId,
+										pdfNhostId, tempPdfPath.getFileName());
+
+								nhostStorageService.downloadFileToPath(pdfNhostId, tempPdfPath);
+								log.info("[{}] Successfully downloaded PDF to local file", metadataId);
+
+								log.info("[{}] Calling GeminiService to generate summary with PDF context...",
+										metadataId);
+
+								try {
+									String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
+											tempPdfPath, metadataId, metadata.getOutputType());
+									processSummarizationResult(summarizationJson, metadataId, userId, metadata);
+								} catch (Exception e) {
+									throw new RuntimeException(
+											"Summarization with PDF context failed: " + e.getMessage(), e);
+								}
+							} catch (Exception e) {
+								throw new RuntimeException("Error downloading or processing PDF: " + e.getMessage(), e);
+							} finally {
+								if (tempPdfPath != null) {
+									try {
+										Files.deleteIfExists(tempPdfPath);
+									} catch (IOException e) {
+										log.warn("Failed to delete temp PDF", e);
+									}
+								}
+							}
+						} else {
+							log.warn(
+									"[{}] Neither audio-only flag nor PowerPoint file detected. Treating as audio-only.",
+									metadataId);
+							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
+							try {
+								String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript,
+										metadataId, metadata.getOutputType());
+								processSummarizationResult(summarizationJson, metadataId, userId, metadata);
+							} catch (Exception e) {
+								throw new RuntimeException(
+										"Fallback transcript-only summarization failed: " + e.getMessage(), e);
 							}
 						}
-					}
-				} else {
-					log.warn("[{}] Neither audio-only flag nor PowerPoint file detected. Treating as audio-only.",
-							metadataId);
-					updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
-					try {
-						String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript, metadataId,
-								metadata.getOutputType());
-						processSummarizationResult(summarizationJson, metadataId, userId, metadata);
-					} catch (Exception e) {
-						throw new RuntimeException("Fallback transcript-only summarization failed: " + e.getMessage(),
-								e);
-					}
-				}
-			});
+					});
 
+		} catch (RuntimeException e) {
+			log.error("[{}] Summarization failed after bounded retry handling: {}", metadataId, e.getMessage(), e);
+			updateMetadataStatus(metadataId, null, ProcessingStatus.SUMMARY_FAILED, e.getMessage());
 		} finally {
 			if (lock != null) {
 				lock.unlock();

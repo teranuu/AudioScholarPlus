@@ -31,6 +31,10 @@ public class AudioMetadata {
 	private String tempFilePath;
 	private String failureReason;
 	private Integer durationSeconds;
+	private Long estimatedGeminiAudioTokens;
+	private Long estimatedSummaryInputTokens;
+	private String audioFingerprint;
+	private String contextFingerprint;
 	private Integer favoriteCount;
 	private Timestamp lastUpdated;
 	private String tempPptxFilePath;
@@ -241,6 +245,38 @@ public class AudioMetadata {
 
 	public void setDurationSeconds(Integer durationSeconds) {
 		this.durationSeconds = durationSeconds;
+	}
+
+	public Long getEstimatedGeminiAudioTokens() {
+		return estimatedGeminiAudioTokens;
+	}
+
+	public void setEstimatedGeminiAudioTokens(Long estimatedGeminiAudioTokens) {
+		this.estimatedGeminiAudioTokens = estimatedGeminiAudioTokens;
+	}
+
+	public Long getEstimatedSummaryInputTokens() {
+		return estimatedSummaryInputTokens;
+	}
+
+	public void setEstimatedSummaryInputTokens(Long estimatedSummaryInputTokens) {
+		this.estimatedSummaryInputTokens = estimatedSummaryInputTokens;
+	}
+
+	public String getAudioFingerprint() {
+		return audioFingerprint;
+	}
+
+	public void setAudioFingerprint(String audioFingerprint) {
+		this.audioFingerprint = audioFingerprint;
+	}
+
+	public String getContextFingerprint() {
+		return contextFingerprint;
+	}
+
+	public void setContextFingerprint(String contextFingerprint) {
+		this.contextFingerprint = contextFingerprint;
 	}
 
 	public Integer getFavoriteCount() {
@@ -484,6 +520,14 @@ public class AudioMetadata {
 			map.put("failureReason", failureReason);
 		if (durationSeconds != null)
 			map.put("durationSeconds", durationSeconds);
+		if (estimatedGeminiAudioTokens != null)
+			map.put("estimatedGeminiAudioTokens", estimatedGeminiAudioTokens);
+		if (estimatedSummaryInputTokens != null)
+			map.put("estimatedSummaryInputTokens", estimatedSummaryInputTokens);
+		if (audioFingerprint != null)
+			map.put("audioFingerprint", audioFingerprint);
+		if (contextFingerprint != null)
+			map.put("contextFingerprint", contextFingerprint);
 		if (favoriteCount != null)
 			map.put("favoriteCount", favoriteCount);
 		if (lastUpdated != null)
@@ -575,6 +619,16 @@ public class AudioMetadata {
 		if (durationObj instanceof Number) {
 			meta.setDurationSeconds(((Number) durationObj).intValue());
 		}
+		Object estimatedAudioTokensObj = map.get("estimatedGeminiAudioTokens");
+		if (estimatedAudioTokensObj instanceof Number) {
+			meta.setEstimatedGeminiAudioTokens(((Number) estimatedAudioTokensObj).longValue());
+		}
+		Object estimatedSummaryTokensObj = map.get("estimatedSummaryInputTokens");
+		if (estimatedSummaryTokensObj instanceof Number) {
+			meta.setEstimatedSummaryInputTokens(((Number) estimatedSummaryTokensObj).longValue());
+		}
+		meta.setAudioFingerprint((String) map.get("audioFingerprint"));
+		meta.setContextFingerprint((String) map.get("contextFingerprint"));
 		Object favoriteCountObj = map.get("favoriteCount");
 		if (favoriteCountObj instanceof Number) {
 			meta.setFavoriteCount(((Number) favoriteCountObj).intValue());
@@ -654,6 +708,10 @@ public class AudioMetadata {
 				&& Objects.equals(failureReason, that.failureReason) && Objects.equals(recordingId, that.recordingId)
 				&& Objects.equals(summaryId, that.summaryId) && Objects.equals(transcriptText, that.transcriptText)
 				&& Objects.equals(durationSeconds, that.durationSeconds)
+				&& Objects.equals(estimatedGeminiAudioTokens, that.estimatedGeminiAudioTokens)
+				&& Objects.equals(estimatedSummaryInputTokens, that.estimatedSummaryInputTokens)
+				&& Objects.equals(audioFingerprint, that.audioFingerprint)
+				&& Objects.equals(contextFingerprint, that.contextFingerprint)
 				&& Objects.equals(favoriteCount, that.favoriteCount) && Objects.equals(lastUpdated, that.lastUpdated)
 				&& Objects.equals(originalPptxFileName, that.originalPptxFileName)
 				&& Objects.equals(pptxContentType, that.pptxContentType)
@@ -679,7 +737,8 @@ public class AudioMetadata {
 	public int hashCode() {
 		return Objects.hash(id, userId, fileName, fileSize, contentType, title, description, nhostFileId, storageUrl,
 				uploadTimestamp, status, failureReason, recordingId, summaryId, transcriptText, tempFilePath,
-				tempPptxFilePath, durationSeconds, favoriteCount, lastUpdated, originalPptxFileName, pptxFileSize,
+				tempPptxFilePath, durationSeconds, estimatedGeminiAudioTokens, estimatedSummaryInputTokens,
+				audioFingerprint, contextFingerprint, favoriteCount, lastUpdated, originalPptxFileName, pptxFileSize,
 				pptxContentType, nhostPptxFileId, pptxNhostUrl, generatedPdfNhostFileId, generatedPdfUrl,
 				googleFilesApiPdfUri, convertApiPdfUrl, transcriptionComplete, pdfConversionComplete, audioOnly,
 				audioUploadComplete, gptSummary, waitingForPdf, processingStage, transcriptionChunksTotal,

@@ -7,6 +7,7 @@ import static org.mockito.Mockito.*;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -42,6 +43,12 @@ class GeminiServiceTest {
 	@Mock
 	private PromptTemplateService promptTemplateService;
 
+	@Mock
+	private GeminiBudgetService geminiBudgetService;
+
+	@Mock
+	private AudioProcessingGuardrailService guardrailService;
+
 	@InjectMocks
 	private GeminiService geminiService;
 
@@ -57,6 +64,12 @@ class GeminiServiceTest {
 		ReflectionTestUtils.setField(geminiService, "summarizationModelName", "gemini-2.5-flash");
 		ReflectionTestUtils.setField(geminiService, "filePollIntervalMs", 1L);
 		ReflectionTestUtils.setField(geminiService, "fileReadyTimeoutMs", 1000L);
+		ReflectionTestUtils.setField(geminiService, "rotationMaxCycles", 2);
+		lenient().when(guardrailService.validateAudioFile(any(Path.class), anyString()))
+				.thenReturn(new AudioProcessingGuardrailService.GuardrailResult(60, 1_920, "fingerprint", "audio"));
+		lenient().when(guardrailService.validateSummaryInput(anyString(), anyLong())).thenReturn(100L);
+		lenient().when(geminiBudgetService.reserve(anyString(), anyLong(), any(), any()))
+				.thenReturn(new GeminiBudgetService.Reservation("test", 0, Instant.now()));
 	}
 
 	// ==================== SUCCESS SCENARIOS (New Fallback Logic)
@@ -161,7 +174,7 @@ class GeminiServiceTest {
 		ResponseEntity<String> successResponse = new ResponseEntity<>(createFullApiResponse(), HttpStatus.OK);
 
 		// Mock the rotation service to execute the lambda immediately
-		when(rotationService.executeWithInfiniteRotation(any())).thenAnswer(invocation -> {
+		when(rotationService.executeWithRotation(any(), eq(2))).thenAnswer(invocation -> {
 			Function<String, String> apiCallFunction = invocation.getArgument(0);
 			// The lambda will be called with a test model name
 			return apiCallFunction.apply("gemini-pro");
@@ -176,7 +189,7 @@ class GeminiServiceTest {
 
 		// Then
 		assertEquals(expectedExtractedText, result);
-		verify(rotationService, times(1)).executeWithInfiniteRotation(any());
+		verify(rotationService, times(1)).executeWithRotation(any(), eq(2));
 		verify(restTemplate, times(1)).exchange(anyString(), eq(HttpMethod.POST), any(), eq(String.class));
 		verify(keyRotationManager, times(1)).reportSuccess(KeyProvider.GEMINI, API_KEY);
 	}
@@ -188,7 +201,7 @@ class GeminiServiceTest {
 	void testCallGeminiSummarizationAPIWithFallback_RotationServiceThrowsException() {
 		// Given
 		// Mock the rotation service to throw an exception after its internal retries
-		when(rotationService.executeWithInfiniteRotation(any())).thenThrow(new RuntimeException("All models failed"));
+		when(rotationService.executeWithRotation(any(), eq(2))).thenThrow(new RuntimeException("All models failed"));
 
 		// When
 		String result = geminiService.callGeminiSummarizationAPIWithFallback(PROMPT_TEXT, TRANSCRIPT_TEXT);
@@ -202,7 +215,7 @@ class GeminiServiceTest {
 	void testCallGeminiSummarizationAPIWithFallback_LambdaThrowsRateLimitException() {
 		// Given
 		when(keyRotationManager.getKey(any(KeyProvider.class))).thenReturn(API_KEY);
-		when(rotationService.executeWithInfiniteRotation(any())).thenAnswer(invocation -> {
+		when(rotationService.executeWithRotation(any(), eq(2))).thenAnswer(invocation -> {
 			Function<String, String> apiCallFunction = invocation.getArgument(0);
 			// This will throw the HttpClientErrorException which is caught by the outer
 			// try-catch in the service
@@ -240,7 +253,7 @@ class GeminiServiceTest {
 				HttpStatus.OK);
 
 		// Mock the rotation service to execute the lambda immediately
-		when(rotationService.executeWithInfiniteRotation(any())).thenAnswer(invocation -> {
+		when(rotationService.executeWithRotation(any(), eq(2))).thenAnswer(invocation -> {
 			Function<String, String> apiCallFunction = invocation.getArgument(0);
 			return apiCallFunction.apply("gemini-2.5-flash");
 		});
@@ -254,7 +267,7 @@ class GeminiServiceTest {
 
 		// Then
 		assertEquals(expectedExtractedText, result);
-		verify(rotationService, times(1)).executeWithInfiniteRotation(any());
+		verify(rotationService, times(1)).executeWithRotation(any(), eq(2));
 		verify(restTemplate, times(1)).exchange(anyString(), eq(HttpMethod.POST), any(), eq(String.class));
 		verify(keyRotationManager, times(1)).reportSuccess(KeyProvider.GEMINI, API_KEY);
 	}
@@ -271,7 +284,7 @@ class GeminiServiceTest {
 						+ "\"{\\\"summaryText\\\": \\\"Notes summary\\\", \\\"keyPoints\\\": [], \\\"topics\\\": [], \\\"glossary\\\": []}\"}]}}]}",
 				HttpStatus.OK);
 
-		when(rotationService.executeWithInfiniteRotation(any())).thenAnswer(invocation -> {
+		when(rotationService.executeWithRotation(any(), eq(2))).thenAnswer(invocation -> {
 			Function<String, String> apiCallFunction = invocation.getArgument(0);
 			return apiCallFunction.apply("gemini-2.5-flash");
 		});

@@ -89,14 +89,11 @@ class SummarizationListenerServiceIntegrationTest {
 	private void setupRobustTaskExecutorMock() {
 		// Mock RobustTaskExecutor to execute the task immediately
 		doAnswer(invocation -> {
-			Runnable task = invocation.getArgument(2);
-			try {
-				task.run();
-			} catch (Exception e) {
-				// Simulate exception handling by the executor (it would retry in real life)
-			}
+			Runnable task = invocation.getArgument(4);
+			task.run();
 			return null;
-		}).when(robustTaskExecutor).executeWithInfiniteRetry(anyString(), anyString(), any(Runnable.class));
+		}).when(robustTaskExecutor).executeWithRetry(anyString(), anyString(), anyInt(), anyLong(),
+				any(Runnable.class));
 	}
 
 	@Test
@@ -126,10 +123,10 @@ class SummarizationListenerServiceIntegrationTest {
 
 		assertTrue(foundSummarizingUpdate, "Should have updated status to SUMMARIZING");
 
-		// Verify NO failure update occurred (due to infinite retry)
+		// Verify failure update occurred after bounded retry exhaustion
 		boolean foundFailureUpdate = metadataUpdateCaptor.getAllValues().stream()
 				.anyMatch(update -> ProcessingStatus.SUMMARY_FAILED.name().equals(update.get("status")));
-		assertFalse(foundFailureUpdate, "Should NOT have updated status to SUMMARY_FAILED (infinite retry expected)");
+		assertTrue(foundFailureUpdate, "Should have updated status to SUMMARY_FAILED after bounded retry exhaustion");
 
 		// Verify that recommendations were NOT triggered
 		verify(recommenderService, never()).generateAndSaveRecommendations(any(), any(), any());
@@ -236,9 +233,10 @@ class SummarizationListenerServiceIntegrationTest {
 		// When
 		summarizationListenerService.handleSummarizationRequest(message);
 
-		// Then - Should handle gracefully and return early
-		verify(firebaseService).getData(eq("audioMetadata"), eq(METADATA_ID));
-		verify(geminiService, never()).generateTranscriptOnlySummary(any(), any());
-		verify(firebaseService, never()).updateData(any(), any(), any());
+		// Then - Should record the failed summarization state
+		verify(firebaseService, atLeastOnce()).getData(eq("audioMetadata"), eq(METADATA_ID));
+		verify(geminiService, never()).generateTranscriptOnlySummary(anyString(), anyString(), any());
+		verify(firebaseService).updateData(eq("audioMetadata"), eq(METADATA_ID), metadataUpdateCaptor.capture());
+		assertEquals(ProcessingStatus.SUMMARY_FAILED.name(), metadataUpdateCaptor.getValue().get("status"));
 	}
 }

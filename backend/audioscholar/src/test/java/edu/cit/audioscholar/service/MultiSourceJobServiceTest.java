@@ -2,7 +2,7 @@ package edu.cit.audioscholar.service;
 
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.*;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -61,12 +61,32 @@ class MultiSourceJobServiceTest {
 		assertTrue(exception.getMessage().contains("no more than five sources"));
 	}
 
+	@Test
+	void rejectsAggregateUploadSizeFromGuardrail() throws Exception {
+		AudioProcessingGuardrailService guardrailService = mock(AudioProcessingGuardrailService.class);
+		doThrow(new edu.cit.audioscholar.exception.ProcessingGuardrailException(
+				"Combined multi-source upload size exceeds the 100 MB limit.")).when(guardrailService)
+				.validateUploadBytes(anyList(), anyList());
+		MultiSourceJobService service = service(guardrailService);
+
+		edu.cit.audioscholar.exception.ProcessingGuardrailException exception = assertThrows(
+				edu.cit.audioscholar.exception.ProcessingGuardrailException.class,
+				() -> service.createAndProcess("user-1", List.of(media("a.mp3"), media("b.mp3")),
+						List.of(document("slides.pdf")), "Title", null, "NOTES"));
+
+		assertTrue(exception.getMessage().contains("Combined multi-source upload size"));
+	}
+
 	private MultiSourceJobService service() throws Exception {
+		return service(mock(AudioProcessingGuardrailService.class));
+	}
+
+	private MultiSourceJobService service(AudioProcessingGuardrailService guardrailService) throws Exception {
 		return new MultiSourceJobService(mock(GeminiService.class), mock(QualityReportService.class),
 				mock(SummaryService.class), mock(DeduplicationService.class), mock(SourceAttributionService.class),
 				mock(SourceFileService.class), mock(SourceTranscriptService.class),
 				mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class),
-				mock(MultiSourceJobRepository.class), tempDir.toString(), "500MB");
+				mock(MultiSourceJobRepository.class), guardrailService, tempDir.toString(), "500MB");
 	}
 
 	private MockMultipartFile media(String filename) {
