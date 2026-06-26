@@ -14,6 +14,7 @@ public class Summary {
 	private QualityReport qualityReport;
 	private List<String> keyPoints;
 	private List<SummaryKeyPoint> summaryKeyPoints;
+	private List<TranscriptSegment> transcriptSegments;
 	private List<String> topics;
 	private List<Map<String, String>> glossary;
 	private String formattedSummaryText;
@@ -25,6 +26,7 @@ public class Summary {
 	public Summary() {
 		this.keyPoints = new ArrayList<>();
 		this.summaryKeyPoints = new ArrayList<>();
+		this.transcriptSegments = new ArrayList<>();
 		this.topics = new ArrayList<>();
 		this.glossary = new ArrayList<>();
 	}
@@ -100,6 +102,14 @@ public class Summary {
 		this.summaryKeyPoints = (summaryKeyPoints != null) ? new ArrayList<>(summaryKeyPoints) : new ArrayList<>();
 	}
 
+	public List<TranscriptSegment> getTranscriptSegments() {
+		return transcriptSegments;
+	}
+
+	public void setTranscriptSegments(List<TranscriptSegment> transcriptSegments) {
+		this.transcriptSegments = transcriptSegments != null ? new ArrayList<>(transcriptSegments) : new ArrayList<>();
+	}
+
 	public List<String> getTopics() {
 		return topics;
 	}
@@ -160,6 +170,10 @@ public class Summary {
 		map.put("keyPoints", keyPoints);
 		map.put("summaryKeyPoints",
 				summaryKeyPoints != null ? summaryKeyPoints.stream().map(SummaryKeyPoint::toMap).toList() : List.of());
+		map.put("transcriptSegments",
+				transcriptSegments != null
+						? transcriptSegments.stream().map(TranscriptSegment::toMap).toList()
+						: List.of());
 		map.put("topics", topics);
 		map.put("glossary", glossary);
 		map.put("formattedSummaryText", formattedSummaryText);
@@ -214,6 +228,24 @@ public class Summary {
 			summary.summaryKeyPoints = parsedKeyPoints;
 		} else {
 			summary.summaryKeyPoints = new ArrayList<>();
+		}
+
+		Object transcriptSegmentsObj = map.get("transcriptSegments");
+		if (transcriptSegmentsObj instanceof List<?> rawSegments) {
+			List<TranscriptSegment> parsedSegments = new ArrayList<>();
+			for (Object raw : rawSegments) {
+				if (raw instanceof Map<?, ?> rawMap) {
+					@SuppressWarnings("unchecked")
+					Map<String, Object> typedMap = (Map<String, Object>) rawMap;
+					TranscriptSegment segment = TranscriptSegment.fromMap(typedMap);
+					if (segment != null) {
+						parsedSegments.add(segment);
+					}
+				}
+			}
+			summary.transcriptSegments = parsedSegments;
+		} else {
+			summary.transcriptSegments = new ArrayList<>();
 		}
 
 		Object topicsObj = map.get("topics");

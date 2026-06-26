@@ -6,6 +6,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -38,6 +39,8 @@ import edu.cit.audioscholar.dto.AudioProcessingMessage;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
+import edu.cit.audioscholar.model.TranscriptChunk;
+import edu.cit.audioscholar.model.TranscriptSegment;
 import edu.cit.audioscholar.util.RobustTaskExecutor;
 
 @Service
@@ -54,6 +57,8 @@ public class AudioTranscriptionListenerService {
 	private final RabbitTemplate rabbitTemplate;
 	private final RobustTaskExecutor robustTaskExecutor;
 	private final AudioProcessingGuardrailService guardrailService;
+	private final TranscriptChunkRepository transcriptChunkRepository;
+	private final TranscriptClarityService transcriptClarityService;
 	private final Map<String, ReentrantLock> metadataLocks = new ConcurrentHashMap<>();
 
 	@Value("${gemini.transcription.max-attempts:3}")
@@ -66,7 +71,8 @@ public class AudioTranscriptionListenerService {
 			TranscriptionOrchestrator transcriptionOrchestrator, QualityReportService qualityReportService,
 			CacheManager cacheManager, @Value("${app.temp-file-dir}") String tempFileDirStr,
 			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor,
-			AudioProcessingGuardrailService guardrailService) {
+			AudioProcessingGuardrailService guardrailService, TranscriptChunkRepository transcriptChunkRepository,
+			TranscriptClarityService transcriptClarityService) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
 		this.transcriptionOrchestrator = transcriptionOrchestrator;
@@ -76,6 +82,8 @@ public class AudioTranscriptionListenerService {
 		this.rabbitTemplate = rabbitTemplate;
 		this.robustTaskExecutor = robustTaskExecutor;
 		this.guardrailService = guardrailService;
+		this.transcriptChunkRepository = transcriptChunkRepository;
+		this.transcriptClarityService = transcriptClarityService;
 		try {
 			Files.createDirectories(this.tempFileDir);
 		} catch (IOException e) {
@@ -227,7 +235,12 @@ public class AudioTranscriptionListenerService {
 									"[{}] Transcription completed successfully. Saving transcript and updating status.",
 									metadataId);
 							Map<String, Object> updates = new HashMap<>();
+							List<TranscriptChunk> transcriptChunks = transcriptChunkRepository.findAll(metadataId);
+							List<TranscriptSegment> transcriptSegments = transcriptClarityService
+									.buildSegments(transcriptChunks, metadata.getQualityReport());
 							updates.put("transcriptText", transcript);
+							updates.put("transcriptSegments",
+									transcriptSegments.stream().map(TranscriptSegment::toMap).toList());
 							updates.put("transcriptionComplete", true);
 							updates.put("status", ProcessingStatus.TRANSCRIPTION_COMPLETE.name());
 							updates.put("processingStage", "TRANSCRIPTION_COMPLETE");

@@ -38,7 +38,6 @@ import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
-import edu.cit.audioscholar.model.QualityReport;
 import edu.cit.audioscholar.model.Recording;
 import edu.cit.audioscholar.model.Summary;
 import edu.cit.audioscholar.util.RobustTaskExecutor;
@@ -60,6 +59,7 @@ public class SummarizationListenerService {
 	private final RecordingService recordingService;
 	private final RabbitTemplate rabbitTemplate;
 	private final RobustTaskExecutor robustTaskExecutor;
+	private final TranscriptClarityService transcriptClarityService;
 	private final Map<String, Long> processedMessageIds = new ConcurrentHashMap<>();
 	private final Map<String, Lock> metadataLocks = new ConcurrentHashMap<>();
 	private static final long MESSAGE_ID_EXPIRATION_TIME = 10 * 60 * 1000;
@@ -74,7 +74,8 @@ public class SummarizationListenerService {
 			NhostStorageService nhostStorageService, @Lazy SummaryService summaryService, CacheManager cacheManager,
 			ObjectMapper objectMapper, @Value("${app.temp-file-dir:./temp_files}") String tempDirStr,
 			@Lazy LearningMaterialRecommenderService recommenderService, @Lazy RecordingService recordingService,
-			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor) {
+			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor,
+			TranscriptClarityService transcriptClarityService) {
 		this.firebaseService = firebaseService;
 		this.geminiService = geminiService;
 		this.nhostStorageService = nhostStorageService;
@@ -86,6 +87,7 @@ public class SummarizationListenerService {
 		this.recordingService = recordingService;
 		this.rabbitTemplate = rabbitTemplate;
 		this.robustTaskExecutor = robustTaskExecutor;
+		this.transcriptClarityService = transcriptClarityService;
 		try {
 			Files.createDirectories(this.tempDir);
 		} catch (IOException e) {
@@ -192,6 +194,14 @@ public class SummarizationListenerService {
 							log.warn("[{}] Transcript text is missing. Retrying...", metadataId);
 							throw new RuntimeException("Transcript text is missing");
 						}
+						List<edu.cit.audioscholar.model.TranscriptSegment> transcriptSegments = metadata
+								.getTranscriptSegments();
+						if (transcriptSegments == null || transcriptSegments.isEmpty()) {
+							transcriptSegments = transcriptClarityService.buildSegments(transcript,
+									metadata.getQualityReport());
+						}
+						String annotatedTranscript = transcriptClarityService.annotateTranscript(transcript,
+								transcriptSegments);
 
 						String googleFilesApiPdfUri = metadata.getGoogleFilesApiPdfUri();
 						if (googleFilesApiPdfUri != null && !googleFilesApiPdfUri.isBlank()) {
@@ -201,8 +211,9 @@ public class SummarizationListenerService {
 							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
 
 							try {
-								String summarizationJson = geminiService.generateSummaryWithGoogleFileUri(transcript,
-										googleFilesApiPdfUri, metadataId, metadata.getOutputType());
+								String summarizationJson = geminiService.generateSummaryWithGoogleFileUri(
+										annotatedTranscript, googleFilesApiPdfUri, metadataId,
+										metadata.getOutputType());
 								processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 							} catch (Exception e) {
 								throw new RuntimeException(
@@ -232,8 +243,8 @@ public class SummarizationListenerService {
 										metadataId);
 
 								try {
-									String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
-											tempPdfPath, metadataId, metadata.getOutputType());
+									String summarizationJson = geminiService.generateSummaryWithPdfContext(
+											annotatedTranscript, tempPdfPath, metadataId, metadata.getOutputType());
 									processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 								} catch (Exception e) {
 									throw new RuntimeException(
@@ -260,8 +271,8 @@ public class SummarizationListenerService {
 							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
 
 							try {
-								String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript,
-										metadataId, metadata.getOutputType());
+								String summarizationJson = geminiService.generateTranscriptOnlySummary(
+										annotatedTranscript, metadataId, metadata.getOutputType());
 								processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 							} catch (Exception e) {
 								throw new RuntimeException("Transcript-only summarization failed: " + e.getMessage(),
@@ -320,7 +331,7 @@ public class SummarizationListenerService {
 
 									try {
 										String summarizationJson = geminiService.generateSummaryWithPdfContext(
-												transcript, tempPdfPath, metadataId, metadata.getOutputType());
+												annotatedTranscript, tempPdfPath, metadataId, metadata.getOutputType());
 										processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 									} catch (Exception e) {
 										throw new RuntimeException(
@@ -355,8 +366,8 @@ public class SummarizationListenerService {
 										metadataId);
 
 								try {
-									String summarizationJson = geminiService.generateSummaryWithPdfContext(transcript,
-											tempPdfPath, metadataId, metadata.getOutputType());
+									String summarizationJson = geminiService.generateSummaryWithPdfContext(
+											annotatedTranscript, tempPdfPath, metadataId, metadata.getOutputType());
 									processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 								} catch (Exception e) {
 									throw new RuntimeException(
@@ -379,8 +390,8 @@ public class SummarizationListenerService {
 									metadataId);
 							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
 							try {
-								String summarizationJson = geminiService.generateTranscriptOnlySummary(transcript,
-										metadataId, metadata.getOutputType());
+								String summarizationJson = geminiService.generateTranscriptOnlySummary(
+										annotatedTranscript, metadataId, metadata.getOutputType());
 								processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 							} catch (Exception e) {
 								throw new RuntimeException(
@@ -512,9 +523,7 @@ public class SummarizationListenerService {
 			}
 
 			if (summaryText == null || summaryText.isBlank()) {
-				log.warn("[{}] Could not extract summary text from structured JSON. Using raw text as fallback.",
-						metadataId);
-				summaryText = summarizationJson;
+				throw new RuntimeException("Could not extract summaryText from Gemini summarization response");
 			}
 
 			log.info("[{}] Successfully extracted summary text (length: {}) and {} key points, {} topics", metadataId,
@@ -525,8 +534,14 @@ public class SummarizationListenerService {
 				pdfContextUrl = metadata.getGeneratedPdfUrl();
 			}
 
-			Summary summary = createSummary(metadataId, userId, summaryText, keyPoints, topics, pdfContextUrl, glossary,
-					metadata.getOutputType(), metadata.getQualityReport());
+			List<edu.cit.audioscholar.model.TranscriptSegment> transcriptSegments = metadata.getTranscriptSegments();
+			if (transcriptSegments == null || transcriptSegments.isEmpty()) {
+				transcriptSegments = transcriptClarityService.buildSegments(metadata.getTranscriptText(),
+						metadata.getQualityReport());
+			}
+			String clarifiedSummaryText = transcriptClarityService.ensureClarityNotes(summaryText, transcriptSegments);
+			Summary summary = createSummary(metadataId, userId, clarifiedSummaryText, keyPoints, topics, pdfContextUrl,
+					glossary, metadata.getOutputType(), metadata, transcriptSegments);
 			try {
 				summaryService.updateSummary(summary);
 			} catch (Exception e) {
@@ -558,13 +573,14 @@ public class SummarizationListenerService {
 
 	private Summary createSummary(String metadataId, String userId, String summaryText, List<String> keyPoints,
 			List<String> topics, String pdfContextUrl, List<Map<String, String>> glossary, String outputType,
-			QualityReport qualityReport) {
+			AudioMetadata metadata, List<edu.cit.audioscholar.model.TranscriptSegment> transcriptSegments) {
 		Summary summary = new Summary();
 		summary.setSummaryId(UUID.randomUUID().toString());
 		summary.setRecordingId(metadataId);
 		summary.setUserId(userId);
 		summary.setOutputType(outputType);
-		summary.setQualityReport(qualityReport);
+		summary.setQualityReport(metadata.getQualityReport());
+		summary.setTranscriptSegments(transcriptSegments);
 		summary.setFormattedSummaryText(summaryText);
 		summary.setStatus(ProcessingStatus.SUMMARY_COMPLETE.name());
 		if (keyPoints != null) {

@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -22,6 +23,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
+import edu.cit.audioscholar.model.QualityIssue;
+import edu.cit.audioscholar.model.QualityReport;
 import edu.cit.audioscholar.model.Summary;
 import edu.cit.audioscholar.util.RobustTaskExecutor;
 
@@ -81,7 +84,8 @@ class SummarizationListenerServiceIntegrationTest {
 		// injection issues
 		summarizationListenerService = new SummarizationListenerService(firebaseService, geminiService,
 				nhostStorageService, summaryService, cacheManager, new ObjectMapper(), "src/test/resources", // tempDir
-				recommenderService, recordingService, rabbitTemplate, robustTaskExecutor);
+				recommenderService, recordingService, rabbitTemplate, robustTaskExecutor,
+				new TranscriptClarityService());
 	}
 
 	// ==================== SIMPLIFIED EXCEPTION HANDLING TESTS ====================
@@ -151,6 +155,32 @@ class SummarizationListenerServiceIntegrationTest {
 		assertEquals("Personal notes", summaryCaptor.getValue().getFormattedSummaryText());
 	}
 
+	@Test
+	void testHandleSummarizationRequest_AddsClarityNotesForNoisyAudio() throws Exception {
+		setupRobustTaskExecutorMock();
+		Map<String, String> message = createValidAudioOnlyMessage();
+		AudioMetadata metadata = createAudioOnlyMetadata();
+		QualityReport report = new QualityReport();
+		report.setStatus("ISSUES_DETECTED");
+		report.setIssues(
+				List.of(new QualityIssue("00:15", "00:30", "HIGH_BACKGROUND_NOISE", "MODERATE", "Review this part.")));
+		metadata.setQualityReport(report);
+		mockFirebaseService(metadata);
+		doReturn("{\"summaryText\":\"Personal notes\",\"keyPoints\":[\"Point one\"],\"topics\":[],\"glossary\":[]}")
+				.when(geminiService).generateTranscriptOnlySummary(anyString(), eq(METADATA_ID), eq("NOTES"));
+
+		summarizationListenerService.handleSummarizationRequest(message);
+
+		verify(geminiService).generateTranscriptOnlySummary(contains("AUDIO CLARITY ANNOTATIONS"), eq(METADATA_ID),
+				eq("NOTES"));
+		verify(summaryService).createSummary(summaryCaptor.capture());
+		Summary summary = summaryCaptor.getValue();
+		assertTrue(summary.getFormattedSummaryText().contains("## Audio Clarity Notes"));
+		assertTrue(summary.getFormattedSummaryText().contains("(unclear audio)"));
+		assertEquals(1, summary.getTranscriptSegments().size());
+		assertEquals("(unclear audio)", summary.getTranscriptSegments().get(0).getClarityLabel());
+	}
+
 	// ==================== HELPER METHODS ====================
 
 	private Map<String, String> createValidAudioOnlyMessage() {
@@ -190,6 +220,9 @@ class SummarizationListenerServiceIntegrationTest {
 			metadataMap.put("audioOnly", metadata.isAudioOnly());
 			metadataMap.put("outputType", metadata.getOutputType());
 			metadataMap.put("failureReason", null);
+			if (metadata.getQualityReport() != null) {
+				metadataMap.put("qualityReport", metadata.getQualityReport().toMap());
+			}
 			// Ensure all values are strings or primitives, not Firestore FieldValues
 
 			doReturn(metadataMap).when(firebaseService).getData(eq("audioMetadata"), eq(METADATA_ID));

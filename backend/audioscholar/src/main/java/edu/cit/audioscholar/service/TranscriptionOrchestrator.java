@@ -26,6 +26,7 @@ import com.google.cloud.Timestamp;
 
 import edu.cit.audioscholar.exception.GeminiQuotaTimeoutException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
+import edu.cit.audioscholar.exception.NonRetryableTaskException;
 import edu.cit.audioscholar.model.AudioChunk;
 import edu.cit.audioscholar.model.TranscriptChunk;
 
@@ -92,6 +93,9 @@ public class TranscriptionOrchestrator {
 					throw new IOException("Transcription exceeded the " + jobTimeout.toMinutes() + " minute deadline",
 							e);
 				} catch (ExecutionException e) {
+					if (e.getCause() instanceof NonRetryableTaskException nonRetryable) {
+						throw nonRetryable;
+					}
 					throw unwrap(e);
 				}
 			}
@@ -137,6 +141,11 @@ public class TranscriptionOrchestrator {
 				chunk.setError(e.getMessage());
 				chunkRepository.save(metadataId, chunk);
 				waitForQuota(metadataId, e.getRetryAt(), total, completed.get(), startedAt, deadlineNanos);
+			} catch (NonRetryableTaskException e) {
+				chunk.setStatus("FAILED");
+				chunk.setError(e.getMessage());
+				chunkRepository.save(metadataId, chunk);
+				throw e;
 			} catch (IOException e) {
 				lastFailure = e;
 				chunk.setStatus(attempt == chunkMaxAttempts ? "FAILED" : "RETRYING");

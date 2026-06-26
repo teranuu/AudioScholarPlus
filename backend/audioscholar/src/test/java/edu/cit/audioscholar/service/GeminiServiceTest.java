@@ -26,6 +26,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import edu.cit.audioscholar.exception.GeminiContentBlockedException;
 import edu.cit.audioscholar.model.KeyProvider;
 
 @ExtendWith(MockitoExtension.class)
@@ -161,6 +162,39 @@ class GeminiServiceTest {
 			assertTrue(exception.getMessage().contains("failed to process"));
 			verify(rotationService, never()).executeWithRotation(any(), anyInt());
 			verify(restTemplate).exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class));
+		} finally {
+			Files.deleteIfExists(tempFile);
+		}
+	}
+
+	@Test
+	void transcriptionRecitationFinishReasonIsNonRetryable() throws Exception {
+		Path tempFile = Files.createTempFile("test-audio-recitation", ".flac");
+		Files.writeString(tempFile, "dummy content");
+		try {
+			when(keyRotationManager.getKey(KeyProvider.GEMINI)).thenReturn(API_KEY);
+
+			HttpHeaders initiateHeaders = new HttpHeaders();
+			initiateHeaders.add("X-Goog-Upload-Url", "http://upload-url");
+			when(restTemplate.exchange(contains("/upload/v1beta/files"), eq(HttpMethod.POST), any(), eq(String.class)))
+					.thenReturn(new ResponseEntity<>(null, initiateHeaders, HttpStatus.OK));
+			when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
+					.thenReturn(new ResponseEntity<>("{\"file\":{\"uri\":\"http://file-uri\"}}", HttpStatus.OK));
+			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.GET), any(), eq(String.class)))
+					.thenReturn(new ResponseEntity<>("{\"state\":\"ACTIVE\"}", HttpStatus.OK));
+			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class)))
+					.thenReturn(new ResponseEntity<>(HttpStatus.NO_CONTENT));
+			when(restTemplate.exchange(contains(":generateContent"), eq(HttpMethod.POST), any(), eq(String.class)))
+					.thenReturn(new ResponseEntity<>(
+							"{\"candidates\":[{\"finishReason\":\"RECITATION\",\"safetyRatings\":[]}]}",
+							HttpStatus.OK));
+
+			GeminiContentBlockedException exception = assertThrows(GeminiContentBlockedException.class,
+					() -> geminiService.callGeminiTranscriptionAPIWithFallback(tempFile, "test-audio.flac"));
+
+			assertEquals("RECITATION", exception.getFinishReason());
+			verify(restTemplate, times(1)).exchange(contains(":generateContent"), eq(HttpMethod.POST), any(),
+					eq(String.class));
 		} finally {
 			Files.deleteIfExists(tempFile);
 		}

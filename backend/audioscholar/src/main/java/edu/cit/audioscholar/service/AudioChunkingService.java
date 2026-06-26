@@ -66,7 +66,7 @@ public class AudioChunkingService {
 			if (overlapsPrevious) {
 				startMs = Math.max(0, startMs - fallbackOverlap.toMillis());
 			}
-			Path output = workDirectory.resolve(String.format(Locale.ROOT, "chunk_%04d.mp3", index));
+			Path output = workDirectory.resolve(String.format(Locale.ROOT, "chunk_%04d.flac", index));
 			extractChunk(source, output, startMs, boundary.endMs());
 			chunks.add(new AudioChunk(index, startMs, boundary.endMs(), overlapsPrevious, output));
 			previousEnd = boundary.endMs();
@@ -115,7 +115,7 @@ public class AudioChunkingService {
 	private void extractChunk(Path source, Path output, long startMs, long endMs) throws IOException {
 		List<String> command = List.of(mediaRuntime.ffmpegPath(), "-y", "-hide_banner", "-loglevel", "error", "-ss",
 				seconds(startMs), "-i", source.toString(), "-t", seconds(endMs - startMs), "-vn", "-ac", "1", "-ar",
-				"16000", "-codec:a", "libmp3lame", "-b:a", "32k", output.toString());
+				"16000", "-codec:a", "flac", output.toString());
 		MediaProcessResult result = commandRunner.run(command, commandTimeout);
 		if (result.exitCode() != 0 || !Files.isRegularFile(output) || Files.size(output) == 0) {
 			throw new IOException("ffmpeg failed to create chunk " + output.getFileName() + ": " + result.stderr());

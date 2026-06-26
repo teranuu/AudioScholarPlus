@@ -41,6 +41,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
+import edu.cit.audioscholar.exception.GeminiContentBlockedException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.exception.KeysExhaustedException;
 import edu.cit.audioscholar.exception.NonRetryableTaskException;
@@ -157,6 +158,8 @@ public class GeminiService {
 
 		String updatedPromptText = promptText
 				+ """
+
+						If the transcript contains AUDIO CLARITY ANNOTATIONS, include an `Audio Clarity Notes` section at the beginning of `summaryText`. List each affected timestamp range and label it exactly as `(unclear audio)` or `(garbled audio)`. Summarize clear portions normally, but do not present details from unclear or garbled ranges as certain.
 
 						YOU MUST RETURN VALID JSON that strictly adheres to the provided schema. Do not include any explanatory text before or after the JSON. The JSON structure must include:
 						{
@@ -397,6 +400,8 @@ public class GeminiService {
 			String extractedText;
 			try {
 				extractedText = extractTextFromStandardResponse(responseBody);
+			} catch (GeminiContentBlockedException ex) {
+				throw ex;
 			} catch (Exception ex) {
 				throw new RuntimeException("Failed to extract transcript from standard response", ex);
 			}
@@ -408,6 +413,8 @@ public class GeminiService {
 			String extractedText;
 			try {
 				extractedText = extractTextFromStandardResponse(responseBody);
+			} catch (GeminiContentBlockedException ex) {
+				throw ex;
 			} catch (Exception ex) {
 				throw new RuntimeException("Failed to extract transcript from standard response", ex);
 			}
@@ -781,6 +788,8 @@ public class GeminiService {
 		String updatedPromptText = promptText
 				+ """
 
+						If the transcript contains AUDIO CLARITY ANNOTATIONS, include an `Audio Clarity Notes` section at the beginning of `summaryText`. List each affected timestamp range and label it exactly as `(unclear audio)` or `(garbled audio)`. Summarize clear portions normally, but do not present details from unclear or garbled ranges as certain.
+
 						YOU MUST RETURN VALID JSON that strictly adheres to the provided schema. Do not include any explanatory text before or after the JSON. The JSON structure must include:
 						{
 						  "summaryText": "Your markdown summary here",
@@ -965,6 +974,7 @@ public class GeminiService {
 		String prompt = """
 				Analyze the provided lecture transcript and the accompanying PDF document.
 				Generate learning material incorporating information from BOTH sources, using Markdown in the `summaryText` field. Match the selected output format instruction below. Focus on core arguments, findings, definitions, and conclusions presented in either the transcript or the document.
+				If the transcript contains AUDIO CLARITY ANNOTATIONS, include an `Audio Clarity Notes` section at the beginning of `summaryText`. List each affected timestamp range and label it exactly as `(unclear audio)` or `(garbled audio)`. Summarize clear portions normally, but do not present details from unclear or garbled ranges as certain.
 				Identify the main key points or action items discussed across both sources and list them as distinct strings in the `keyPoints` array.
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in either the transcript or the document. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.
@@ -1094,7 +1104,7 @@ public class GeminiService {
 					String safetyRatings = firstCandidate.path("safetyRatings").toString();
 					log.error("Gemini API generation blocked. Finish Reason: {}. Safety Ratings: {}", reason,
 							safetyRatings);
-					throw new ApiException("Gemini API Error: Content Blocked (Finish Reason) - " + reason);
+					throw new GeminiContentBlockedException(reason);
 				}
 			}
 
@@ -1336,6 +1346,7 @@ public class GeminiService {
 		String prompt = """
 				Analyze the provided lecture transcript carefully.
 				Generate learning material in Markdown in the `summaryText` field. Match the selected output format instruction below. Focus on core arguments, findings, definitions, and conclusions presented in the transcript.
+				If the transcript contains AUDIO CLARITY ANNOTATIONS, include an `Audio Clarity Notes` section at the beginning of `summaryText`. List each affected timestamp range and label it exactly as `(unclear audio)` or `(garbled audio)`. Summarize clear portions normally, but do not present details from unclear or garbled ranges as certain.
 				Identify the main key points or action items discussed and list them as distinct strings in the `keyPoints` array.
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in the transcript. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.

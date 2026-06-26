@@ -42,6 +42,7 @@ class AudioChunkingServiceTest {
 
 		assertEquals(3, chunks.size());
 		assertEquals(730_000, chunks.get(0).endMs());
+		assertTrue(chunks.get(0).path().getFileName().toString().endsWith(".flac"));
 		assertFalse(chunks.get(1).overlapsPrevious());
 		assertEquals(1_448_000, chunks.get(2).startMs());
 		assertTrue(chunks.get(2).overlapsPrevious());

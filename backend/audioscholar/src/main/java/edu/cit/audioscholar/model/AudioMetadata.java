@@ -1,6 +1,8 @@
 package edu.cit.audioscholar.model;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 
@@ -28,6 +30,7 @@ public class AudioMetadata {
 	private String outputType;
 	private QualityReport qualityReport;
 	private String transcriptText;
+	private List<TranscriptSegment> transcriptSegments = new ArrayList<>();
 	private String tempFilePath;
 	private String failureReason;
 	private Integer durationSeconds;
@@ -221,6 +224,14 @@ public class AudioMetadata {
 
 	public void setTranscriptText(String transcriptText) {
 		this.transcriptText = transcriptText;
+	}
+
+	public List<TranscriptSegment> getTranscriptSegments() {
+		return transcriptSegments;
+	}
+
+	public void setTranscriptSegments(List<TranscriptSegment> transcriptSegments) {
+		this.transcriptSegments = transcriptSegments != null ? new ArrayList<>(transcriptSegments) : new ArrayList<>();
 	}
 
 	public String getTempFilePath() {
@@ -514,6 +525,8 @@ public class AudioMetadata {
 			map.put("qualityReport", qualityReport.toMap());
 		if (transcriptText != null)
 			map.put("transcriptText", transcriptText);
+		if (transcriptSegments != null && !transcriptSegments.isEmpty())
+			map.put("transcriptSegments", transcriptSegments.stream().map(TranscriptSegment::toMap).toList());
 		if (tempFilePath != null)
 			map.put("tempFilePath", tempFilePath);
 		if (failureReason != null)
@@ -613,6 +626,21 @@ public class AudioMetadata {
 			meta.setQualityReport(QualityReport.fromMap(qualityReportMap));
 		}
 		meta.setTranscriptText((String) map.get("transcriptText"));
+		Object transcriptSegmentsObj = map.get("transcriptSegments");
+		if (transcriptSegmentsObj instanceof List<?> rawSegments) {
+			List<TranscriptSegment> parsedSegments = new ArrayList<>();
+			for (Object rawSegment : rawSegments) {
+				if (rawSegment instanceof Map<?, ?> rawMap) {
+					@SuppressWarnings("unchecked")
+					Map<String, Object> typedMap = (Map<String, Object>) rawMap;
+					TranscriptSegment segment = TranscriptSegment.fromMap(typedMap);
+					if (segment != null) {
+						parsedSegments.add(segment);
+					}
+				}
+			}
+			meta.setTranscriptSegments(parsedSegments);
+		}
 		meta.setTempFilePath((String) map.get("tempFilePath"));
 		meta.setFailureReason((String) map.get("failureReason"));
 		Object durationObj = map.get("durationSeconds");
@@ -707,6 +735,7 @@ public class AudioMetadata {
 				&& Objects.equals(tempPptxFilePath, that.tempPptxFilePath)
 				&& Objects.equals(failureReason, that.failureReason) && Objects.equals(recordingId, that.recordingId)
 				&& Objects.equals(summaryId, that.summaryId) && Objects.equals(transcriptText, that.transcriptText)
+				&& Objects.equals(transcriptSegments, that.transcriptSegments)
 				&& Objects.equals(durationSeconds, that.durationSeconds)
 				&& Objects.equals(estimatedGeminiAudioTokens, that.estimatedGeminiAudioTokens)
 				&& Objects.equals(estimatedSummaryInputTokens, that.estimatedSummaryInputTokens)
@@ -737,12 +766,13 @@ public class AudioMetadata {
 	public int hashCode() {
 		return Objects.hash(id, userId, fileName, fileSize, contentType, title, description, nhostFileId, storageUrl,
 				uploadTimestamp, status, failureReason, recordingId, summaryId, transcriptText, tempFilePath,
-				tempPptxFilePath, durationSeconds, estimatedGeminiAudioTokens, estimatedSummaryInputTokens,
-				audioFingerprint, contextFingerprint, favoriteCount, lastUpdated, originalPptxFileName, pptxFileSize,
-				pptxContentType, nhostPptxFileId, pptxNhostUrl, generatedPdfNhostFileId, generatedPdfUrl,
-				googleFilesApiPdfUri, convertApiPdfUrl, transcriptionComplete, pdfConversionComplete, audioOnly,
-				audioUploadComplete, gptSummary, waitingForPdf, processingStage, transcriptionChunksTotal,
-				transcriptionChunksCompleted, transcriptionStartedAt, transcriptionDeadlineAt, quotaRetryAt);
+				transcriptSegments, tempPptxFilePath, durationSeconds, estimatedGeminiAudioTokens,
+				estimatedSummaryInputTokens, audioFingerprint, contextFingerprint, favoriteCount, lastUpdated,
+				originalPptxFileName, pptxFileSize, pptxContentType, nhostPptxFileId, pptxNhostUrl,
+				generatedPdfNhostFileId, generatedPdfUrl, googleFilesApiPdfUri, convertApiPdfUrl, transcriptionComplete,
+				pdfConversionComplete, audioOnly, audioUploadComplete, gptSummary, waitingForPdf, processingStage,
+				transcriptionChunksTotal, transcriptionChunksCompleted, transcriptionStartedAt, transcriptionDeadlineAt,
+				quotaRetryAt);
 	}
 
 	@Override

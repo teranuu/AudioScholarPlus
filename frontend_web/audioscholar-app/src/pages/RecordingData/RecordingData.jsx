@@ -1244,6 +1244,25 @@ const RecordingData = () => {
             {activeTab === 'transcript' && (
               <div>
                 <h2 className="text-xl font-semibold text-gray-800 mb-4">Transcript</h2>
+                {(summaryData?.transcriptSegments?.length > 0 || recordingData?.transcriptSegments?.length > 0) && (
+                  <div className="mb-4 border border-yellow-200 bg-yellow-50 rounded-lg p-4">
+                    <div className="flex items-center gap-2 text-yellow-900 font-semibold mb-2">
+                      <FiAlertTriangle />
+                      Transcript clarity labels
+                    </div>
+                    <div className="space-y-2">
+                      {(summaryData?.transcriptSegments || recordingData?.transcriptSegments || []).map((segment, index) => (
+                        <div key={`${segment.startTime || 'start'}-${segment.endTime || 'end'}-${index}`} className="text-sm text-gray-700">
+                          <span className="font-medium text-gray-900">{segment.startTime || '00:00'} - {segment.endTime || 'unknown'}</span>
+                          <span className="ml-2 text-yellow-900">{segment.clarityLabel || '(unclear audio)'}</span>
+                          {segment.qualityIssueTypes?.length > 0 && (
+                            <span className="ml-2 text-gray-500">{segment.qualityIssueTypes.map(formatIssueType).join(', ')}</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
                 {recordingData?.transcriptText ? (
                   <pre className="whitespace-pre-wrap text-sm text-gray-700 bg-gray-50 p-4 rounded-md overflow-x-auto max-h-[550px] overflow-y-auto">
                     {recordingData.transcriptText}

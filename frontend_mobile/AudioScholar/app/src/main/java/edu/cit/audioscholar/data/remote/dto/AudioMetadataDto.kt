@@ -25,6 +25,8 @@ data class AudioMetadataDto(
     val summaryId: String? = null,
     val gptSummary: String? = null,
     val transcriptText: String? = null,
+    val transcriptSegments: List<TranscriptSegmentDto>? = null,
+    val qualityReport: QualityReportDto? = null,
     val durationSeconds: Int? = null,
     @SerializedName("favorite")
     val isFavorite: Boolean? = null

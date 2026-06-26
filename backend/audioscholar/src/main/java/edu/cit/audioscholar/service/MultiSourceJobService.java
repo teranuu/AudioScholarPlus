@@ -190,13 +190,19 @@ public class MultiSourceJobService {
 			String text = root.path("candidates").get(0).path("content").path("parts").get(0).path("text").asText();
 			root = mapper.readTree(text);
 		}
+		if (root.has("error")) {
+			throw new IOException("Gemini summarization failed: " + root.path("details").asText(root.toString()));
+		}
+		if (!root.has("summaryText") || root.path("summaryText").asText().isBlank()) {
+			throw new IOException("Gemini summarization response did not contain summaryText");
+		}
 		Summary summary = new Summary();
 		summary.setSummaryId(UUID.randomUUID().toString());
 		summary.setRecordingId(job.getJobId());
 		summary.setUserId(job.getUserId());
 		summary.setOutputType(job.getOutputType());
 		summary.setStatus(ProcessingStatus.COMPLETE.name());
-		summary.setFormattedSummaryText(root.path("summaryText").asText(summaryJson));
+		summary.setFormattedSummaryText(root.path("summaryText").asText());
 		List<String> keyPoints = new ArrayList<>();
 		if (root.path("keyPoints").isArray()) {
 			root.path("keyPoints").forEach(node -> keyPoints.add(node.asText()));

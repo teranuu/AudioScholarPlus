@@ -20,6 +20,7 @@ import org.junit.jupiter.api.Test;
 
 import edu.cit.audioscholar.exception.GeminiQuotaTimeoutException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
+import edu.cit.audioscholar.exception.NonRetryableTaskException;
 import edu.cit.audioscholar.model.AudioChunk;
 import edu.cit.audioscholar.model.TranscriptChunk;
 
@@ -74,6 +75,34 @@ class TranscriptionOrchestratorTest {
 
 		assertThrows(GeminiQuotaTimeoutException.class,
 				() -> orchestrator.transcribe("metadata-1", Path.of("source.mp3"), Path.of("work")));
+	}
+
+	@Test
+	void marksChunkFailedAndDoesNotRetryNonRetryableFailure() throws Exception {
+		AudioChunkingService chunking = mock(AudioChunkingService.class);
+		TranscriptionProvider provider = mock(TranscriptionProvider.class);
+		TranscriptChunkRepository repository = mock(TranscriptChunkRepository.class);
+		FirebaseService firebase = mock(FirebaseService.class);
+		AudioChunk audioChunk = new AudioChunk(0, 0, 60_000, false, Path.of("chunk.flac"));
+		when(chunking.prepareChunks(any(), any())).thenReturn(List.of(audioChunk));
+		when(repository.findAll("metadata-1")).thenReturn(List.of());
+		when(provider.transcribe(audioChunk, "metadata-1")).thenThrow(
+				new NonRetryableTaskException("Gemini blocked content generation. Finish reason: RECITATION"));
+		when(firebase.getAudioMetadataCollectionName()).thenReturn("audio_metadata");
+		List<String> statuses = new ArrayList<>();
+		doAnswer(invocation -> {
+			TranscriptChunk saved = invocation.getArgument(1);
+			statuses.add(saved.getStatus());
+			return null;
+		}).when(repository).save(anyString(), any(TranscriptChunk.class));
+		TranscriptionOrchestrator orchestrator = new TranscriptionOrchestrator(chunking, provider, repository, firebase,
+				1, 3, Duration.ofMinutes(1));
+
+		assertThrows(NonRetryableTaskException.class,
+				() -> orchestrator.transcribe("metadata-1", Path.of("source.mp3"), Path.of("work")));
+
+		assertTrue(statuses.contains("FAILED"));
+		verify(provider, org.mockito.Mockito.times(1)).transcribe(audioChunk, "metadata-1");
 	}
 
 	@Test
