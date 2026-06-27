@@ -17,6 +17,7 @@ public class Summary {
 	private List<TranscriptSegment> transcriptSegments;
 	private List<String> topics;
 	private List<Map<String, String>> glossary;
+	private List<Flashcard> flashcards;
 	private String formattedSummaryText;
 
 	@ServerTimestamp
@@ -29,6 +30,7 @@ public class Summary {
 		this.transcriptSegments = new ArrayList<>();
 		this.topics = new ArrayList<>();
 		this.glossary = new ArrayList<>();
+		this.flashcards = new ArrayList<>();
 	}
 
 	public Summary(String summaryId, String recordingId, String formattedSummaryText) {
@@ -126,6 +128,14 @@ public class Summary {
 		this.glossary = (glossary != null) ? new ArrayList<>(glossary) : new ArrayList<>();
 	}
 
+	public List<Flashcard> getFlashcards() {
+		return flashcards;
+	}
+
+	public void setFlashcards(List<Flashcard> flashcards) {
+		this.flashcards = (flashcards != null) ? new ArrayList<>(flashcards) : new ArrayList<>();
+	}
+
 	public String getFormattedSummaryText() {
 		return formattedSummaryText;
 	}
@@ -176,6 +186,7 @@ public class Summary {
 						: List.of());
 		map.put("topics", topics);
 		map.put("glossary", glossary);
+		map.put("flashcards", flashcards != null ? flashcards.stream().map(Flashcard::toMap).toList() : List.of());
 		map.put("formattedSummaryText", formattedSummaryText);
 		map.put("createdAt", createdAt);
 		map.put("updatedAt", updatedAt);
@@ -288,6 +299,24 @@ public class Summary {
 			summary.glossary = new ArrayList<>();
 		}
 
+		Object flashcardsObj = map.get("flashcards");
+		if (flashcardsObj instanceof List<?> rawFlashcards) {
+			List<Flashcard> parsedFlashcards = new ArrayList<>();
+			for (Object raw : rawFlashcards) {
+				if (raw instanceof Map<?, ?> rawMap) {
+					@SuppressWarnings("unchecked")
+					Map<String, Object> typedMap = (Map<String, Object>) rawMap;
+					Flashcard flashcard = Flashcard.fromMap(typedMap);
+					if (flashcard != null) {
+						parsedFlashcards.add(flashcard);
+					}
+				}
+			}
+			summary.flashcards = parsedFlashcards;
+		} else {
+			summary.flashcards = new ArrayList<>();
+		}
+
 		Object createdAtObj = map.get("createdAt");
 		if (createdAtObj instanceof Timestamp) {
 			summary.createdAt = ((Timestamp) createdAtObj).toDate();
@@ -309,6 +338,7 @@ public class Summary {
 	public String toString() {
 		return "Summary{" + "summaryId='" + summaryId + '\'' + ", recordingId='" + recordingId + '\'' + ", keyPoints="
 				+ (keyPoints != null ? keyPoints.size() : 0) + ", topics=" + (topics != null ? topics.size() : 0)
-				+ ", glossary=" + (glossary != null ? glossary.size() : 0) + ", createdAt=" + createdAt + '}';
+				+ ", glossary=" + (glossary != null ? glossary.size() : 0) + ", flashcards="
+				+ (flashcards != null ? flashcards.size() : 0) + ", createdAt=" + createdAt + '}';
 	}
 }

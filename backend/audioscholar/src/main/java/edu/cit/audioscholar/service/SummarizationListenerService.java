@@ -37,6 +37,7 @@ import com.google.cloud.firestore.FieldValue;
 import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
 import edu.cit.audioscholar.model.AudioMetadata;
+import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.ProcessingStatus;
 import edu.cit.audioscholar.model.Recording;
 import edu.cit.audioscholar.model.Summary;
@@ -449,6 +450,7 @@ public class SummarizationListenerService {
 			List<String> keyPoints = new ArrayList<>();
 			List<String> topics = new ArrayList<>();
 			List<Map<String, String>> glossary = new ArrayList<>();
+			List<Flashcard> flashcards = new ArrayList<>();
 
 			if (rootNode.has("candidates") && rootNode.get("candidates").size() > 0
 					&& rootNode.get("candidates").get(0).has("content")
@@ -487,6 +489,7 @@ public class SummarizationListenerService {
 							}
 						}
 					}
+					flashcards.addAll(parseFlashcards(innerJson));
 				} else {
 					log.warn("[{}] First part does not contain text field", metadataId);
 				}
@@ -520,14 +523,17 @@ public class SummarizationListenerService {
 						}
 					}
 				}
+				flashcards.addAll(parseFlashcards(rootNode));
 			}
 
 			if (summaryText == null || summaryText.isBlank()) {
 				throw new RuntimeException("Could not extract summaryText from Gemini summarization response");
 			}
+			flashcards = ensureReviewMaterialFlashcards(metadata.getOutputType(), flashcards, glossary);
 
-			log.info("[{}] Successfully extracted summary text (length: {}) and {} key points, {} topics", metadataId,
-					summaryText.length(), keyPoints.size(), topics.size());
+			log.info(
+					"[{}] Successfully extracted summary text (length: {}) and {} key points, {} topics, {} flashcards",
+					metadataId, summaryText.length(), keyPoints.size(), topics.size(), flashcards.size());
 
 			String pdfContextUrl = metadata.getGoogleFilesApiPdfUri();
 			if (pdfContextUrl == null || pdfContextUrl.isBlank()) {
@@ -541,7 +547,7 @@ public class SummarizationListenerService {
 			}
 			String clarifiedSummaryText = transcriptClarityService.ensureClarityNotes(summaryText, transcriptSegments);
 			Summary summary = createSummary(metadataId, userId, clarifiedSummaryText, keyPoints, topics, pdfContextUrl,
-					glossary, metadata.getOutputType(), metadata, transcriptSegments);
+					glossary, flashcards, metadata.getOutputType(), metadata, transcriptSegments);
 			try {
 				summaryService.updateSummary(summary);
 			} catch (Exception e) {
@@ -572,8 +578,9 @@ public class SummarizationListenerService {
 	}
 
 	private Summary createSummary(String metadataId, String userId, String summaryText, List<String> keyPoints,
-			List<String> topics, String pdfContextUrl, List<Map<String, String>> glossary, String outputType,
-			AudioMetadata metadata, List<edu.cit.audioscholar.model.TranscriptSegment> transcriptSegments) {
+			List<String> topics, String pdfContextUrl, List<Map<String, String>> glossary, List<Flashcard> flashcards,
+			String outputType, AudioMetadata metadata,
+			List<edu.cit.audioscholar.model.TranscriptSegment> transcriptSegments) {
 		Summary summary = new Summary();
 		summary.setSummaryId(UUID.randomUUID().toString());
 		summary.setRecordingId(metadataId);
@@ -592,6 +599,9 @@ public class SummarizationListenerService {
 		if (glossary != null) {
 			summary.setGlossary(glossary);
 		}
+		if (flashcards != null) {
+			summary.setFlashcards(flashcards);
+		}
 		summary.setCreatedAt(new Date());
 		summary.setUpdatedAt(new Date());
 
@@ -607,6 +617,43 @@ public class SummarizationListenerService {
 		}
 
 		return summary;
+	}
+
+	private List<Flashcard> parseFlashcards(JsonNode root) {
+		List<Flashcard> flashcards = new ArrayList<>();
+		if (root == null || !root.path("flashcards").isArray()) {
+			return flashcards;
+		}
+		for (JsonNode cardNode : root.path("flashcards")) {
+			String front = cardNode.path("front").asText("").trim();
+			String back = cardNode.path("back").asText("").trim();
+			if (front.isEmpty() || back.isEmpty()) {
+				continue;
+			}
+			Flashcard flashcard = new Flashcard(front, back);
+			String sourceStartTime = cardNode.path("sourceStartTime").asText("").trim();
+			String sourceEndTime = cardNode.path("sourceEndTime").asText("").trim();
+			flashcard.setSourceStartTime(sourceStartTime.isEmpty() ? null : sourceStartTime);
+			flashcard.setSourceEndTime(sourceEndTime.isEmpty() ? null : sourceEndTime);
+			flashcards.add(flashcard);
+		}
+		return flashcards;
+	}
+
+	private List<Flashcard> ensureReviewMaterialFlashcards(String outputType, List<Flashcard> flashcards,
+			List<Map<String, String>> glossary) {
+		if (!"REVIEW_MATERIAL".equalsIgnoreCase(outputType) || (flashcards != null && !flashcards.isEmpty())) {
+			return flashcards != null ? flashcards : new ArrayList<>();
+		}
+		List<Flashcard> fallbackCards = new ArrayList<>();
+		for (Map<String, String> item : glossary) {
+			String term = item.get("term");
+			String definition = item.get("definition");
+			if (StringUtils.hasText(term) && StringUtils.hasText(definition)) {
+				fallbackCards.add(new Flashcard(term.trim(), definition.trim()));
+			}
+		}
+		return fallbackCards;
 	}
 
 	private void updateRecordingWithSummaryId(String recordingId, String summaryId, String metadataId) {

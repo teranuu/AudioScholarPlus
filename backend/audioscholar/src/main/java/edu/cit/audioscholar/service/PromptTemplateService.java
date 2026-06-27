@@ -49,7 +49,7 @@ public class PromptTemplateService {
 			case STUDY_MATERIAL ->
 				"Format the generated material as Study Material: include organized lesson sections, clear explanations, important terms, examples where present in the source, and learner-friendly review structure.";
 			case REVIEW_MATERIAL ->
-				"Format the generated material as Review Material: make it concise and recall-focused, emphasizing quick-review bullets, key facts, likely exam review points, and short definitions.";
+				"Format the generated material as Review Material: populate the flashcards array with front/back study cards for quick recall. Each card front must be a term, question, or prompt, and each back must be the matching definition or answer. Keep summaryText concise as a short deck overview.";
 			case NOTES ->
 				"Format the generated material as Notes: create shortened, personal lecture notes in Markdown. Keep the notes less granular than Study Material: include a brief overview, 3-6 key ideas, compact topic notes, and quick review bullets. Preserve the lecture flow where useful, but avoid long lesson-guide explanations, exhaustive examples, or module-style study guide sections.";
 		};

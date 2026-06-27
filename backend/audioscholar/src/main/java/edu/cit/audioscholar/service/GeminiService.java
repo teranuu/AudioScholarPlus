@@ -448,9 +448,23 @@ public class GeminiService {
 		glossaryItemSchema.put("required", List.of("term", "definition"));
 		properties.put("glossary", Map.of("type", "ARRAY", "items", glossaryItemSchema, "description",
 				"List of key terms/concepts and their definitions identified from the audio transcript."));
+		Map<String, Object> flashcardProperties = new LinkedHashMap<>();
+		flashcardProperties.put("front",
+				Map.of("type", "STRING", "description", "The flashcard prompt, term, or recall question."));
+		flashcardProperties.put("back", Map.of("type", "STRING", "description", "The flashcard answer or definition."));
+		flashcardProperties.put("sourceStartTime", Map.of("type", "STRING", "description",
+				"Optional source start timestamp when available, otherwise an empty string."));
+		flashcardProperties.put("sourceEndTime", Map.of("type", "STRING", "description",
+				"Optional source end timestamp when available, otherwise an empty string."));
+		Map<String, Object> flashcardSchema = new LinkedHashMap<>();
+		flashcardSchema.put("type", "OBJECT");
+		flashcardSchema.put("properties", flashcardProperties);
+		flashcardSchema.put("required", List.of("front", "back"));
+		properties.put("flashcards", Map.of("type", "ARRAY", "items", flashcardSchema, "description",
+				"For REVIEW_MATERIAL, front/back study cards for quick recall. For other output types, return an empty array."));
 		schema.put("properties", properties);
-		schema.put("required", List.of("summaryText", "keyPoints", "topics", "glossary"));
-		schema.put("propertyOrdering", List.of("summaryText", "keyPoints", "topics", "glossary"));
+		schema.put("required", List.of("summaryText", "keyPoints", "topics", "glossary", "flashcards"));
+		schema.put("propertyOrdering", List.of("summaryText", "keyPoints", "topics", "glossary", "flashcards"));
 		return Collections.unmodifiableMap(schema);
 	}
 
@@ -799,6 +813,9 @@ public class GeminiService {
 						    {"term": "term1", "definition": "definition1"},
 						    {"term": "term2", "definition": "definition2"},
 						    ...
+						  ],
+						  "flashcards": [
+						    {"front": "term, question, or prompt", "back": "definition or answer", "sourceStartTime": "", "sourceEndTime": ""}
 						  ]
 						}
 						""";
@@ -978,6 +995,7 @@ public class GeminiService {
 				Identify the main key points or action items discussed across both sources and list them as distinct strings in the `keyPoints` array.
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in either the transcript or the document. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.
+				If the selected output format is Review Material, populate `flashcards` with concise front/back cards drawn only from the provided sources. If the selected output format is Notes or Study Material, set `flashcards` to an empty array.
 				%s
 				Ensure the entire output strictly adheres to the provided JSON schema. Output only the JSON object.
 				"""
@@ -1350,6 +1368,7 @@ public class GeminiService {
 				Identify the main key points or action items discussed and list them as distinct strings in the `keyPoints` array.
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in the transcript. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.
+				If the selected output format is Review Material, populate `flashcards` with concise front/back cards drawn only from the transcript. If the selected output format is Notes or Study Material, set `flashcards` to an empty array.
 				Stay strictly within the boundaries of what is explicitly mentioned in the transcript. Do not add external information, assumptions, or hallucinations.
 				%s
 				Ensure the entire output strictly adheres to the provided JSON schema. Output only the JSON object.

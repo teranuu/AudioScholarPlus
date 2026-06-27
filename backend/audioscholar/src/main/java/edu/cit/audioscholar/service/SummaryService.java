@@ -36,6 +36,7 @@ public class SummaryService {
 			summary.setStatus("COMPLETE");
 		}
 		populateMissingKeyPointTimestamps(summary);
+		attachSummaryIdToFlashcards(summary);
 		summary.setUpdatedAt(new java.util.Date());
 		saveSummaryKeyPoints(summary);
 		summaryRepository.save(summary);
@@ -105,6 +106,7 @@ public class SummaryService {
 			summary.setStatus("COMPLETE");
 		}
 		populateMissingKeyPointTimestamps(summary);
+		attachSummaryIdToFlashcards(summary);
 		summary.setUpdatedAt(new java.util.Date());
 		saveSummaryKeyPoints(summary);
 		summaryRepository.update(summary);
@@ -159,6 +161,17 @@ public class SummaryService {
 			} else {
 				keyPoint.setSourceStartTime("00:00");
 				keyPoint.setSourceEndTime("00:00");
+			}
+		}
+	}
+
+	private void attachSummaryIdToFlashcards(Summary summary) {
+		if (summary == null || summary.getSummaryId() == null || summary.getFlashcards() == null) {
+			return;
+		}
+		for (edu.cit.audioscholar.model.Flashcard flashcard : summary.getFlashcards()) {
+			if (flashcard != null) {
+				flashcard.setSummaryId(summary.getSummaryId());
 			}
 		}
 	}

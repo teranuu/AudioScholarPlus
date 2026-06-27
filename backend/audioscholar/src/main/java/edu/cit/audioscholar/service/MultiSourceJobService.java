@@ -6,7 +6,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
@@ -16,6 +18,7 @@ import org.springframework.util.StringUtils;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.multipart.MultipartFile;
 
+import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.KeyPoint;
 import edu.cit.audioscholar.model.MergedSummary;
 import edu.cit.audioscholar.model.MultiSourceJob;
@@ -213,7 +216,59 @@ public class MultiSourceJobService {
 			root.path("topics").forEach(node -> topics.add(node.asText()));
 		}
 		summary.setTopics(topics);
+		List<Map<String, String>> glossary = new ArrayList<>();
+		if (root.path("glossary").isArray()) {
+			for (com.fasterxml.jackson.databind.JsonNode glossaryItem : root.path("glossary")) {
+				String term = glossaryItem.path("term").asText("").trim();
+				String definition = glossaryItem.path("definition").asText("").trim();
+				if (!term.isEmpty() && !definition.isEmpty()) {
+					Map<String, String> item = new HashMap<>();
+					item.put("term", term);
+					item.put("definition", definition);
+					glossary.add(item);
+				}
+			}
+		}
+		summary.setGlossary(glossary);
+		List<Flashcard> flashcards = parseFlashcards(root);
+		if (OutputType.REVIEW_MATERIAL.name().equals(job.getOutputType()) && flashcards.isEmpty()) {
+			flashcards = buildFallbackFlashcards(glossary);
+		}
+		summary.setFlashcards(deduplicationService.removeDuplicateFlashcards(flashcards));
 		return summary;
+	}
+
+	private List<Flashcard> parseFlashcards(com.fasterxml.jackson.databind.JsonNode root) {
+		List<Flashcard> flashcards = new ArrayList<>();
+		if (!root.path("flashcards").isArray()) {
+			return flashcards;
+		}
+		for (com.fasterxml.jackson.databind.JsonNode cardNode : root.path("flashcards")) {
+			String front = cardNode.path("front").asText("").trim();
+			String back = cardNode.path("back").asText("").trim();
+			if (front.isEmpty() || back.isEmpty()) {
+				continue;
+			}
+			Flashcard flashcard = new Flashcard(front, back);
+			String sourceStartTime = cardNode.path("sourceStartTime").asText("").trim();
+			String sourceEndTime = cardNode.path("sourceEndTime").asText("").trim();
+			flashcard.setSourceStartTime(sourceStartTime.isEmpty() ? null : sourceStartTime);
+			flashcard.setSourceEndTime(sourceEndTime.isEmpty() ? null : sourceEndTime);
+			flashcards.add(flashcard);
+		}
+		return flashcards;
+	}
+
+	private List<Flashcard> buildFallbackFlashcards(List<Map<String, String>> glossary) {
+		List<Flashcard> flashcards = new ArrayList<>();
+		for (Map<String, String> item : glossary) {
+			String term = item.get("term");
+			String definition = item.get("definition");
+			if (StringUtils.hasText(term) && StringUtils.hasText(definition)) {
+				flashcards.add(new Flashcard(term.trim(), definition.trim()));
+			}
+		}
+		return flashcards;
 	}
 
 	private String buildMergedTranscript(List<SourceFile> sourceFiles) {
@@ -233,6 +288,7 @@ public class MultiSourceJobService {
 		mergedSummary.setJobId(job.getJobId());
 		mergedSummary.setUserId(job.getUserId());
 		mergedSummary.setContent(summary.getFormattedSummaryText());
+		mergedSummary.setFlashcards(summary.getFlashcards());
 		mergedSummary.setStatus(ProcessingStatus.COMPLETE.name());
 
 		List<KeyPoint> keyPoints = new ArrayList<>();

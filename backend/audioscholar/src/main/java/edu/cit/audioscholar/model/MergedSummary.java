@@ -12,6 +12,7 @@ public class MergedSummary {
 	private String jobId;
 	private String userId;
 	private String content;
+	private List<Flashcard> flashcards = new ArrayList<>();
 	private List<SourceAttribution> sourceAttributions = new ArrayList<>();
 	private String status;
 	private Date createdAt = new Date();
@@ -47,6 +48,14 @@ public class MergedSummary {
 
 	public void setContent(String content) {
 		this.content = content;
+	}
+
+	public List<Flashcard> getFlashcards() {
+		return flashcards;
+	}
+
+	public void setFlashcards(List<Flashcard> flashcards) {
+		this.flashcards = flashcards != null ? new ArrayList<>(flashcards) : new ArrayList<>();
 	}
 
 	public List<SourceAttribution> getSourceAttributions() {
@@ -87,6 +96,7 @@ public class MergedSummary {
 		map.put("jobId", jobId);
 		map.put("userId", userId);
 		map.put("content", content);
+		map.put("flashcards", flashcards.stream().map(Flashcard::toMap).toList());
 		map.put("sourceAttributions", sourceAttributions.stream().map(SourceAttribution::toMap).toList());
 		map.put("status", status);
 		map.put("createdAt", createdAt);

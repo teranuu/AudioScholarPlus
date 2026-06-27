@@ -7,6 +7,7 @@ import java.util.Set;
 
 import org.springframework.stereotype.Service;
 
+import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.KeyPoint;
 
 @Service
@@ -27,5 +28,21 @@ public class DeduplicationService {
 	public List<String> removeDuplicateText(List<String> values) {
 		return removeDuplicateKeyPoints(values.stream().map(value -> new KeyPoint(value, null)).toList()).stream()
 				.map(KeyPoint::getText).toList();
+	}
+
+	public List<Flashcard> removeDuplicateFlashcards(List<Flashcard> flashcards) {
+		Set<String> seen = new HashSet<>();
+		List<Flashcard> deduped = new ArrayList<>();
+		if (flashcards == null) {
+			return deduped;
+		}
+		for (Flashcard flashcard : flashcards) {
+			String front = flashcard != null ? flashcard.getFront() : null;
+			String key = front == null ? "" : front.toLowerCase().replaceAll("[^a-z0-9 ]", "").trim();
+			if (!key.isBlank() && seen.add(key)) {
+				deduped.add(flashcard);
+			}
+		}
+		return deduped;
 	}
 }

@@ -156,6 +156,51 @@ class SummarizationListenerServiceIntegrationTest {
 	}
 
 	@Test
+	void testHandleSummarizationRequest_SavesReviewMaterialFlashcards() throws Exception {
+		setupRobustTaskExecutorMock();
+		Map<String, String> message = createValidAudioOnlyMessage();
+		AudioMetadata metadata = createAudioOnlyMetadata();
+		metadata.setOutputType("REVIEW_MATERIAL");
+		mockFirebaseService(metadata);
+		doReturn(
+				"""
+						{"summaryText":"Flashcard deck","keyPoints":[],"topics":[],"glossary":[],"flashcards":[{"front":"What is cohesion?","back":"How closely related responsibilities are."}]}
+						""")
+				.when(geminiService).generateTranscriptOnlySummary(anyString(), eq(METADATA_ID), eq("REVIEW_MATERIAL"));
+
+		summarizationListenerService.handleSummarizationRequest(message);
+
+		verify(summaryService).createSummary(summaryCaptor.capture());
+		Summary summary = summaryCaptor.getValue();
+		assertEquals("REVIEW_MATERIAL", summary.getOutputType());
+		assertEquals(1, summary.getFlashcards().size());
+		assertEquals("What is cohesion?", summary.getFlashcards().get(0).getFront());
+		assertEquals("How closely related responsibilities are.", summary.getFlashcards().get(0).getBack());
+	}
+
+	@Test
+	void testHandleSummarizationRequest_BuildsReviewMaterialFlashcardsFromGlossaryFallback() throws Exception {
+		setupRobustTaskExecutorMock();
+		Map<String, String> message = createValidAudioOnlyMessage();
+		AudioMetadata metadata = createAudioOnlyMetadata();
+		metadata.setOutputType("REVIEW_MATERIAL");
+		mockFirebaseService(metadata);
+		doReturn(
+				"""
+						{"summaryText":"Flashcard deck","keyPoints":[],"topics":[],"glossary":[{"term":"Abstraction","definition":"Hiding implementation details."}],"flashcards":[]}
+						""")
+				.when(geminiService).generateTranscriptOnlySummary(anyString(), eq(METADATA_ID), eq("REVIEW_MATERIAL"));
+
+		summarizationListenerService.handleSummarizationRequest(message);
+
+		verify(summaryService).createSummary(summaryCaptor.capture());
+		Summary summary = summaryCaptor.getValue();
+		assertEquals(1, summary.getFlashcards().size());
+		assertEquals("Abstraction", summary.getFlashcards().get(0).getFront());
+		assertEquals("Hiding implementation details.", summary.getFlashcards().get(0).getBack());
+	}
+
+	@Test
 	void testHandleSummarizationRequest_AddsClarityNotesForNoisyAudio() throws Exception {
 		setupRobustTaskExecutorMock();
 		Map<String, String> message = createValidAudioOnlyMessage();

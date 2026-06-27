@@ -5,6 +5,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
+import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.Summary;
 import edu.cit.audioscholar.model.SummaryKeyPoint;
 import edu.cit.audioscholar.model.TranscriptSegment;
@@ -26,6 +27,7 @@ public class SummaryDto {
 	private List<TranscriptSegment> transcriptSegments;
 	private List<String> topics;
 	private List<Map<String, String>> glossary;
+	private List<Flashcard> flashcards;
 	private String formattedSummaryText;
 	private Date createdAt;
 	private Date updatedAt;
@@ -89,6 +91,10 @@ public class SummaryDto {
 		return (glossary != null) ? Collections.unmodifiableList(glossary) : null;
 	}
 
+	public List<Flashcard> getFlashcards() {
+		return (flashcards != null) ? Collections.unmodifiableList(flashcards) : null;
+	}
+
 	public String getFormattedSummaryText() {
 		return formattedSummaryText;
 	}
@@ -122,6 +128,7 @@ public class SummaryDto {
 		dto.transcriptSegments = summary.getTranscriptSegments();
 		dto.topics = summary.getTopics();
 		dto.glossary = summary.getGlossary();
+		dto.flashcards = summary.getFlashcards();
 		dto.formattedSummaryText = summary.getFormattedSummaryText();
 		dto.createdAt = summary.getCreatedAt();
 		dto.updatedAt = summary.getUpdatedAt();

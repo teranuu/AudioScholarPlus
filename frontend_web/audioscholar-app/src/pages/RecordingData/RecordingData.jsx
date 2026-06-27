@@ -1,7 +1,7 @@
 import axios from 'axios';
 import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { FiExternalLink, FiCopy, FiCheck, FiEdit, FiSave, FiX, FiLoader, FiAlertTriangle, FiCheckCircle, FiUploadCloud, FiClock, FiHeadphones, FiDownload, FiEye, FiEdit2, FiRefreshCw } from 'react-icons/fi';
+import { FiExternalLink, FiCopy, FiCheck, FiEdit, FiSave, FiX, FiLoader, FiAlertTriangle, FiCheckCircle, FiUploadCloud, FiClock, FiHeadphones, FiDownload, FiEye, FiEdit2, FiRefreshCw, FiChevronLeft, FiChevronRight, FiRotateCw } from 'react-icons/fi';
 import { FaHeart, FaRegHeart } from 'react-icons/fa';
 import ReactMarkdown from 'react-markdown';
 import { API_BASE_URL } from '../../services/authService';
@@ -73,6 +73,7 @@ const normalizeSummaryData = (rawSummary) => {
   const parsedFormatted = parseMaybeJson(source.formattedSummaryText);
   const formattedSource = typeof parsedFormatted === 'object' && parsedFormatted !== null ? parsedFormatted : null;
   const formattedSummaryText = formattedSource?.summaryText || source.formattedSummaryText || source.summaryText || '';
+  const flashcards = source.flashcards || formattedSource?.flashcards || [];
 
   return {
     ...source,
@@ -80,6 +81,7 @@ const normalizeSummaryData = (rawSummary) => {
     keyPoints: source.keyPoints || formattedSource?.keyPoints || [],
     topics: source.topics || formattedSource?.topics || [],
     glossary: source.glossary || formattedSource?.glossary || [],
+    flashcards,
     qualityReport: source.qualityReport || formattedSource?.qualityReport || null,
     outputType: source.outputType || formattedSource?.outputType || null,
   };
@@ -89,6 +91,7 @@ const hasUsableSummary = (summary) => {
   if (!summary) return false;
   return Boolean(
     summary.formattedSummaryText?.trim?.() ||
+    summary.flashcards?.length ||
     summary.keyPoints?.length ||
     summary.glossary?.length ||
     summary.topics?.length
@@ -101,6 +104,77 @@ const normalizeFavoriteStatus = (recording) => ({
     ? recording.isFavorite
     : (recording?.favorite !== undefined ? recording.favorite : false),
 });
+
+const FlashcardViewer = ({ flashcards }) => {
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [isFlipped, setIsFlipped] = useState(false);
+
+  if (!flashcards || flashcards.length === 0) return null;
+
+  const currentCard = flashcards[currentIndex];
+  const showPrevious = () => {
+    setCurrentIndex((index) => Math.max(index - 1, 0));
+    setIsFlipped(false);
+  };
+  const showNext = () => {
+    setCurrentIndex((index) => Math.min(index + 1, flashcards.length - 1));
+    setIsFlipped(false);
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h3 className="font-semibold text-lg text-gray-800">Flashcards</h3>
+        <span className="text-xs font-medium text-gray-500">
+          {currentIndex + 1} of {flashcards.length}
+        </span>
+      </div>
+
+      <button
+        type="button"
+        onClick={() => setIsFlipped((value) => !value)}
+        className="w-full min-h-[260px] rounded-lg border border-teal-200 bg-gradient-to-br from-white to-teal-50 p-6 text-left shadow-sm transition hover:border-teal-300 focus:outline-none focus:ring-2 focus:ring-teal-500"
+        aria-label={isFlipped ? 'Show flashcard front' : 'Show flashcard back'}
+      >
+        <div className="flex items-center justify-between gap-3 text-xs font-semibold uppercase tracking-normal text-teal-700">
+          <span>{isFlipped ? 'Back' : 'Front'}</span>
+          <FiRotateCw className="h-4 w-4" />
+        </div>
+        <div className="mt-6 min-h-[150px] flex items-center">
+          <p className="text-xl font-semibold leading-relaxed text-gray-900 break-words">
+            {isFlipped ? currentCard.back : currentCard.front}
+          </p>
+        </div>
+        {(currentCard.sourceStartTime || currentCard.sourceEndTime) && (
+          <p className="mt-4 text-xs text-gray-500">
+            Source: {[currentCard.sourceStartTime, currentCard.sourceEndTime].filter(Boolean).join(' - ')}
+          </p>
+        )}
+      </button>
+
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <button
+          type="button"
+          onClick={showPrevious}
+          disabled={currentIndex === 0}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-gray-300 px-3 text-sm font-medium text-gray-700 transition hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <FiChevronLeft className="h-4 w-4" />
+          Previous
+        </button>
+        <button
+          type="button"
+          onClick={showNext}
+          disabled={currentIndex === flashcards.length - 1}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-teal-600 px-3 text-sm font-medium text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Next
+          <FiChevronRight className="h-4 w-4" />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 const QualityReportSection = ({ report }) => {
   if (!report) {
@@ -765,6 +839,14 @@ const RecordingData = () => {
       contentToCopy += "\n";
     }
 
+    if (summaryData.flashcards && summaryData.flashcards.length > 0) {
+      contentToCopy += "Flashcards:\n============\n";
+      summaryData.flashcards.forEach((card, index) => {
+        contentToCopy += `${index + 1}. Front: ${card.front}\n`;
+        contentToCopy += `   Back: ${card.back}\n`;
+      });
+      contentToCopy += "\n";
+    }
 
     if (summaryData.glossary && summaryData.glossary.length > 0) {
       contentToCopy += "Key Vocabulary:\n=================\n";
@@ -1126,16 +1208,25 @@ const RecordingData = () => {
                 {!summaryLoading && !summaryError && summaryData && (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
                     <div className="md:col-span-2 space-y-6 max-h-[600px] overflow-y-auto pr-2">
+                      {(() => {
+                        const outputType = summaryData.outputType || recordingData?.outputType;
+                        const hasFlashcards = summaryData.flashcards && summaryData.flashcards.length > 0;
+                        const shouldShowFlashcards = outputType === 'REVIEW_MATERIAL' && hasFlashcards;
+                        const shouldShowSummaryText = summaryData.formattedSummaryText && !shouldShowFlashcards;
+
+                        return (
+                          <>
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="inline-flex items-center rounded-full bg-teal-100 text-teal-800 text-xs font-semibold px-3 py-1">
-                          {formatOutputType(summaryData.outputType || recordingData?.outputType)}
+                          {formatOutputType(outputType)}
                         </span>
                         {recordingData?.status && (
                           <span className="text-xs text-gray-500">Status: {recordingData.status}</span>
                         )}
                       </div>
                       <QualityReportSection report={summaryData.qualityReport || recordingData?.qualityReport} />
-                      {summaryData.formattedSummaryText && (
+                      {shouldShowFlashcards && <FlashcardViewer flashcards={summaryData.flashcards} />}
+                      {shouldShowSummaryText && (
                         <div>
                           <h3 className="font-semibold text-lg mb-2 text-gray-800">Summary Details</h3>
                           <div className="prose prose-sm max-w-none text-gray-700 leading-relaxed">
@@ -1145,7 +1236,10 @@ const RecordingData = () => {
                           </div>
                         </div>
                       )}
-                      {!summaryData.formattedSummaryText && <p className="text-gray-500">Detailed summary is not available.</p>}
+                      {!shouldShowFlashcards && !summaryData.formattedSummaryText && <p className="text-gray-500">Detailed summary is not available.</p>}
+                          </>
+                        );
+                      })()}
                     </div>
 
                     <div className="space-y-6 border-t md:border-t-0 md:border-l border-gray-200 pt-6 md:pt-0 md:pl-6 max-h-[600px] overflow-y-auto">

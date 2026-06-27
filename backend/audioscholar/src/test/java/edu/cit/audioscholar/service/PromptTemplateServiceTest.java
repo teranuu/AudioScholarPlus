@@ -23,4 +23,18 @@ class PromptTemplateServiceTest {
 		assertTrue(template.contains("less granular than Study Material"));
 		assertTrue(template.contains("quick review bullets"));
 	}
+
+	@Test
+	void getTemplateFallsBackToFlashcardReviewMaterialTemplate() {
+		FirebaseService firebaseService = mock(FirebaseService.class);
+		when(firebaseService.queryCollection(anyString(), eq("outputType"), eq("REVIEW_MATERIAL")))
+				.thenReturn(List.of());
+
+		PromptTemplateService service = new PromptTemplateService(firebaseService);
+
+		String template = service.getTemplate("REVIEW_MATERIAL");
+
+		assertTrue(template.contains("flashcards array"));
+		assertTrue(template.contains("front/back study cards"));
+	}
 }

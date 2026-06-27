@@ -1,15 +1,20 @@
 package edu.cit.audioscholar.service;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.*;
 
+import java.lang.reflect.Method;
 import java.nio.file.Path;
 import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
+
+import edu.cit.audioscholar.model.MultiSourceJob;
+import edu.cit.audioscholar.model.Summary;
 
 class MultiSourceJobServiceTest {
 
@@ -77,6 +82,37 @@ class MultiSourceJobServiceTest {
 		assertTrue(exception.getMessage().contains("Combined multi-source upload size"));
 	}
 
+	@Test
+	void parseMergedSummaryDeduplicatesReviewMaterialFlashcards() throws Exception {
+		MultiSourceJobService service = serviceWithDeduplication();
+		MultiSourceJob job = new MultiSourceJob();
+		job.setJobId("job-1");
+		job.setUserId("user-1");
+		job.setOutputType("REVIEW_MATERIAL");
+		String summaryJson = """
+				{
+				  "summaryText": "Deck overview",
+				  "keyPoints": [],
+				  "topics": [],
+				  "glossary": [],
+				  "flashcards": [
+				    {"front": "What is polymorphism?", "back": "Many forms."},
+				    {"front": "What is polymorphism", "back": "Duplicate wording."},
+				    {"front": "What is inheritance?", "back": "Sharing behavior."}
+				  ]
+				}
+				""";
+
+		Method parser = MultiSourceJobService.class.getDeclaredMethod("parseMergedSummary", MultiSourceJob.class,
+				String.class);
+		parser.setAccessible(true);
+		Summary summary = (Summary) parser.invoke(service, job, summaryJson);
+
+		assertEquals(2, summary.getFlashcards().size());
+		assertEquals("What is polymorphism?", summary.getFlashcards().get(0).getFront());
+		assertEquals("What is inheritance?", summary.getFlashcards().get(1).getFront());
+	}
+
 	private MultiSourceJobService service() throws Exception {
 		return service(mock(AudioProcessingGuardrailService.class));
 	}
@@ -87,6 +123,15 @@ class MultiSourceJobServiceTest {
 				mock(SourceFileService.class), mock(SourceTranscriptService.class),
 				mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class),
 				mock(MultiSourceJobRepository.class), guardrailService, tempDir.toString(), "500MB");
+	}
+
+	private MultiSourceJobService serviceWithDeduplication() throws Exception {
+		return new MultiSourceJobService(mock(GeminiService.class), mock(QualityReportService.class),
+				mock(SummaryService.class), new DeduplicationService(), mock(SourceAttributionService.class),
+				mock(SourceFileService.class), mock(SourceTranscriptService.class),
+				mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class),
+				mock(MultiSourceJobRepository.class), mock(AudioProcessingGuardrailService.class), tempDir.toString(),
+				"500MB");
 	}
 
 	private MockMultipartFile media(String filename) {

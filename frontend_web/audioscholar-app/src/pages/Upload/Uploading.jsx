@@ -23,7 +23,7 @@ const VALID_PPTX_EXTENSIONS = ['ppt', 'pptx'];
 const OUTPUT_TYPES = [
   { value: 'NOTES', title: 'Notes', description: 'Detailed lecture notes with organized sections and key ideas.' },
   { value: 'STUDY_MATERIAL', title: 'Study Material', description: 'A structured study guide with explanations, terms, and review flow.' },
-  { value: 'REVIEW_MATERIAL', title: 'Review Material', description: 'A concise reviewer for quick recall and exam preparation.' },
+  { value: 'REVIEW_MATERIAL', title: 'Review Material', description: 'Flashcards for quick recall and exam preparation.' },
 ];
 
 const Uploading = () => {

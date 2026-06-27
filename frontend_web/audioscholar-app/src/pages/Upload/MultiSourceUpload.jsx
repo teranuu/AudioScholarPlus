@@ -8,7 +8,7 @@ import ReactMarkdown from 'react-markdown';
 const OUTPUT_TYPES = [
   { value: 'NOTES', title: 'Notes', description: 'Detailed lecture notes from every source.' },
   { value: 'STUDY_MATERIAL', title: 'Study Material', description: 'A unified study guide with definitions and structure.' },
-  { value: 'REVIEW_MATERIAL', title: 'Review Material', description: 'A concise reviewer for quick recall.' },
+  { value: 'REVIEW_MATERIAL', title: 'Review Material', description: 'A deduplicated flashcard deck for quick recall.' },
 ];
 
 const VALID_MEDIA_TYPES = [
