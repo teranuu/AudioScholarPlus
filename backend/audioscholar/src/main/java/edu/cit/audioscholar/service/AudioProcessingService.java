@@ -15,6 +15,7 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.CacheEvict;
@@ -29,6 +30,8 @@ import org.springframework.web.multipart.MultipartFile;
 import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.FieldValue;
 
+import edu.cit.audioscholar.config.RabbitMQConfig;
+import edu.cit.audioscholar.dto.NhostUploadMessage;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
 import edu.cit.audioscholar.exception.InvalidAudioFileException;
 import edu.cit.audioscholar.model.AudioMetadata;
@@ -43,8 +46,8 @@ public class AudioProcessingService {
 	private static final String CACHE_METADATA_BY_USER = "audioMetadataByUser";
 
 	private final FirebaseService firebaseService;
-	private final SupabaseStorageService storageService;
-	private final PortfolioAsyncProcessingService portfolioAsyncProcessingService;
+	private final NhostStorageService storageService;
+	private final RabbitTemplate rabbitTemplate;
 	private final LearningMaterialRecommenderService learningMaterialRecommenderService;
 	private final RecordingService recordingService;
 	private final AudioProcessingGuardrailService guardrailService;
@@ -54,17 +57,15 @@ public class AudioProcessingService {
 	@SuppressWarnings("unused")
 	private final CacheManager cacheManager;
 
-	public AudioProcessingService(FirebaseService firebaseService, SupabaseStorageService storageService,
-			PortfolioAsyncProcessingService portfolioAsyncProcessingService,
-			LearningMaterialRecommenderService learningMaterialRecommenderService, RecordingService recordingService,
-			AudioProcessingGuardrailService guardrailService,
+	public AudioProcessingService(FirebaseService firebaseService, NhostStorageService storageService,
+			RabbitTemplate rabbitTemplate, LearningMaterialRecommenderService learningMaterialRecommenderService,
+			RecordingService recordingService, AudioProcessingGuardrailService guardrailService,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue,
 			@Value("${app.temp-min-free-space:100MB}") String tempMinFreeSpaceValue,
-			@Value("${app.temp-file-dir}") String tempFileDirStr, CacheManager cacheManager,
-			ObjectMapper objectMapper) {
+			@Value("${app.temp-file-dir}") String tempFileDirStr, CacheManager cacheManager) {
 		this.firebaseService = firebaseService;
 		this.storageService = storageService;
-		this.portfolioAsyncProcessingService = portfolioAsyncProcessingService;
+		this.rabbitTemplate = rabbitTemplate;
 		this.learningMaterialRecommenderService = learningMaterialRecommenderService;
 		this.recordingService = recordingService;
 		this.guardrailService = guardrailService;
@@ -217,9 +218,15 @@ public class AudioProcessingService {
 			try {
 				initialMetadata = updateMetadataStatus(metadataId, userId, ProcessingStatus.UPLOAD_IN_PROGRESS, null,
 						false);
-				portfolioAsyncProcessingService.processUploadAsync(metadataId, tempAudioPath, tempPptxPath,
-						originalAudioFilename, originalAudioContentType, originalPptxFilename, originalPptxContentType);
-				log.info("Started bounded async demo processing. Metadata ID: {}, User ID: {}", metadataId, userId);
+				publishUploadMessage(RabbitMQConfig.UPLOAD_AUDIO_ROUTING_KEY,
+						new NhostUploadMessage(metadataId, "audio", tempAudioPath.toAbsolutePath().toString(),
+								originalAudioFilename, originalAudioContentType));
+				if (tempPptxPath != null) {
+					publishUploadMessage(RabbitMQConfig.UPLOAD_PPTX_ROUTING_KEY,
+							new NhostUploadMessage(metadataId, "powerpoint", tempPptxPath.toAbsolutePath().toString(),
+									originalPptxFilename, originalPptxContentType));
+				}
+				log.info("Queued Nhost upload processing. Metadata ID: {}, User ID: {}", metadataId, userId);
 				return initialMetadata;
 
 			} catch (RuntimeException e) {
@@ -231,8 +238,8 @@ public class AudioProcessingService {
 						failureUpdates.put("status", ProcessingStatus.FAILED);
 						failureUpdates.put("failureReason", "Failed to start async processing: " + e.getMessage());
 						failureUpdates.put("lastUpdated", Timestamp.of(new Date()));
-						firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), initialMetadata.getId(),
-								failureUpdates);
+						firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(),
+								initialMetadata.getId(), failureUpdates);
 					} catch (Exception updateEx) {
 						log.error("Failed to update metadata {} status to FAILED after async startup error: {}",
 								initialMetadata.getId(), updateEx.getMessage(), updateEx);
@@ -255,6 +262,10 @@ public class AudioProcessingService {
 			deleteTemporaryFile(tempPptxPath);
 			throw e;
 		}
+	}
+
+	private void publishUploadMessage(String routingKey, NhostUploadMessage message) {
+		rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME, routingKey, message);
 	}
 
 	private void validateMultipartFile(MultipartFile file, String fileTypeLabel, String userId)

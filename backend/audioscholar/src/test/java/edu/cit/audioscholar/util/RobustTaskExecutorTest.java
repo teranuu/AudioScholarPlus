@@ -12,7 +12,7 @@ import edu.cit.audioscholar.exception.NonRetryableTaskException;
 
 class RobustTaskExecutorTest {
 
-	private final RobustTaskExecutor executor = new RobustTaskExecutor();
+	private final RobustTaskExecutor executor = new RobustTaskExecutor(3, 0, 0);
 
 	@Test
 	void boundedRetryReturnsAfterTransientFailure() {

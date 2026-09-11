@@ -408,3 +408,4 @@ FodyWeavers.xsd
 .firebase/
 backend/audioscholar/springbootbackend-test.log.2025-11-25.0.gz
 frontend_web/audioscholar-app/.env
+frontend_web/audioscholar-app/dist/

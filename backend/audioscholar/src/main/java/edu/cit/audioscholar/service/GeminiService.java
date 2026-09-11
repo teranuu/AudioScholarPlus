@@ -3,6 +3,10 @@ package edu.cit.audioscholar.service;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -54,6 +58,18 @@ public class GeminiService {
 
 	@Value("${gemini.api.model.summarization:gemini-2.5-flash}")
 	private String summarizationModelName;
+
+	@Value("${gemini.transcription.models:gemini-2.5-flash}")
+	private String transcriptionModels;
+
+	@Value("${gemini.files.poll-interval-ms:2000}")
+	private long filePollIntervalMs;
+
+	@Value("${gemini.files.ready-timeout-ms:180000}")
+	private long fileReadyTimeoutMs;
+
+	@Value("${gemini.keys.cooldown:60s}")
+	private Duration geminiCooldown;
 
 	private static final String API_BASE_URL = "https://generativelanguage.googleapis.com";
 	private static final String FILES_API_UPLOAD_PATH = "/upload/v1beta/files";
