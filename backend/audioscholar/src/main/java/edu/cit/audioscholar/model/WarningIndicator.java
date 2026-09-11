@@ -10,6 +10,7 @@ import com.google.cloud.Timestamp;
 public class WarningIndicator {
 	private String warningId = UUID.randomUUID().toString();
 	private String keyPointId;
+	private String cardId;
 	private String issueId;
 	private String issueType;
 	private String severity;
@@ -30,6 +31,14 @@ public class WarningIndicator {
 
 	public void setKeyPointId(String keyPointId) {
 		this.keyPointId = keyPointId;
+	}
+
+	public String getCardId() {
+		return cardId;
+	}
+
+	public void setCardId(String cardId) {
+		this.cardId = cardId;
 	}
 
 	public String getIssueId() {
@@ -76,6 +85,7 @@ public class WarningIndicator {
 		Map<String, Object> map = new HashMap<>();
 		map.put("warningId", warningId);
 		map.put("keyPointId", keyPointId);
+		map.put("cardId", cardId);
 		map.put("issueId", issueId);
 		map.put("issueType", issueType);
 		map.put("severity", severity);
@@ -91,6 +101,7 @@ public class WarningIndicator {
 		WarningIndicator warning = new WarningIndicator();
 		warning.warningId = (String) map.get("warningId");
 		warning.keyPointId = (String) map.get("keyPointId");
+		warning.cardId = (String) map.get("cardId");
 		warning.issueId = (String) map.get("issueId");
 		warning.issueType = (String) map.get("issueType");
 		warning.severity = (String) map.get("severity");

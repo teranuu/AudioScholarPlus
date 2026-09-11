@@ -9,13 +9,13 @@ import EmailVerificationNotice from '../../pages/Auth/EmailVerificationCodeInput
 import ResetPasswordRoute from '../../pages/Auth/ResetPassword/ResetPasswordRoute';
 import Dashboard from '../../pages/Dashboard/DashBoard';
 import HomePage from '../../pages/Home/HomePage';
-import RecordingData from '../../pages/RecordingData/RecordingData';
+import SummaryDetailScreen from '../../pages/SummaryDetail/SummaryDetailScreen';
 import RecordingList from '../../pages/RecordingList/RecordingList';
 import CheckoutPage from '../../pages/Subscription/CheckoutPage';
 import PaymentMethodPage from '../../pages/Subscription/PaymentMethodPage';
 import SubscriptionTierPage from '../../pages/Subscription/SubscriptionTierPage';
-import Uploading from '../../pages/Upload/Uploading';
-import MultiSourceUpload from '../../pages/Upload/MultiSourceUpload';
+import OutputTypeSelectionScreen from '../../pages/Upload/OutputTypeSelectionScreen';
+import MultiSourceUploadScreen from '../../pages/Upload/MultiSourceUploadScreen';
 import UserProfile from '../../pages/UserProfile/UserProfile';
 import UserProfileEdit from '../../pages/UserProfileEdit/UserProfileEdit';
 import AdminLayout from '../../pages/Admin/AdminLayout';
@@ -51,12 +51,12 @@ function App() {
           } />
           <Route path="/upload" element={
             <ProtectedRoute>
-              <Uploading />
+              <OutputTypeSelectionScreen />
             </ProtectedRoute>
           } />
           <Route path="/upload/multi-source" element={
             <ProtectedRoute>
-              <MultiSourceUpload />
+              <MultiSourceUploadScreen />
             </ProtectedRoute>
           } />
           <Route path="/recordings" element={
@@ -66,7 +66,7 @@ function App() {
           } />
           <Route path="/recordings/:id" element={
             <ProtectedRoute>
-              <RecordingData />
+              <SummaryDetailScreen />
             </ProtectedRoute>
           } />
           <Route path="/profile" element={

@@ -3,10 +3,6 @@ package edu.cit.audioscholar.service;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -41,7 +37,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 
 import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
-import edu.cit.audioscholar.exception.GeminiContentBlockedException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.exception.KeysExhaustedException;
 import edu.cit.audioscholar.exception.NonRetryableTaskException;
@@ -59,18 +54,6 @@ public class GeminiService {
 
 	@Value("${gemini.api.model.summarization:gemini-2.5-flash}")
 	private String summarizationModelName;
-
-	@Value("${gemini.files.poll-interval-ms:2000}")
-	private long filePollIntervalMs;
-
-	@Value("${gemini.files.ready-timeout-ms:180000}")
-	private long fileReadyTimeoutMs;
-
-	@Value("${gemini.transcription.models:gemini-2.5-flash}")
-	private String transcriptionModels = "gemini-2.5-flash";
-
-	@Value("${gemini.keys.cooldown:60s}")
-	private Duration geminiCooldown = Duration.ofMinutes(1);
 
 	private static final String API_BASE_URL = "https://generativelanguage.googleapis.com";
 	private static final String FILES_API_UPLOAD_PATH = "/upload/v1beta/files";
@@ -159,8 +142,6 @@ public class GeminiService {
 		String updatedPromptText = promptText
 				+ """
 
-						If the transcript contains AUDIO CLARITY ANNOTATIONS, include an `Audio Clarity Notes` section at the beginning of `summaryText`. List each affected timestamp range and label it exactly as `(unclear audio)` or `(garbled audio)`. Summarize clear portions normally, but do not present details from unclear or garbled ranges as certain.
-
 						YOU MUST RETURN VALID JSON that strictly adheres to the provided schema. Do not include any explanatory text before or after the JSON. The JSON structure must include:
 						{
 						  "summaryText": "Your markdown summary here",
@@ -239,13 +220,10 @@ public class GeminiService {
 				displayName);
 		long estimatedInputTokens = guardrail.estimatedAudioTokens();
 
-		String uploadKey = null;
-		String fileUri = null;
 		try {
-			uploadKey = keyRotationManager.getKey(KeyProvider.GEMINI);
-			fileUri = uploadFile(audioFilePath, mimeType, fileSize, displayName, uploadKey);
-			log.info("File uploaded successfully. Waiting for it to become ACTIVE. URI: {}", fileUri);
-			waitForFileActive(fileUri, uploadKey);
+			String uploadKey = keyRotationManager.getKey(KeyProvider.GEMINI);
+			String fileUri = uploadFile(audioFilePath, mimeType, fileSize, displayName, uploadKey);
+			log.info("File uploaded successfully. URI: {}", fileUri);
 
 			String activeFileUri = fileUri;
 			String activeFileKey = uploadKey;
@@ -265,11 +243,7 @@ public class GeminiService {
 			throw e;
 		} catch (Exception e) {
 			log.error("Unexpected error during enhanced transcription process: {}", e.getMessage(), e);
-			throw new IOException("Gemini transcription failed: " + e.getMessage(), e);
-		} finally {
-			if (fileUri != null && uploadKey != null) {
-				deleteGoogleFileQuietly(fileUri, uploadKey);
-			}
+			return createErrorResponse("Unexpected Transcription Error", e.getMessage());
 		}
 	}
 
@@ -400,8 +374,6 @@ public class GeminiService {
 			String extractedText;
 			try {
 				extractedText = extractTextFromStandardResponse(responseBody);
-			} catch (GeminiContentBlockedException ex) {
-				throw ex;
 			} catch (Exception ex) {
 				throw new RuntimeException("Failed to extract transcript from standard response", ex);
 			}
@@ -413,8 +385,6 @@ public class GeminiService {
 			String extractedText;
 			try {
 				extractedText = extractTextFromStandardResponse(responseBody);
-			} catch (GeminiContentBlockedException ex) {
-				throw ex;
 			} catch (Exception ex) {
 				throw new RuntimeException("Failed to extract transcript from standard response", ex);
 			}
@@ -448,23 +418,9 @@ public class GeminiService {
 		glossaryItemSchema.put("required", List.of("term", "definition"));
 		properties.put("glossary", Map.of("type", "ARRAY", "items", glossaryItemSchema, "description",
 				"List of key terms/concepts and their definitions identified from the audio transcript."));
-		Map<String, Object> flashcardProperties = new LinkedHashMap<>();
-		flashcardProperties.put("front",
-				Map.of("type", "STRING", "description", "The flashcard prompt, term, or recall question."));
-		flashcardProperties.put("back", Map.of("type", "STRING", "description", "The flashcard answer or definition."));
-		flashcardProperties.put("sourceStartTime", Map.of("type", "STRING", "description",
-				"Optional source start timestamp when available, otherwise an empty string."));
-		flashcardProperties.put("sourceEndTime", Map.of("type", "STRING", "description",
-				"Optional source end timestamp when available, otherwise an empty string."));
-		Map<String, Object> flashcardSchema = new LinkedHashMap<>();
-		flashcardSchema.put("type", "OBJECT");
-		flashcardSchema.put("properties", flashcardProperties);
-		flashcardSchema.put("required", List.of("front", "back"));
-		properties.put("flashcards", Map.of("type", "ARRAY", "items", flashcardSchema, "description",
-				"For REVIEW_MATERIAL, front/back study cards for quick recall. For other output types, return an empty array."));
 		schema.put("properties", properties);
-		schema.put("required", List.of("summaryText", "keyPoints", "topics", "glossary", "flashcards"));
-		schema.put("propertyOrdering", List.of("summaryText", "keyPoints", "topics", "glossary", "flashcards"));
+		schema.put("required", List.of("summaryText", "keyPoints", "topics", "glossary"));
+		schema.put("propertyOrdering", List.of("summaryText", "keyPoints", "topics", "glossary"));
 		return Collections.unmodifiableMap(schema);
 	}
 
@@ -802,8 +758,6 @@ public class GeminiService {
 		String updatedPromptText = promptText
 				+ """
 
-						If the transcript contains AUDIO CLARITY ANNOTATIONS, include an `Audio Clarity Notes` section at the beginning of `summaryText`. List each affected timestamp range and label it exactly as `(unclear audio)` or `(garbled audio)`. Summarize clear portions normally, but do not present details from unclear or garbled ranges as certain.
-
 						YOU MUST RETURN VALID JSON that strictly adheres to the provided schema. Do not include any explanatory text before or after the JSON. The JSON structure must include:
 						{
 						  "summaryText": "Your markdown summary here",
@@ -813,9 +767,6 @@ public class GeminiService {
 						    {"term": "term1", "definition": "definition1"},
 						    {"term": "term2", "definition": "definition2"},
 						    ...
-						  ],
-						  "flashcards": [
-						    {"front": "term, question, or prompt", "back": "definition or answer", "sourceStartTime": "", "sourceEndTime": ""}
 						  ]
 						}
 						""";
@@ -990,12 +941,10 @@ public class GeminiService {
 
 		String prompt = """
 				Analyze the provided lecture transcript and the accompanying PDF document.
-				Generate learning material incorporating information from BOTH sources, using Markdown in the `summaryText` field. Match the selected output format instruction below. Focus on core arguments, findings, definitions, and conclusions presented in either the transcript or the document.
-				If the transcript contains AUDIO CLARITY ANNOTATIONS, include an `Audio Clarity Notes` section at the beginning of `summaryText`. List each affected timestamp range and label it exactly as `(unclear audio)` or `(garbled audio)`. Summarize clear portions normally, but do not present details from unclear or garbled ranges as certain.
+				Generate a comprehensive, concise, well-structured summary incorporating information from BOTH sources, using Markdown in the `summaryText` field. Use headings (##) for main sections and bullet points (* or -) for details. Focus on core arguments, findings, definitions, and conclusions presented in either the transcript or the document.
 				Identify the main key points or action items discussed across both sources and list them as distinct strings in the `keyPoints` array.
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in either the transcript or the document. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.
-				If the selected output format is Review Material, populate `flashcards` with concise front/back cards drawn only from the provided sources. If the selected output format is Notes or Study Material, set `flashcards` to an empty array.
 				%s
 				Ensure the entire output strictly adheres to the provided JSON schema. Output only the JSON object.
 				"""
@@ -1122,7 +1071,7 @@ public class GeminiService {
 					String safetyRatings = firstCandidate.path("safetyRatings").toString();
 					log.error("Gemini API generation blocked. Finish Reason: {}. Safety Ratings: {}", reason,
 							safetyRatings);
-					throw new GeminiContentBlockedException(reason);
+					throw new ApiException("Gemini API Error: Content Blocked (Finish Reason) - " + reason);
 				}
 			}
 
@@ -1363,12 +1312,10 @@ public class GeminiService {
 
 		String prompt = """
 				Analyze the provided lecture transcript carefully.
-				Generate learning material in Markdown in the `summaryText` field. Match the selected output format instruction below. Focus on core arguments, findings, definitions, and conclusions presented in the transcript.
-				If the transcript contains AUDIO CLARITY ANNOTATIONS, include an `Audio Clarity Notes` section at the beginning of `summaryText`. List each affected timestamp range and label it exactly as `(unclear audio)` or `(garbled audio)`. Summarize clear portions normally, but do not present details from unclear or garbled ranges as certain.
+				Generate a comprehensive, concise, well-structured summary in Markdown in the `summaryText` field. Use headings (##) for main sections and bullet points (* or -) for details. Focus on core arguments, findings, definitions, and conclusions presented in the transcript.
 				Identify the main key points or action items discussed and list them as distinct strings in the `keyPoints` array.
 				Generate 3 distinct, intent-based YouTube search queries that would help a student understand these topics in depth, and output them in the `topics` array.
 				Identify important **terms, concepts, acronyms, proper nouns (people, places, organizations mentioned), and technical vocabulary** discussed in the transcript. For each, provide a concise definition relevant to the context. Structure this as an array of objects in the `glossary` field, where each object has a `term` (string) and a `definition` (string). Aim for comprehensive coverage of potentially unfamiliar items for a learner.
-				If the selected output format is Review Material, populate `flashcards` with concise front/back cards drawn only from the transcript. If the selected output format is Notes or Study Material, set `flashcards` to an empty array.
 				Stay strictly within the boundaries of what is explicitly mentioned in the transcript. Do not add external information, assumptions, or hallucinations.
 				%s
 				Ensure the entire output strictly adheres to the provided JSON schema. Output only the JSON object.
@@ -1595,7 +1542,7 @@ public class GeminiService {
 			case "REVIEW_MATERIAL" ->
 				"Format the generated material as Review Material: make it concise and recall-focused, emphasizing quick-review bullets, key facts, likely exam review points, and short definitions.";
 			default ->
-				"Format the generated material as Notes: create shortened, personal lecture notes in Markdown. Keep the notes less granular than Study Material: include a brief overview, 3-6 key ideas, compact topic notes, and quick review bullets. Preserve the lecture flow where useful, but avoid long lesson-guide explanations, exhaustive examples, or module-style study guide sections.";
+				"Format the generated material as Notes: create lecture-note style sections, detailed but readable bullets, and preserve the flow of the discussion.";
 		};
 	}
 

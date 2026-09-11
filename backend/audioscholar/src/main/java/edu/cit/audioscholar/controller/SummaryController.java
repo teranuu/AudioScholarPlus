@@ -20,7 +20,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
 
-import edu.cit.audioscholar.dto.SummaryDto;
+import edu.cit.audioscholar.dto.SummaryResponseDTO;
 import edu.cit.audioscholar.dto.UpdateSummaryRequest;
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
@@ -48,7 +48,8 @@ public class SummaryController {
 	}
 
 	@GetMapping("/summaries/{summaryId}")
-	public ResponseEntity<SummaryDto> getSummaryById(@PathVariable String summaryId, Authentication authentication) {
+	public ResponseEntity<SummaryResponseDTO> getSummaryById(@PathVariable String summaryId,
+			Authentication authentication) {
 		try {
 			String currentUserId = getCurrentUserId(authentication);
 			log.info("User {} requesting summary with ID: {}", currentUserId, summaryId);
@@ -62,7 +63,7 @@ public class SummaryController {
 			authorizeAccessForRecordingInternal(summary.getRecordingId(), currentUserId, "get summary by ID");
 
 			log.info("User {} authorized. Returning summary {}", currentUserId, summaryId);
-			return ResponseEntity.ok(SummaryDto.fromModel(summary));
+			return ResponseEntity.ok(SummaryResponseDTO.fromModel(summary));
 
 		} catch (AccessDeniedException e) {
 			log.warn("Access denied for user {} trying to get summary {}: {}", getCurrentUserId(authentication),
@@ -113,7 +114,7 @@ public class SummaryController {
 				}
 
 				log.info("User {} authorized. Returning summary for recording {}", currentUserId, recordingId);
-				return ResponseEntity.ok(SummaryDto.fromModel(summary));
+				return ResponseEntity.ok(SummaryResponseDTO.fromModel(summary));
 
 			} else {
 				log.debug("Recording {} not found. Checking AudioMetadata.", recordingId);
@@ -205,7 +206,7 @@ public class SummaryController {
 			Summary fetchedSummary = summaryService.getSummaryById(summaryId);
 			if (fetchedSummary != null) {
 				log.info("Summary {} retrieved successfully via metadata for recordingId: {}", summaryId, recordingId);
-				return ResponseEntity.ok(SummaryDto.fromModel(fetchedSummary));
+				return ResponseEntity.ok(SummaryResponseDTO.fromModel(fetchedSummary));
 			}
 
 			log.error(
@@ -310,7 +311,7 @@ public class SummaryController {
 				log.info("Successfully updated summary {}", summaryId);
 			}
 
-			return ResponseEntity.ok(SummaryDto.fromModel(summary));
+			return ResponseEntity.ok(SummaryResponseDTO.fromModel(summary));
 
 		} catch (AccessDeniedException e) {
 			log.warn("Access denied for user {} trying to update summary {}: {}", currentUserId, summaryId,

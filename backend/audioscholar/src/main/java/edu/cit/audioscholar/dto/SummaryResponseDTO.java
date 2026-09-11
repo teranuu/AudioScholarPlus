@@ -11,7 +11,7 @@ import edu.cit.audioscholar.model.SummaryKeyPoint;
 import edu.cit.audioscholar.model.TranscriptSegment;
 import edu.cit.audioscholar.service.TranscriptClarityService;
 
-public class SummaryDto {
+public class SummaryResponseDTO {
 
 	private String summaryId;
 	private String recordingId;
@@ -32,7 +32,7 @@ public class SummaryDto {
 	private Date createdAt;
 	private Date updatedAt;
 
-	private SummaryDto() {
+	private SummaryResponseDTO() {
 	}
 
 	public String getSummaryId() {
@@ -107,12 +107,12 @@ public class SummaryDto {
 		return (updatedAt != null) ? (Date) updatedAt.clone() : null;
 	}
 
-	public static SummaryDto fromModel(Summary summary) {
+	public static SummaryResponseDTO fromModel(Summary summary) {
 		if (summary == null) {
 			return null;
 		}
 
-		SummaryDto dto = new SummaryDto();
+		SummaryResponseDTO dto = new SummaryResponseDTO();
 		dto.summaryId = summary.getSummaryId();
 		dto.recordingId = summary.getRecordingId();
 		dto.userId = summary.getUserId();

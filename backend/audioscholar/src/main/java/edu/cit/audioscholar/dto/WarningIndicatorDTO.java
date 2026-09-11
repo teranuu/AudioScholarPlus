@@ -5,6 +5,7 @@ import edu.cit.audioscholar.model.WarningIndicator;
 public class WarningIndicatorDTO {
 	private String warningId;
 	private String keyPointId;
+	private String cardId;
 	private String issueId;
 	private String issueType;
 	private String severity;
@@ -14,6 +15,7 @@ public class WarningIndicatorDTO {
 		WarningIndicatorDTO dto = new WarningIndicatorDTO();
 		dto.warningId = warningIndicator.getWarningId();
 		dto.keyPointId = warningIndicator.getKeyPointId();
+		dto.cardId = warningIndicator.getCardId();
 		dto.issueId = warningIndicator.getIssueId();
 		dto.issueType = warningIndicator.getIssueType();
 		dto.severity = warningIndicator.getSeverity();
@@ -27,6 +29,10 @@ public class WarningIndicatorDTO {
 
 	public String getKeyPointId() {
 		return keyPointId;
+	}
+
+	public String getCardId() {
+		return cardId;
 	}
 
 	public String getIssueId() {

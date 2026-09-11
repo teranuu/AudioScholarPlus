@@ -105,7 +105,116 @@ const normalizeFavoriteStatus = (recording) => ({
     : (recording?.favorite !== undefined ? recording.favorite : false),
 });
 
-const FlashcardViewer = ({ flashcards }) => {
+const OutputTypeBadge = ({ outputType, status }) => (
+  <div className="flex flex-wrap items-center gap-2">
+    <span className="inline-flex items-center rounded-full bg-teal-100 text-teal-800 text-xs font-semibold px-3 py-1">
+      {formatOutputType(outputType)}
+    </span>
+    {status && (
+      <span className="text-xs text-gray-500">Status: {status}</span>
+    )}
+  </div>
+);
+
+const SummaryContentViewer = ({ content }) => {
+  if (!content) {
+    return <p className="text-gray-500">Detailed summary is not available.</p>;
+  }
+  return (
+    <div>
+      <h3 className="font-semibold text-lg mb-2 text-gray-800">Summary Details</h3>
+      <div className="prose prose-sm max-w-none text-gray-700 leading-relaxed">
+        <ReactMarkdown>{content}</ReactMarkdown>
+      </div>
+    </div>
+  );
+};
+
+const SummaryProcessingScreen = () => (
+  <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+    <div className="md:col-span-2 space-y-4">
+      <Skeleton className="h-6 w-1/3 mb-4" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-5/6" />
+      <Skeleton className="h-4 w-full mt-4" />
+      <Skeleton className="h-4 w-4/5" />
+    </div>
+    <div className="space-y-6 border-t md:border-t-0 md:border-l border-gray-200 pt-6 md:pt-0 md:pl-6">
+      <div className="space-y-2">
+        <Skeleton className="h-5 w-1/2 mb-2" />
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-3/4" />
+      </div>
+      <div className="space-y-2">
+        <Skeleton className="h-5 w-1/2 mb-2" />
+        <Skeleton className="h-3 w-full" />
+        <Skeleton className="h-3 w-5/6" />
+      </div>
+    </div>
+  </div>
+);
+
+const QualityWarningDetailsPanel = ({ warnings }) => {
+  if (!warnings?.length) return null;
+  return (
+    <div className="mt-2 space-y-2 rounded-md border border-yellow-200 bg-yellow-50 p-3 text-xs text-yellow-900">
+      {warnings.map((warning, index) => (
+        <div key={warning.warningId || index}>
+          <div className="font-semibold">{formatIssueType(warning.issueType)} · {warning.severity || 'Notice'}</div>
+          {warning.recommendedAction && <p className="mt-1">{warning.recommendedAction}</p>}
+        </div>
+      ))}
+    </div>
+  );
+};
+
+const QualityWarningIndicator = ({ warnings }) => {
+  const [expanded, setExpanded] = useState(false);
+  if (!warnings?.length) return null;
+  return (
+    <span className="inline-flex flex-col align-middle">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        className="ml-2 inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-800 hover:bg-yellow-200"
+        title="Show warning details"
+      >
+        <FiAlertTriangle className="mr-1 h-3 w-3" />
+        Warning
+      </button>
+      {expanded && <QualityWarningDetailsPanel warnings={warnings} />}
+    </span>
+  );
+};
+
+const warningsForKeyPoint = (warnings, keyPointId) => warnings.filter((warning) => warning.keyPointId === keyPointId);
+const warningsForFlashcard = (warnings, cardId) => warnings.filter((warning) => warning.cardId === cardId);
+
+const SummaryKeyPointList = ({ keyPoints, summaryKeyPoints, warningIndicators }) => {
+  const items = summaryKeyPoints?.length
+    ? summaryKeyPoints.map((item) => ({ key: item.keyPointId || item.text, id: item.keyPointId, text: item.text }))
+    : (keyPoints || []).map((text, index) => ({ key: index, id: null, text }));
+
+  if (!items.length) return null;
+
+  return (
+    <div>
+      <h3 className="font-semibold text-lg mb-2 text-gray-800">Key Points</h3>
+      <ul className="list-disc list-inside text-gray-700 space-y-1 text-sm">
+        {items.map((item) => (
+          <li key={item.key}>
+            <span>{item.text}</span>
+            <QualityWarningIndicator warnings={item.id ? warningsForKeyPoint(warningIndicators, item.id) : []} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+const FlashcardViewer = ({ flashcards, warningIndicators = [] }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
 
@@ -150,6 +259,7 @@ const FlashcardViewer = ({ flashcards }) => {
             Source: {[currentCard.sourceStartTime, currentCard.sourceEndTime].filter(Boolean).join(' - ')}
           </p>
         )}
+        <QualityWarningIndicator warnings={warningsForFlashcard(warningIndicators, currentCard.cardId)} />
       </button>
 
       <div className="mt-4 grid grid-cols-2 gap-3">
@@ -176,34 +286,45 @@ const FlashcardViewer = ({ flashcards }) => {
   );
 };
 
+const QualityIssueCard = ({ issue }) => (
+  <div className="bg-white border border-yellow-100 rounded-md p-3 text-sm">
+    <div className="flex flex-wrap items-center gap-2 mb-1">
+      <span className="font-semibold text-gray-900">{formatIssueType(issue.issueType)}</span>
+      <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded">{issue.severity || 'Notice'}</span>
+      <span className="text-xs text-gray-500">{issue.startTime} - {issue.endTime}</span>
+    </div>
+    <p className="text-gray-700">{issue.recommendedAction}</p>
+  </div>
+);
+
+const AllClearStatusBanner = () => (
+  <div className="border border-green-200 bg-green-50 text-green-800 rounded-lg p-4 text-sm flex items-start gap-2">
+    <FiCheckCircle className="mt-0.5 shrink-0" />
+    <div>
+      <div className="font-semibold">Recording quality all clear</div>
+      <p className="mt-1 text-green-700">No major quality issues were detected in the measurable audio.</p>
+    </div>
+  </div>
+);
+
+const QualityReportUnavailableBanner = () => (
+  <div className="border border-yellow-200 bg-yellow-50 text-yellow-800 rounded-lg p-4 text-sm">
+    Quality report is not available for this recording.
+  </div>
+);
+
 const QualityReportSection = ({ report }) => {
   if (!report) {
-    return (
-      <div className="border border-yellow-200 bg-yellow-50 text-yellow-800 rounded-lg p-4 text-sm">
-        Quality report is not available for this recording.
-      </div>
-    );
+    return <QualityReportUnavailableBanner />;
   }
 
   const issues = report.issues || [];
   if (report.status === 'ALL_CLEAR') {
-    return (
-      <div className="border border-green-200 bg-green-50 text-green-800 rounded-lg p-4 text-sm flex items-start gap-2">
-        <FiCheckCircle className="mt-0.5 shrink-0" />
-        <div>
-          <div className="font-semibold">Recording quality all clear</div>
-          <p className="mt-1 text-green-700">No major quality issues were detected in the measurable audio.</p>
-        </div>
-      </div>
-    );
+    return <AllClearStatusBanner />;
   }
 
   if (report.status === 'UNAVAILABLE' || issues.length === 0) {
-    return (
-      <div className="border border-yellow-200 bg-yellow-50 text-yellow-800 rounded-lg p-4 text-sm">
-        Quality report is not available for this recording.
-      </div>
-    );
+    return <QualityReportUnavailableBanner />;
   }
 
   return (
@@ -214,14 +335,7 @@ const QualityReportSection = ({ report }) => {
       </div>
       <div className="space-y-2">
         {issues.map((issue, index) => (
-          <div key={issue.issueId || index} className="bg-white border border-yellow-100 rounded-md p-3 text-sm">
-            <div className="flex flex-wrap items-center gap-2 mb-1">
-              <span className="font-semibold text-gray-900">{formatIssueType(issue.issueType)}</span>
-              <span className="text-xs bg-yellow-100 text-yellow-800 px-2 py-0.5 rounded">{issue.severity || 'Notice'}</span>
-              <span className="text-xs text-gray-500">{issue.startTime} - {issue.endTime}</span>
-            </div>
-            <p className="text-gray-700">{issue.recommendedAction}</p>
-          </div>
+          <QualityIssueCard key={issue.issueId || index} issue={issue} />
         ))}
       </div>
       <p className="text-xs text-yellow-800 mt-3">Warnings describe recording conditions, not verified factual errors.</p>
@@ -316,7 +430,7 @@ const Skeleton = ({ className }) => (
   <div className={`animate-pulse bg-gray-200 dark:bg-gray-700 rounded ${className}`}></div>
 );
 
-const RecordingData = () => {
+const SummaryDetailScreen = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const metadataPollIntervalRef = useRef(null);
@@ -330,6 +444,7 @@ const RecordingData = () => {
   const [summaryData, setSummaryData] = useState(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState(null);
+  const [warningIndicators, setWarningIndicators] = useState([]);
   const [audioObjectUrl, setAudioObjectUrl] = useState(null);
   const [audioLoading, setAudioLoading] = useState(false);
   const [audioError, setAudioError] = useState(null);
@@ -368,6 +483,35 @@ const RecordingData = () => {
     };
     loadNotes();
   }, [id]);
+
+  useEffect(() => {
+    const fetchWarningIndicators = async () => {
+      const summaryId = summaryData?.summaryId;
+      if (!summaryId) {
+        setWarningIndicators([]);
+        return;
+      }
+
+      const token = localStorage.getItem('AuthToken');
+      if (!token) {
+        setWarningIndicators([]);
+        navigate('/signin');
+        return;
+      }
+
+      try {
+        const response = await axios.get(`${API_BASE_URL}api/summaries/${summaryId}/warning-indicators`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        setWarningIndicators(Array.isArray(response.data) ? response.data : []);
+      } catch (err) {
+        console.error('Failed to load warning indicators:', err);
+        setWarningIndicators([]);
+      }
+    };
+
+    fetchWarningIndicators();
+  }, [summaryData?.summaryId, navigate]);
 
   // Save Notes to Backend
   const handleSaveNotes = async () => {
@@ -694,10 +838,10 @@ const RecordingData = () => {
 
   useEffect(() => {
     if (id) {
-      console.log(`RecordingData component mounted or id changed: ${id}`);
+      console.log(`SummaryDetailScreen component mounted or id changed: ${id}`);
       fetchRecordingData();
     } else {
-      console.error("RecordingData: No ID found in params.");
+      console.error("SummaryDetailScreen: No ID found in params.");
       setError("Recording ID is missing.");
       setLoading(false);
     }
@@ -1174,29 +1318,7 @@ const RecordingData = () => {
             {activeTab === 'summary' && (
               <div>
                 {summaryLoading && (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                    <div className="md:col-span-2 space-y-4">
-                      <Skeleton className="h-6 w-1/3 mb-4" />
-                      <Skeleton className="h-4 w-full" />
-                      <Skeleton className="h-4 w-full" />
-                      <Skeleton className="h-4 w-5/6" />
-                      <Skeleton className="h-4 w-full mt-4" />
-                      <Skeleton className="h-4 w-4/5" />
-                    </div>
-                    <div className="space-y-6 border-t md:border-t-0 md:border-l border-gray-200 pt-6 md:pt-0 md:pl-6">
-                       <div className="space-y-2">
-                          <Skeleton className="h-5 w-1/2 mb-2" />
-                          <Skeleton className="h-3 w-full" />
-                          <Skeleton className="h-3 w-full" />
-                          <Skeleton className="h-3 w-3/4" />
-                       </div>
-                       <div className="space-y-2">
-                          <Skeleton className="h-5 w-1/2 mb-2" />
-                          <Skeleton className="h-3 w-full" />
-                          <Skeleton className="h-3 w-5/6" />
-                       </div>
-                    </div>
-                  </div>
+                  <SummaryProcessingScreen />
                 )}
                 {summaryError && !summaryLoading && (
                   <div className="text-center py-10 px-4">
@@ -1216,43 +1338,22 @@ const RecordingData = () => {
 
                         return (
                           <>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="inline-flex items-center rounded-full bg-teal-100 text-teal-800 text-xs font-semibold px-3 py-1">
-                          {formatOutputType(outputType)}
-                        </span>
-                        {recordingData?.status && (
-                          <span className="text-xs text-gray-500">Status: {recordingData.status}</span>
-                        )}
-                      </div>
+                      <OutputTypeBadge outputType={outputType} status={recordingData?.status} />
                       <QualityReportSection report={summaryData.qualityReport || recordingData?.qualityReport} />
-                      {shouldShowFlashcards && <FlashcardViewer flashcards={summaryData.flashcards} />}
-                      {shouldShowSummaryText && (
-                        <div>
-                          <h3 className="font-semibold text-lg mb-2 text-gray-800">Summary Details</h3>
-                          <div className="prose prose-sm max-w-none text-gray-700 leading-relaxed">
-                            <ReactMarkdown>
-                              {summaryData.formattedSummaryText}
-                            </ReactMarkdown>
-                          </div>
-                        </div>
-                      )}
-                      {!shouldShowFlashcards && !summaryData.formattedSummaryText && <p className="text-gray-500">Detailed summary is not available.</p>}
+                      {shouldShowFlashcards && <FlashcardViewer flashcards={summaryData.flashcards} warningIndicators={warningIndicators} />}
+                      {shouldShowSummaryText && <SummaryContentViewer content={summaryData.formattedSummaryText} />}
+                      {!shouldShowFlashcards && !summaryData.formattedSummaryText && <SummaryContentViewer />}
                           </>
                         );
                       })()}
                     </div>
 
                     <div className="space-y-6 border-t md:border-t-0 md:border-l border-gray-200 pt-6 md:pt-0 md:pl-6 max-h-[600px] overflow-y-auto">
-                      {summaryData.keyPoints && summaryData.keyPoints.length > 0 && (
-                        <div>
-                          <h3 className="font-semibold text-lg mb-2 text-gray-800">Key Points</h3>
-                          <ul className="list-disc list-inside text-gray-700 space-y-1 text-sm">
-                            {summaryData.keyPoints.map((point, index) => (
-                              <li key={index}>{point}</li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
+                      <SummaryKeyPointList
+                        keyPoints={summaryData.keyPoints}
+                        summaryKeyPoints={summaryData.summaryKeyPoints}
+                        warningIndicators={warningIndicators}
+                      />
 
                       {summaryData.glossary && summaryData.glossary.length > 0 && (
                         <div>
@@ -1427,4 +1528,4 @@ const RecordingData = () => {
   );
 };
 
-export default RecordingData;
+export default SummaryDetailScreen;

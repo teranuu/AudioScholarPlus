@@ -43,7 +43,82 @@ const isValidDocumentFile = (file) => {
 };
 const withoutExtension = (fileName) => fileName.replace(/\.[^/.]+$/, '');
 
-const MultiSourceUpload = () => {
+const SourceFileList = ({ files, kind, offset = 0, loading, onRemove }) => (
+  <div className="space-y-2 mt-3">
+    {files.map((file, index) => (
+      <div key={`${kind}-${file.name}-${index}`} className="flex items-center justify-between border border-gray-200 dark:border-gray-700 rounded-lg p-3">
+        <div className="flex items-center min-w-0">
+          <span className="shrink-0 text-xs font-semibold bg-teal-100 text-teal-800 px-2 py-1 rounded mr-3">{sourceLabel(offset + index)}</span>
+          {kind === 'document' ? (
+            <FiFileText className="shrink-0 h-5 w-5 text-blue-500 mr-2" />
+          ) : (
+            <FiFile className="shrink-0 h-5 w-5 text-teal-500 mr-2" />
+          )}
+          <span className="truncate text-sm text-gray-800 dark:text-gray-100">{file.name}</span>
+        </div>
+        <button type="button" onClick={() => onRemove(index)} disabled={loading} className="text-red-600 hover:text-red-800 p-1" title="Remove source">
+          <FiXCircle />
+        </button>
+      </div>
+    ))}
+  </div>
+);
+
+const MultiSourceFilePicker = ({ label, supportedLabel, disabled, onPick, children }) => (
+  <div
+    onClick={onPick}
+    className={`border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-6 text-center transition-colors duration-200 ${disabled ? 'opacity-60 cursor-not-allowed bg-gray-100 dark:bg-gray-700' : 'cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 hover:border-teal-400 dark:hover:border-teal-400'}`}
+  >
+    <FiUpload className="mx-auto h-10 w-10 text-gray-400 dark:text-gray-500" />
+    <p className="text-gray-600 dark:text-gray-300 mt-2 mb-1 text-sm">{label}</p>
+    <p className="text-xs text-gray-500 dark:text-gray-400">Supports: {supportedLabel}</p>
+    {children}
+  </div>
+);
+
+const UploadProgressIndicator = ({ loading }) => {
+  if (!loading) return null;
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex flex-col items-center justify-center">
+      <FiLoader className="animate-spin h-10 w-10 text-white mb-3" />
+      <p className="text-white text-lg font-medium">Processing sources, please wait...</p>
+      <p className="text-gray-300 text-sm mt-1">Navigating away may interrupt the upload.</p>
+    </div>
+  );
+};
+
+const SourceAttributionChip = ({ source }) => (
+  <span className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded px-2 py-1">
+    {source.sourceLabel}: {source.fileName}
+  </span>
+);
+
+const MergeStatusIndicator = ({ job }) => {
+  if (!job) return null;
+  return <p className="text-sm text-green-600 dark:text-green-400 text-center flex items-center justify-center gap-1"><FiCheckCircle /> Merged summary generated.</p>;
+};
+
+const MergedSummaryContentViewer = ({ summary }) => (
+  <div className="prose prose-sm max-w-none dark:prose-invert">
+    <ReactMarkdown>{summary?.formattedSummaryText || 'Merged summary is available.'}</ReactMarkdown>
+  </div>
+);
+
+const MergedSummaryScreen = ({ job }) => {
+  if (!job) return null;
+  return (
+    <div className="mt-8 border-t border-gray-200 dark:border-gray-700 pt-6">
+      <div className="flex flex-wrap gap-2 mb-4">
+        {(job.sourceFiles || []).map((source) => (
+          <SourceAttributionChip key={source.sourceFileId} source={source} />
+        ))}
+      </div>
+      <MergedSummaryContentViewer summary={job.mergedSummary} />
+    </div>
+  );
+};
+
+const MultiSourceUploadScreen = () => {
   const [mediaFiles, setMediaFiles] = useState([]);
   const [documentFiles, setDocumentFiles] = useState([]);
   const [title, setTitle] = useState('');
@@ -191,36 +266,9 @@ const MultiSourceUpload = () => {
     }
   };
 
-  const renderFileList = (files, kind, removeFile, offset = 0) => (
-    <div className="space-y-2 mt-3">
-      {files.map((file, index) => (
-        <div key={`${kind}-${file.name}-${index}`} className="flex items-center justify-between border border-gray-200 dark:border-gray-700 rounded-lg p-3">
-          <div className="flex items-center min-w-0">
-            <span className="shrink-0 text-xs font-semibold bg-teal-100 text-teal-800 px-2 py-1 rounded mr-3">{sourceLabel(offset + index)}</span>
-            {kind === 'document' ? (
-              <FiFileText className="shrink-0 h-5 w-5 text-blue-500 mr-2" />
-            ) : (
-              <FiFile className="shrink-0 h-5 w-5 text-teal-500 mr-2" />
-            )}
-            <span className="truncate text-sm text-gray-800 dark:text-gray-100">{file.name}</span>
-          </div>
-          <button type="button" onClick={() => removeFile(index)} disabled={loading} className="text-red-600 hover:text-red-800 p-1" title="Remove source">
-            <FiXCircle />
-          </button>
-        </div>
-      ))}
-    </div>
-  );
-
   return (
     <div className="relative min-h-screen flex flex-col">
-      {loading && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex flex-col items-center justify-center">
-          <FiLoader className="animate-spin h-10 w-10 text-white mb-3" />
-          <p className="text-white text-lg font-medium">Processing sources, please wait...</p>
-          <p className="text-gray-300 text-sm mt-1">Navigating away may interrupt the upload.</p>
-        </div>
-      )}
+      <UploadProgressIndicator loading={loading} />
 
       <Header />
       <main className="flex-grow flex items-center justify-center py-12 bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
@@ -257,29 +305,25 @@ const MultiSourceUpload = () => {
 
             <div className="mb-4">
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 font-semibold">Audio/Video Sources (Required)</label>
-              <div
-                onClick={() => !loading && remainingSlots > 0 && mediaInputRef.current?.click()}
-                className={`border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-6 text-center transition-colors duration-200 ${loading || remainingSlots <= 0 ? 'opacity-60 cursor-not-allowed bg-gray-100 dark:bg-gray-700' : 'cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 hover:border-teal-400 dark:hover:border-teal-400'}`}
-              >
-                <FiUpload className="mx-auto h-10 w-10 text-gray-400 dark:text-gray-500" />
-                <p className="text-gray-600 dark:text-gray-300 mt-2 mb-1 text-sm">Click to select audio or video files</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400">Supports: {MEDIA_LABEL}</p>
-              </div>
-              {mediaFiles.length > 0 && renderFileList(mediaFiles, 'media', removeMediaFile)}
+              <MultiSourceFilePicker
+                label="Click to select audio or video files"
+                supportedLabel={MEDIA_LABEL}
+                disabled={loading || remainingSlots <= 0}
+                onPick={() => !loading && remainingSlots > 0 && mediaInputRef.current?.click()}
+              />
+              {mediaFiles.length > 0 && <SourceFileList files={mediaFiles} kind="media" loading={loading} onRemove={removeMediaFile} />}
               {mediaError && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{mediaError}</p>}
             </div>
 
             <div className="mb-6">
               <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 font-semibold">Document Sources (Optional)</label>
-              <div
-                onClick={() => !loading && remainingSlots > 0 && documentInputRef.current?.click()}
-                className={`border-2 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-6 text-center transition-colors duration-200 ${loading || remainingSlots <= 0 ? 'opacity-60 cursor-not-allowed bg-gray-100 dark:bg-gray-700' : 'cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700 hover:border-teal-400 dark:hover:border-teal-400'}`}
-              >
-                <FiUpload className="mx-auto h-10 w-10 text-gray-400 dark:text-gray-500" />
-                <p className="text-gray-600 dark:text-gray-300 mt-2 mb-1 text-sm">Click to select document files</p>
-                <p className="text-xs text-gray-500 dark:text-gray-400">Supports: {DOCUMENT_LABEL}</p>
-              </div>
-              {documentFiles.length > 0 && renderFileList(documentFiles, 'document', removeDocumentFile, mediaFiles.length)}
+              <MultiSourceFilePicker
+                label="Click to select document files"
+                supportedLabel={DOCUMENT_LABEL}
+                disabled={loading || remainingSlots <= 0}
+                onPick={() => !loading && remainingSlots > 0 && documentInputRef.current?.click()}
+              />
+              {documentFiles.length > 0 && <SourceFileList files={documentFiles} kind="document" offset={mediaFiles.length} loading={loading} onRemove={removeDocumentFile} />}
               {documentError && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{documentError}</p>}
             </div>
 
@@ -312,7 +356,7 @@ const MultiSourceUpload = () => {
 
               <div className="h-6">
                 {formError && <p className="text-sm text-red-600 dark:text-red-400 text-center">{formError}</p>}
-                {job && <p className="text-sm text-green-600 dark:text-green-400 text-center flex items-center justify-center gap-1"><FiCheckCircle /> Merged summary generated.</p>}
+                <MergeStatusIndicator job={job} />
               </div>
 
               <button type="submit" disabled={loading || mediaFiles.length < 2 || !title.trim() || !outputType} className="w-full bg-[#2D8A8A] text-white py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 disabled:opacity-50">
@@ -320,18 +364,7 @@ const MultiSourceUpload = () => {
               </button>
             </form>
 
-            {job && (
-              <div className="mt-8 border-t border-gray-200 dark:border-gray-700 pt-6">
-                <div className="flex flex-wrap gap-2 mb-4">
-                  {(job.sourceFiles || []).map((source) => (
-                    <span key={source.sourceFileId} className="text-xs bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded px-2 py-1">{source.sourceLabel}: {source.fileName}</span>
-                  ))}
-                </div>
-                <div className="prose prose-sm max-w-none dark:prose-invert">
-                  <ReactMarkdown>{job.mergedSummary?.formattedSummaryText || 'Merged summary is available.'}</ReactMarkdown>
-                </div>
-              </div>
-            )}
+            <MergedSummaryScreen job={job} />
           </div>
         </div>
       </main>
@@ -339,4 +372,4 @@ const MultiSourceUpload = () => {
   );
 };
 
-export default MultiSourceUpload;
+export default MultiSourceUploadScreen;

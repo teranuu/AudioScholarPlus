@@ -4,7 +4,6 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -26,7 +25,6 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
-import edu.cit.audioscholar.exception.GeminiContentBlockedException;
 import edu.cit.audioscholar.model.KeyProvider;
 
 @ExtendWith(MockitoExtension.class)
@@ -42,9 +40,6 @@ class GeminiServiceTest {
 	private GeminiSmartRotationService rotationService;
 
 	@Mock
-	private PromptTemplateService promptTemplateService;
-
-	@Mock
 	private GeminiBudgetService geminiBudgetService;
 
 	@Mock
@@ -58,7 +53,7 @@ class GeminiServiceTest {
 	private static final String TRANSCRIPT_TEXT = "Test transcript text";
 
 	@BeforeEach
-	void setUp() {
+	void setUp() throws IOException {
 		// Set configuration values that are still present in GeminiService for legacy
 		// methods.
 		ReflectionTestUtils.setField(geminiService, "transcriptionModelName", "gemini-2.5-flash");
@@ -66,10 +61,12 @@ class GeminiServiceTest {
 		ReflectionTestUtils.setField(geminiService, "filePollIntervalMs", 1L);
 		ReflectionTestUtils.setField(geminiService, "fileReadyTimeoutMs", 1000L);
 		ReflectionTestUtils.setField(geminiService, "rotationMaxCycles", 2);
+		lenient().when(guardrailService.validateSummaryInput(anyString(), anyLong())).thenReturn(100L);
 		lenient().when(guardrailService.validateAudioFile(any(Path.class), anyString()))
 				.thenReturn(new AudioProcessingGuardrailService.GuardrailResult(60, 1_920, "fingerprint", "audio"));
-		lenient().when(guardrailService.validateSummaryInput(anyString(), anyLong())).thenReturn(100L);
-		lenient().when(geminiBudgetService.reserve(anyString(), anyLong(), any(), any()))
+		lenient()
+				.when(geminiBudgetService.reserve(anyString(), anyLong(), nullable(String.class),
+						nullable(String.class)))
 				.thenReturn(new GeminiBudgetService.Reservation("test", 0, Instant.now()));
 	}
 
@@ -97,13 +94,11 @@ class GeminiServiceTest {
 			when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
 					.thenReturn(uploadResponse);
 
-			ResponseEntity<String> processingResponse = new ResponseEntity<>("{\"state\":\"PROCESSING\"}",
-					HttpStatus.OK);
-			ResponseEntity<String> activeResponse = new ResponseEntity<>("{\"state\":\"ACTIVE\"}", HttpStatus.OK);
-			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.GET), any(), eq(String.class)))
-					.thenReturn(processingResponse, activeResponse);
-			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class)))
-					.thenReturn(new ResponseEntity<>(HttpStatus.NO_CONTENT));
+			// Mock Rotation Service
+			when(rotationService.executeWithInfiniteRotation(any())).thenAnswer(invocation -> {
+				Function<String, String> apiCallFunction = invocation.getArgument(0);
+				return apiCallFunction.apply("gemini-2.5-flash");
+			});
 
 			// Mock Transcription Call
 			String transcriptionResponse = "{\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"transcript\\\": \\\"Hello world\\\"}\"}]}}]}";
@@ -128,73 +123,7 @@ class GeminiServiceTest {
 
 			assertTrue(bodyString.contains(expectedPrompt),
 					"The prompt sent to Gemini API does not match the expected new prompt.");
-			verify(keyRotationManager, times(1)).getKey(KeyProvider.GEMINI);
-			verify(restTemplate, times(2)).exchange(contains("http://file-uri"), eq(HttpMethod.GET), any(),
-					eq(String.class));
-			verify(restTemplate).exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class));
 
-		} finally {
-			Files.deleteIfExists(tempFile);
-		}
-	}
-
-	@Test
-	void transcriptionFailsWhenUploadedFileProcessingFails() throws Exception {
-		Path tempFile = Files.createTempFile("test-audio-failed", ".mp3");
-		Files.writeString(tempFile, "dummy content");
-		try {
-			when(keyRotationManager.getKey(KeyProvider.GEMINI)).thenReturn(API_KEY);
-
-			HttpHeaders initiateHeaders = new HttpHeaders();
-			initiateHeaders.add("X-Goog-Upload-Url", "http://upload-url");
-			when(restTemplate.exchange(contains("/upload/v1beta/files"), eq(HttpMethod.POST), any(), eq(String.class)))
-					.thenReturn(new ResponseEntity<>(null, initiateHeaders, HttpStatus.OK));
-			when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
-					.thenReturn(new ResponseEntity<>("{\"file\":{\"uri\":\"http://file-uri\"}}", HttpStatus.OK));
-			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.GET), any(), eq(String.class)))
-					.thenReturn(new ResponseEntity<>("{\"state\":\"FAILED\"}", HttpStatus.OK));
-			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class)))
-					.thenReturn(new ResponseEntity<>(HttpStatus.NO_CONTENT));
-
-			IOException exception = assertThrows(IOException.class,
-					() -> geminiService.callGeminiTranscriptionAPIWithFallback(tempFile, "test-audio.mp3"));
-
-			assertTrue(exception.getMessage().contains("failed to process"));
-			verify(rotationService, never()).executeWithRotation(any(), anyInt());
-			verify(restTemplate).exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class));
-		} finally {
-			Files.deleteIfExists(tempFile);
-		}
-	}
-
-	@Test
-	void transcriptionRecitationFinishReasonIsNonRetryable() throws Exception {
-		Path tempFile = Files.createTempFile("test-audio-recitation", ".flac");
-		Files.writeString(tempFile, "dummy content");
-		try {
-			when(keyRotationManager.getKey(KeyProvider.GEMINI)).thenReturn(API_KEY);
-
-			HttpHeaders initiateHeaders = new HttpHeaders();
-			initiateHeaders.add("X-Goog-Upload-Url", "http://upload-url");
-			when(restTemplate.exchange(contains("/upload/v1beta/files"), eq(HttpMethod.POST), any(), eq(String.class)))
-					.thenReturn(new ResponseEntity<>(null, initiateHeaders, HttpStatus.OK));
-			when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
-					.thenReturn(new ResponseEntity<>("{\"file\":{\"uri\":\"http://file-uri\"}}", HttpStatus.OK));
-			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.GET), any(), eq(String.class)))
-					.thenReturn(new ResponseEntity<>("{\"state\":\"ACTIVE\"}", HttpStatus.OK));
-			when(restTemplate.exchange(contains("http://file-uri"), eq(HttpMethod.DELETE), any(), eq(Void.class)))
-					.thenReturn(new ResponseEntity<>(HttpStatus.NO_CONTENT));
-			when(restTemplate.exchange(contains(":generateContent"), eq(HttpMethod.POST), any(), eq(String.class)))
-					.thenReturn(new ResponseEntity<>(
-							"{\"candidates\":[{\"finishReason\":\"RECITATION\",\"safetyRatings\":[]}]}",
-							HttpStatus.OK));
-
-			GeminiContentBlockedException exception = assertThrows(GeminiContentBlockedException.class,
-					() -> geminiService.callGeminiTranscriptionAPIWithFallback(tempFile, "test-audio.flac"));
-
-			assertEquals("RECITATION", exception.getFinishReason());
-			verify(restTemplate, times(1)).exchange(contains(":generateContent"), eq(HttpMethod.POST), any(),
-					eq(String.class));
 		} finally {
 			Files.deleteIfExists(tempFile);
 		}
@@ -208,7 +137,7 @@ class GeminiServiceTest {
 		ResponseEntity<String> successResponse = new ResponseEntity<>(createFullApiResponse(), HttpStatus.OK);
 
 		// Mock the rotation service to execute the lambda immediately
-		when(rotationService.executeWithRotation(any(), eq(2))).thenAnswer(invocation -> {
+		when(rotationService.executeWithRotation(any(), anyInt())).thenAnswer(invocation -> {
 			Function<String, String> apiCallFunction = invocation.getArgument(0);
 			// The lambda will be called with a test model name
 			return apiCallFunction.apply("gemini-pro");
@@ -235,7 +164,7 @@ class GeminiServiceTest {
 	void testCallGeminiSummarizationAPIWithFallback_RotationServiceThrowsException() {
 		// Given
 		// Mock the rotation service to throw an exception after its internal retries
-		when(rotationService.executeWithRotation(any(), eq(2))).thenThrow(new RuntimeException("All models failed"));
+		when(rotationService.executeWithRotation(any(), anyInt())).thenThrow(new RuntimeException("All models failed"));
 
 		// When
 		String result = geminiService.callGeminiSummarizationAPIWithFallback(PROMPT_TEXT, TRANSCRIPT_TEXT);
@@ -249,7 +178,7 @@ class GeminiServiceTest {
 	void testCallGeminiSummarizationAPIWithFallback_LambdaThrowsRateLimitException() {
 		// Given
 		when(keyRotationManager.getKey(any(KeyProvider.class))).thenReturn(API_KEY);
-		when(rotationService.executeWithRotation(any(), eq(2))).thenAnswer(invocation -> {
+		when(rotationService.executeWithRotation(any(), anyInt())).thenAnswer(invocation -> {
 			Function<String, String> apiCallFunction = invocation.getArgument(0);
 			// This will throw the HttpClientErrorException which is caught by the outer
 			// try-catch in the service
@@ -287,7 +216,7 @@ class GeminiServiceTest {
 				HttpStatus.OK);
 
 		// Mock the rotation service to execute the lambda immediately
-		when(rotationService.executeWithRotation(any(), eq(2))).thenAnswer(invocation -> {
+		when(rotationService.executeWithRotation(any(), anyInt())).thenAnswer(invocation -> {
 			Function<String, String> apiCallFunction = invocation.getArgument(0);
 			return apiCallFunction.apply("gemini-2.5-flash");
 		});
@@ -304,37 +233,6 @@ class GeminiServiceTest {
 		verify(rotationService, times(1)).executeWithRotation(any(), eq(2));
 		verify(restTemplate, times(1)).exchange(anyString(), eq(HttpMethod.POST), any(), eq(String.class));
 		verify(keyRotationManager, times(1)).reportSuccess(KeyProvider.GEMINI, API_KEY);
-	}
-
-	@Test
-	void generateTranscriptOnlySummaryAppliesNotesTemplate() {
-		// Given
-		String metadataId = "test-metadata-id";
-		String notesInstruction = "Format the generated material as Notes: create shortened, personal lecture notes";
-		when(promptTemplateService.getTemplate("NOTES")).thenReturn(notesInstruction);
-		when(keyRotationManager.getKey(any(KeyProvider.class))).thenReturn(API_KEY);
-		ResponseEntity<String> successResponse = new ResponseEntity<>(
-				"{\"candidates\": [{\"content\": {\"parts\": [{\"text\": "
-						+ "\"{\\\"summaryText\\\": \\\"Notes summary\\\", \\\"keyPoints\\\": [], \\\"topics\\\": [], \\\"glossary\\\": []}\"}]}}]}",
-				HttpStatus.OK);
-
-		when(rotationService.executeWithRotation(any(), eq(2))).thenAnswer(invocation -> {
-			Function<String, String> apiCallFunction = invocation.getArgument(0);
-			return apiCallFunction.apply("gemini-2.5-flash");
-		});
-
-		ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.class);
-		when(restTemplate.exchange(contains("gemini-2.5-flash"), eq(HttpMethod.POST), entityCaptor.capture(),
-				eq(String.class))).thenReturn(successResponse);
-
-		// When
-		geminiService.generateTranscriptOnlySummary(TRANSCRIPT_TEXT, metadataId, "NOTES");
-
-		// Then
-		String bodyString = entityCaptor.getValue().getBody().toString();
-		assertTrue(bodyString.contains(notesInstruction));
-		assertTrue(bodyString.contains("Match the selected output format instruction below"));
-		assertFalse(bodyString.contains("Format the generated material as Study Material"));
 	}
 
 	// ==================== LEGACY METHOD TESTS ====================

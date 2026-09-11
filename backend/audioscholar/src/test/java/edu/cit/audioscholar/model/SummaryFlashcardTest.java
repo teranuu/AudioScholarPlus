@@ -7,7 +7,8 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 
-import edu.cit.audioscholar.dto.SummaryDto;
+import edu.cit.audioscholar.dto.MergedSummaryResponseDTO;
+import edu.cit.audioscholar.dto.SummaryResponseDTO;
 
 class SummaryFlashcardTest {
 
@@ -39,9 +40,22 @@ class SummaryFlashcardTest {
 		summary.setSummaryId("summary-1");
 		summary.setFlashcards(List.of(new Flashcard("Front", "Back")));
 
-		SummaryDto dto = SummaryDto.fromModel(summary);
+		SummaryResponseDTO dto = SummaryResponseDTO.fromModel(summary);
 
 		assertEquals(1, dto.getFlashcards().size());
 		assertEquals("Front", dto.getFlashcards().get(0).getFront());
+	}
+
+	@Test
+	void mergedSummaryDtoExposesReviewMaterialFlashcards() {
+		MergedSummary summary = new MergedSummary();
+		summary.setMergedSummaryId("merged-1");
+		summary.setFlashcards(List.of(new Flashcard("Question", "Answer")));
+
+		MergedSummaryResponseDTO dto = MergedSummaryResponseDTO.fromModel(summary);
+
+		assertEquals(1, dto.getFlashcards().size());
+		assertEquals("Question", dto.getFlashcards().get(0).getFront());
+		assertEquals("Answer", dto.getFlashcards().get(0).getBack());
 	}
 }

@@ -26,7 +26,38 @@ const OUTPUT_TYPES = [
   { value: 'REVIEW_MATERIAL', title: 'Review Material', description: 'Flashcards for quick recall and exam preparation.' },
 ];
 
-const Uploading = () => {
+const OutputTypeCard = ({ option, selected, disabled, onSelect }) => (
+  <button
+    type="button"
+    onClick={() => onSelect(option.value)}
+    disabled={disabled}
+    className={`text-left border rounded-lg p-4 transition-all duration-150 ${
+      selected
+        ? 'border-teal-500 bg-teal-50 dark:bg-teal-900/20 ring-2 ring-teal-200 dark:ring-teal-800'
+        : 'border-gray-200 dark:border-gray-600 hover:border-teal-300 dark:hover:border-teal-500'
+    } ${disabled ? 'opacity-60 cursor-not-allowed' : ''}`}
+  >
+    <div className="font-semibold text-gray-900 dark:text-white">{option.title}</div>
+    <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">{option.description}</p>
+  </button>
+);
+
+const ContinueProcessingButton = ({ disabled, loading }) => (
+  <button
+    type="submit"
+    disabled={disabled}
+    className={`w-full bg-[#2D8A8A] text-white py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 transition-all duration-200 ease-in-out ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#236b6b] hover:shadow-md transform hover:-translate-y-0.5'}`}
+  >
+    {loading ? <><FiLoader className="animate-spin h-5 w-5" /> Uploading...</> : <><FiUpload className="h-5 w-5"/> Upload Recording</>}
+  </button>
+);
+
+const OutputTypeSelectionErrorMessage = ({ message }) => {
+  if (!message) return null;
+  return <p className="mt-2 text-sm text-red-600 dark:text-red-400">{message}</p>;
+};
+
+const OutputTypeSelectionScreen = () => {
   const [selectedAudioFile, setSelectedAudioFile] = useState(null);
   const [audioFileName, setAudioFileName] = useState('');
   const [selectedPptxFile, setSelectedPptxFile] = useState(null);
@@ -269,6 +300,9 @@ const Uploading = () => {
     }
   };
 
+  const outputTypeError = error.toLowerCase().includes('output type') ? error : '';
+  const fileError = outputTypeError ? '' : error;
+  const submitDisabled = !selectedAudioFile || loading || !title.trim() || !outputType;
 
   return (
     <div className="relative min-h-screen flex flex-col">
@@ -341,7 +375,7 @@ const Uploading = () => {
                   </div>
                 )}
               </div>
-              {error && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{error}</p>}
+              {fileError && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{fileError}</p>}
               {audioPreviewUrl && !loading && (
                 <div className="mt-3 pt-3 border-t border-gray-100 dark:border-gray-700">
                   <h3 className="text-xs font-medium text-gray-600 dark:text-gray-400 mb-1">Audio Preview:</h3>
@@ -423,35 +457,23 @@ const Uploading = () => {
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                   {OUTPUT_TYPES.map((option) => (
-                    <button
+                    <OutputTypeCard
                       key={option.value}
-                      type="button"
-                      onClick={() => setOutputType(option.value)}
+                      option={option}
+                      selected={outputType === option.value}
                       disabled={loading}
-                      className={`text-left border rounded-lg p-4 transition-all duration-150 ${
-                        outputType === option.value
-                          ? 'border-teal-500 bg-teal-50 dark:bg-teal-900/20 ring-2 ring-teal-200 dark:ring-teal-800'
-                          : 'border-gray-200 dark:border-gray-600 hover:border-teal-300 dark:hover:border-teal-500'
-                      } ${loading ? 'opacity-60 cursor-not-allowed' : ''}`}
-                    >
-                      <div className="font-semibold text-gray-900 dark:text-white">{option.title}</div>
-                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1 leading-relaxed">{option.description}</p>
-                    </button>
+                      onSelect={setOutputType}
+                    />
                   ))}
                 </div>
+                <OutputTypeSelectionErrorMessage message={outputTypeError} />
               </div>
 
               <div className="h-6">
                  {success && <p className="text-sm text-green-600 dark:text-green-400 text-center flex items-center justify-center gap-1"><FiCheckCircle/>{success}</p>}
                </div>
 
-              <button
-                type="submit"
-                disabled={!selectedAudioFile || loading || !title.trim() || !outputType}
-                className={`w-full bg-[#2D8A8A] text-white py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 transition-all duration-200 ease-in-out ${(!selectedAudioFile || loading || !title.trim() || !outputType) ? 'opacity-50 cursor-not-allowed' : 'hover:bg-[#236b6b] hover:shadow-md transform hover:-translate-y-0.5'}`}
-              >
-                {loading ? <><FiLoader className="animate-spin h-5 w-5" /> Uploading...</> : <><FiUpload className="h-5 w-5"/> Upload Recording</>}
-              </button>
+              <ContinueProcessingButton disabled={submitDisabled} loading={loading} />
             </form>
           </div>
         </div>
@@ -460,4 +482,4 @@ const Uploading = () => {
   );
 };
 
-export default Uploading;
+export default OutputTypeSelectionScreen;

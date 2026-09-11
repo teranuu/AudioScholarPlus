@@ -3,6 +3,7 @@ package edu.cit.audioscholar.dto;
 import java.util.List;
 import java.util.Map;
 
+import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.MergedSummary;
 
 public class MergedSummaryResponseDTO {
@@ -10,6 +11,7 @@ public class MergedSummaryResponseDTO {
 	private String jobId;
 	private String userId;
 	private String content;
+	private List<Flashcard> flashcards;
 	private List<Map<String, Object>> sourceAttributions;
 	private String status;
 
@@ -19,6 +21,7 @@ public class MergedSummaryResponseDTO {
 		dto.jobId = summary.getJobId();
 		dto.userId = summary.getUserId();
 		dto.content = summary.getContent();
+		dto.flashcards = summary.getFlashcards();
 		dto.sourceAttributions = summary.getSourceAttributions().stream().map(a -> a.toMap()).toList();
 		dto.status = summary.getStatus();
 		return dto;
@@ -38,6 +41,10 @@ public class MergedSummaryResponseDTO {
 
 	public String getContent() {
 		return content;
+	}
+
+	public List<Flashcard> getFlashcards() {
+		return flashcards;
 	}
 
 	public List<Map<String, Object>> getSourceAttributions() {

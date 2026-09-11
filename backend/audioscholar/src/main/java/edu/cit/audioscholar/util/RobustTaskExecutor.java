@@ -4,6 +4,7 @@ import java.util.function.Supplier;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import edu.cit.audioscholar.exception.NonRetryableTaskException;
@@ -13,18 +14,47 @@ public class RobustTaskExecutor {
 
 	private static final Logger log = LoggerFactory.getLogger(RobustTaskExecutor.class);
 
+	private final int maxAttempts;
+
+	private final long initialDelayMs;
+
+	private final long maxDelayMs;
+
+	public RobustTaskExecutor(@Value("${app.robust-task.max-attempts:10}") int maxAttempts,
+			@Value("${app.robust-task.initial-delay-ms:2000}") long initialDelayMs,
+			@Value("${app.robust-task.max-delay-ms:60000}") long maxDelayMs) {
+		if (maxAttempts < 1) {
+			throw new IllegalArgumentException("app.robust-task.max-attempts must be at least 1");
+		}
+		if (initialDelayMs < 0) {
+			throw new IllegalArgumentException("app.robust-task.initial-delay-ms must not be negative");
+		}
+		if (maxDelayMs < initialDelayMs) {
+			throw new IllegalArgumentException(
+					"app.robust-task.max-delay-ms must be greater than or equal to app.robust-task.initial-delay-ms");
+		}
+
+		this.maxAttempts = maxAttempts;
+		this.initialDelayMs = initialDelayMs;
+		this.maxDelayMs = maxDelayMs;
+	}
+
 	/**
-	 * Executes a task indefinitely until it succeeds. Catches ALL exceptions to
-	 * prevent the process from terminating.
+	 * Executes a task with bounded retry attempts and exponential backoff. The
+	 * legacy method name is retained to avoid changing listener call sites; retry
+	 * is now bounded by app.robust-task.max-attempts.
 	 */
 	public <T> T executeWithInfiniteRetry(String contextId, String taskDescription, Supplier<T> task) {
-		long delayMs = 2000; // Start with 2 seconds
-		long maxDelayMs = 60000; // Max wait 1 minute
+		long delayMs = initialDelayMs;
 
-		while (true) {
+		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
 				return task.get();
 			} catch (Exception e) {
+				if (containsNonRetryableFailure(e)) {
+					log.error("[{}] Cannot retry {}. Error: {}", contextId, taskDescription, e.getMessage());
+					throw e;
+				}
 				log.error("[{}] Failed to {}. Retrying in {}ms. Error: {}", contextId, taskDescription, delayMs,
 						e.getMessage());
 
@@ -39,10 +69,14 @@ public class RobustTaskExecutor {
 					throw new RuntimeException("Thread interrupted during robust retry", ie);
 				}
 
-				// Exponential backoff with cap
-				delayMs = Math.min(delayMs * 2, maxDelayMs);
+				log.warn("[{}] Failed to {} on attempt {}/{}. Retrying in {}ms. Error: {}", contextId, taskDescription,
+						attempt, maxAttempts, delayMs, e.getMessage());
+				sleepBeforeRetry(delayMs);
+				delayMs = nextDelay(delayMs);
 			}
 		}
+
+		throw new IllegalStateException("Retry loop exited unexpectedly for " + taskDescription);
 	}
 
 	public <T> T executeWithRetry(String contextId, String taskDescription, int maxAttempts, long initialDelayMs,
@@ -105,5 +139,23 @@ public class RobustTaskExecutor {
 			task.run();
 			return null;
 		});
+	}
+
+	private void sleepBeforeRetry(long delayMs) {
+		try {
+			Thread.sleep(delayMs);
+		} catch (InterruptedException ie) {
+			Thread.currentThread().interrupt();
+			throw new RuntimeException("Thread interrupted during robust retry", ie);
+		}
+	}
+
+	private long nextDelay(long currentDelayMs) {
+		if (currentDelayMs >= maxDelayMs) {
+			return maxDelayMs;
+		}
+
+		long doubledDelay = currentDelayMs > Long.MAX_VALUE / 2 ? Long.MAX_VALUE : currentDelayMs * 2;
+		return Math.min(doubledDelay, maxDelayMs);
 	}
 }

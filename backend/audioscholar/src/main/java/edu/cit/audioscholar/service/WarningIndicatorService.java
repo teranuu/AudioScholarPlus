@@ -9,6 +9,7 @@ import java.util.Set;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.QualityIssue;
 import edu.cit.audioscholar.model.QualityReport;
 import edu.cit.audioscholar.model.Summary;
@@ -48,6 +49,7 @@ public class WarningIndicatorService {
 		persistSummaryKeyPoints(summary.getSummaryId(), keyPoints);
 		List<WarningIndicator> warnings = new ArrayList<>();
 		Set<String> existingLinks = existingWarningLinks(keyPoints);
+		existingLinks.addAll(existingFlashcardWarningLinks(summary.getFlashcards()));
 		for (SummaryKeyPoint keyPoint : keyPoints) {
 			for (QualityIssue issue : report.getIssues()) {
 				if (checkTimestampOverlap(keyPoint.getSourceStartTime(), keyPoint.getSourceEndTime(),
@@ -58,6 +60,29 @@ public class WarningIndicatorService {
 					}
 					WarningIndicator warning = new WarningIndicator();
 					warning.setKeyPointId(keyPoint.getKeyPointId());
+					warning.setIssueId(issue.getIssueId());
+					warning.setIssueType(issue.getIssueType());
+					warning.setSeverity(issue.getSeverity());
+					warning.setRecommendedAction(issue.getRecommendedAction());
+					firebaseService.saveData(WARNING_INDICATORS_COLLECTION, warning.getWarningId(), warning.toMap());
+					existingLinks.add(linkKey);
+					warnings.add(warning);
+				}
+			}
+		}
+		for (Flashcard flashcard : summary.getFlashcards()) {
+			if (flashcard == null || flashcard.getCardId() == null) {
+				continue;
+			}
+			for (QualityIssue issue : report.getIssues()) {
+				if (checkTimestampOverlap(flashcard.getSourceStartTime(), flashcard.getSourceEndTime(),
+						issue.getStartTime(), issue.getEndTime())) {
+					String linkKey = flashcard.getCardId() + "::" + issue.getIssueId();
+					if (existingLinks.contains(linkKey)) {
+						continue;
+					}
+					WarningIndicator warning = new WarningIndicator();
+					warning.setCardId(flashcard.getCardId());
 					warning.setIssueId(issue.getIssueId());
 					warning.setIssueType(issue.getIssueType());
 					warning.setSeverity(issue.getSeverity());
@@ -81,6 +106,19 @@ public class WarningIndicatorService {
 		for (SummaryKeyPoint keyPoint : keyPoints) {
 			List<Map<String, Object>> stored = firebaseService.queryCollection(WARNING_INDICATORS_COLLECTION,
 					"keyPointId", keyPoint.getKeyPointId());
+			for (Map<String, Object> item : stored) {
+				WarningIndicator warning = WarningIndicator.fromMap(item);
+				if (warning != null) {
+					warnings.add(warning);
+				}
+			}
+		}
+		for (Flashcard flashcard : summary.getFlashcards()) {
+			if (flashcard == null || flashcard.getCardId() == null) {
+				continue;
+			}
+			List<Map<String, Object>> stored = firebaseService.queryCollection(WARNING_INDICATORS_COLLECTION, "cardId",
+					flashcard.getCardId());
 			for (Map<String, Object> item : stored) {
 				WarningIndicator warning = WarningIndicator.fromMap(item);
 				if (warning != null) {
@@ -149,6 +187,27 @@ public class WarningIndicatorService {
 				WarningIndicator warning = WarningIndicator.fromMap(item);
 				if (warning != null && warning.getIssueId() != null) {
 					links.add(keyPoint.getKeyPointId() + "::" + warning.getIssueId());
+				}
+			}
+		}
+		return links;
+	}
+
+	private Set<String> existingFlashcardWarningLinks(List<Flashcard> flashcards) {
+		Set<String> links = new HashSet<>();
+		if (flashcards == null) {
+			return links;
+		}
+		for (Flashcard flashcard : flashcards) {
+			if (flashcard == null || flashcard.getCardId() == null) {
+				continue;
+			}
+			List<Map<String, Object>> stored = firebaseService.queryCollection(WARNING_INDICATORS_COLLECTION, "cardId",
+					flashcard.getCardId());
+			for (Map<String, Object> item : stored) {
+				WarningIndicator warning = WarningIndicator.fromMap(item);
+				if (warning != null && warning.getIssueId() != null) {
+					links.add(flashcard.getCardId() + "::" + warning.getIssueId());
 				}
 			}
 		}
