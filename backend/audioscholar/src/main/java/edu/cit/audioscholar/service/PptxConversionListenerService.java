@@ -28,17 +28,17 @@ public class PptxConversionListenerService {
 
 	private final FirebaseService firebaseService;
 	private final NhostStorageService nhostStorageService;
-	private final ConvertApiService convertApiService;
+	private final PptxConversionProvider pptxConversionProvider;
 	private final RabbitTemplate rabbitTemplate;
 	@SuppressWarnings("unused")
 	private final ObjectMapper objectMapper;
 	private final Map<String, Lock> metadataLocks = new ConcurrentHashMap<>();
 
 	public PptxConversionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
-			ConvertApiService convertApiService, RabbitTemplate rabbitTemplate, ObjectMapper objectMapper) {
+			PptxConversionProvider pptxConversionProvider, RabbitTemplate rabbitTemplate, ObjectMapper objectMapper) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
-		this.convertApiService = convertApiService;
+		this.pptxConversionProvider = pptxConversionProvider;
 		this.rabbitTemplate = rabbitTemplate;
 		this.objectMapper = objectMapper;
 	}
@@ -73,7 +73,7 @@ public class PptxConversionListenerService {
 				return;
 			}
 
-			updateStatus(metadataId, ProcessingStatus.PDF_CONVERTING_API, null);
+			updateStatus(metadataId, ProcessingStatus.PDF_CONVERTING, null);
 
 			metadataMap = firebaseService.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
 			metadata = AudioMetadata.fromMap(metadataMap);
@@ -95,13 +95,14 @@ public class PptxConversionListenerService {
 					pptxUrlUpdate);
 			logger.info("Updated AudioMetadata with PPTX URL for ID: {}", metadataId);
 
-			logger.info("Starting PPTX to PDF conversion using ConvertAPI for file: {}", pptxUrl);
-			String pdfUrl = convertApiService.convertPptxUrlToPdfUrl(pptxUrl);
-			logger.info("PPTX to PDF conversion successful. PDF URL: {}", pdfUrl);
+			logger.info("Starting PPTX to PDF conversion using configured provider for file: {}", pptxUrl);
+			PptxConversionResult conversionResult = pptxConversionProvider.convert(metadata);
+			logger.info("PPTX to PDF conversion successful using {}. PDF URL: {}", conversionResult.providerName(),
+					conversionResult.pdfUrl());
 
 			Map<String, Object> updates = new HashMap<>();
-			updates.put("convertApiPdfUrl", pdfUrl);
-			updates.put("generatedPdfUrl", pdfUrl);
+			updates.put("generatedPdfNhostFileId", conversionResult.pdfFileId());
+			updates.put("generatedPdfUrl", conversionResult.pdfUrl());
 			updates.put("pdfConversionComplete", true);
 			updates.put("status", ProcessingStatus.PDF_CONVERSION_COMPLETE.name());
 			updates.put("lastUpdated", Timestamp.now());

@@ -224,7 +224,8 @@ public class SummarizationListenerService {
 						}
 
 						String convertApiPdfUrl = metadata.getConvertApiPdfUrl();
-						if (convertApiPdfUrl != null && !convertApiPdfUrl.isBlank()) {
+						if (convertApiPdfUrl != null && !convertApiPdfUrl.isBlank()
+								&& !StringUtils.hasText(metadata.getGeneratedPdfUrl())) {
 							log.info("[{}] Found ConvertAPI PDF URL, using it for summarization: {}", metadataId,
 									convertApiPdfUrl);
 
