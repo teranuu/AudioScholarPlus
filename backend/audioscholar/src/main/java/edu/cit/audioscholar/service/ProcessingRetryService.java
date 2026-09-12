@@ -5,10 +5,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
-import org.springframework.amqp.rabbit.connection.CorrelationData;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -28,14 +25,15 @@ import edu.cit.audioscholar.model.ProcessingStatus;
 public class ProcessingRetryService {
 	private final FirebaseService firebaseService;
 	private final Firestore firestore;
-	private final RabbitTemplate rabbitTemplate;
+	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	private final String metadataCollection;
 
-	public ProcessingRetryService(FirebaseService firebaseService, Firestore firestore, RabbitTemplate rabbitTemplate,
+	public ProcessingRetryService(FirebaseService firebaseService, Firestore firestore,
+			ConfirmedRabbitPublisher confirmedRabbitPublisher,
 			@Value("${firebase.firestore.collection.audiometadata}") String metadataCollection) {
 		this.firebaseService = firebaseService;
 		this.firestore = firestore;
-		this.rabbitTemplate = rabbitTemplate;
+		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.metadataCollection = metadataCollection;
 	}
 
@@ -56,6 +54,9 @@ public class ProcessingRetryService {
 			publish(job);
 			return new ProcessingRetryResponse(job.metadataId(), job.recordingId(), job.status().name(),
 					job.stage().name(), job.message(), null);
+		} catch (RabbitPublishTimeoutException e) {
+			return new ProcessingRetryResponse(job.metadataId(), job.recordingId(), job.status().name(),
+					job.stage().name(), job.message() + " (publisher confirm pending)", null);
 		} catch (Exception e) {
 			Map<String, Object> rollback = new HashMap<>();
 			rollback.put("status", ProcessingStatus.FAILED.name());
@@ -198,13 +199,8 @@ public class ProcessingRetryService {
 		}
 	}
 
-	private void publishConfirmed(String routingKey, Object message) throws Exception {
-		CorrelationData correlation = new CorrelationData(UUID.randomUUID().toString());
-		rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME, routingKey, message, correlation);
-		CorrelationData.Confirm confirm = correlation.getFuture().get(10, TimeUnit.SECONDS);
-		if (!confirm.isAck()) {
-			throw new IllegalStateException("RabbitMQ rejected retry message: " + confirm.getReason());
-		}
+	private void publishConfirmed(String routingKey, Object message) {
+		confirmedRabbitPublisher.publishToProcessingExchange(routingKey, message);
 	}
 
 	public static class RetryNotReadyException extends IllegalStateException {
