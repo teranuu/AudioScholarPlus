@@ -35,5 +35,10 @@
     "postcss": "^8.5.3",
     "tailwindcss": "^4.1.1",
     "vite": "^6.4.1"
+  },
+  "allowScripts": {
+    "@firebase/util@1.11.0": true,
+    "esbuild@0.25.2": true,
+    "protobufjs@7.6.1": true
   }
 }
