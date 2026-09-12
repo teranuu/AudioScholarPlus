@@ -100,7 +100,8 @@ The following environment variables must be configured in your deployment enviro
 
 **Backend Variables:**
 ```properties
-UPTIME_ROBOT_API=       # API Key for Uptime Robot monitoring
+UPTIME_ROBOT_API_TOKEN= # UptimeRobot v3 bearer token for status-page data
+UPTIME_ROBOT_MONITOR_URL_FILTER= # Optional hostname filter for the Render backend monitor
 NHOST_ADMIN_SECRET=     # Admin secret for Nhost storage access
 YOUTUBE_API_KEY=        # Google Cloud Console API Key for YouTube Data API
 GOOGLE_AI_API_KEY=      # Gemini AI API Key
@@ -119,7 +120,9 @@ CONVERTAPI_SECRETS=     # (Optional) Comma-separated list for key rotation
 2.  Select `backend/audioscholar` as the root directory.
 3.  Choose **Docker** as the runtime environment.
 4.  Add the environment variables listed above.
-5.  Deploy. Render will build the Docker image using the `Dockerfile` present in the directory.
+5.  Set Render's health check path to `/actuator/health`.
+6.  Deploy. Render will build the Docker image using the `Dockerfile` present in the directory.
+7.  In UptimeRobot, create an HTTP monitor for `https://it342-g3-audioscholar-onrender-com.onrender.com/actuator/health` and use a 300-second interval for free-plan compatibility.
 
 ### 3. Web Frontend Deployment (Vercel)
 1.  Import the project into Vercel.

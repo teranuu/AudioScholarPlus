@@ -85,7 +85,8 @@ cd AudioScholar
    YOUTUBE_API_KEY=your-youtube-api-key
    # Other secrets as needed
    # CONVERTAPI_SECRET=your-convertapi-secret
-   # UPTIME_ROBOT_API=your-uptime-robot-api-key
+   # UPTIME_ROBOT_API_TOKEN=your-uptimerobot-v3-api-token
+   # UPTIME_ROBOT_MONITOR_URL_FILTER=your-render-backend-hostname
    ```
 
 4. **Configure Application Properties:**

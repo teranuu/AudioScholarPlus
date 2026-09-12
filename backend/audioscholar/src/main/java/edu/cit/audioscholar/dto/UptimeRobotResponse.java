@@ -17,6 +17,12 @@ public class UptimeRobotResponse {
 	@JsonProperty("monitors")
 	private List<Monitor> monitors;
 
+	@JsonProperty("data")
+	private List<Monitor> data;
+
+	@JsonProperty("nextLink")
+	private String nextLink;
+
 	public String getStat() {
 		return stat;
 	}
@@ -34,10 +40,29 @@ public class UptimeRobotResponse {
 	}
 
 	public List<Monitor> getMonitors() {
+		if (data != null) {
+			return data;
+		}
 		return monitors;
 	}
 
 	public void setMonitors(List<Monitor> monitors) {
 		this.monitors = monitors;
+	}
+
+	public List<Monitor> getData() {
+		return data;
+	}
+
+	public void setData(List<Monitor> data) {
+		this.data = data;
+	}
+
+	public String getNextLink() {
+		return nextLink;
+	}
+
+	public void setNextLink(String nextLink) {
+		this.nextLink = nextLink;
 	}
 }

@@ -31,7 +31,7 @@ The DTO (Data Transfer Object) module is responsible for defining the data struc
 | `UpdateUserNoteRequest.java` | A request object for updating the content and tags of an existing user note. |
 | `UpdateUserProfileRequest.java` | A request object for updating a user's profile information. |
 | `UpdateUserRoleRequest.java` | A request object for a user to request a role update (e.g., to premium). |
-| `UptimeRobotResponse.java` | The main response object from the Uptime Robot API, containing a list of monitors. |
+| `UptimeRobotResponse.java` | The main response object from the UptimeRobot v3 API, containing paginated monitor data. |
 | `UserNoteDto.java` | A response object representing a user's note. |
 | `UserProfileDto.java` | A response object containing a user's public profile information. |
 | `analytics/ActivityStatsDto.java` | DTO for activity statistics, such as new users and recordings over the last 30 days. |

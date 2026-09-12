@@ -180,11 +180,11 @@ public class SecurityConfig {
 	@Bean
 	@Order(1)
 	SecurityFilterChain statefulFilterChain(HttpSecurity http) throws Exception {
-		http.securityMatcher("/", "/images/**", "/css/**", "/favicon.ico", "/login/**", "/oauth2/**", "/error",
-				"/api/auth/token")
+		http.securityMatcher("/", "/status", "/images/**", "/css/**", "/favicon.ico", "/actuator/health", "/login/**",
+				"/oauth2/**", "/error", "/api/auth/token")
 				.authorizeHttpRequests(authz -> authz
-						.requestMatchers("/", "/images/**", "/css/**", "/favicon.ico", "/login/**", "/oauth2/**",
-								"/error")
+						.requestMatchers("/", "/status", "/images/**", "/css/**", "/favicon.ico", "/actuator/health",
+								"/login/**", "/oauth2/**", "/error")
 						.permitAll().requestMatchers("/api/auth/token").authenticated().anyRequest().denyAll())
 				.oauth2Login(oauth2 -> oauth2.successHandler(oAuth2LoginSuccessHandler))
 				.cors(cors -> cors.configurationSource(corsConfigurationSource()))

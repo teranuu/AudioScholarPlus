@@ -1,95 +1,95 @@
 package edu.cit.audioscholar.service;
 
+import java.time.Duration;
 import java.util.Collections;
 import java.util.List;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.http.HttpHeaders;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientResponseException;
 
 import edu.cit.audioscholar.dto.Monitor;
+import edu.cit.audioscholar.dto.UptimeRobotResponse;
+import reactor.core.publisher.Mono;
 
 @Service
 public class UptimeRobotService {
 
 	private static final Logger log = LoggerFactory.getLogger(UptimeRobotService.class);
-	// private final WebClient.Builder webClientBuilder;
+	private static final String MONITORS_PATH = "/monitors";
 
-	// @Value("${uptimerobot.api.key:disabled}")
-	// private String apiKey;
+	private final WebClient.Builder webClientBuilder;
+	private final boolean enabled;
+	private final String apiToken;
+	private final String apiBaseUrl;
+	private final String monitorUrlFilter;
+	private final Duration apiTimeout;
 
-	// @Value("${uptimerobot.api.base-url:disabled}")
-	// private String apiBaseUrl;
-
-	// private static final String GET_MONITORS_PATH = "/getMonitors";
-	// private static final String UPTIME_RATIO_DAYS = "7";
-	// private static final Duration API_TIMEOUT = Duration.ofSeconds(60);
-	// private static final int MAX_RETRIES = 10;
-	// private static final Duration RETRY_DELAY = Duration.ofSeconds(1);
-
-	public UptimeRobotService(WebClient.Builder webClientBuilder) {
-		// this.webClientBuilder = webClientBuilder;
-		log.debug("UptimeRobotService constructed. Will use configured apiBaseUrl and apiKey.");
+	public UptimeRobotService(WebClient.Builder webClientBuilder,
+			@Value("${uptimerobot.api.enabled:true}") boolean enabled,
+			@Value("${uptimerobot.api.token:}") String apiToken,
+			@Value("${uptimerobot.api.base-url:https://api.uptimerobot.com/v3}") String apiBaseUrl,
+			@Value("${uptimerobot.api.monitor-url-filter:}") String monitorUrlFilter,
+			@Value("${uptimerobot.api.timeout:5s}") Duration apiTimeout) {
+		this.webClientBuilder = webClientBuilder;
+		this.enabled = enabled;
+		this.apiToken = apiToken;
+		this.apiBaseUrl = apiBaseUrl;
+		this.monitorUrlFilter = monitorUrlFilter;
+		this.apiTimeout = apiTimeout;
 	}
 
 	@Cacheable("uptimeRobotMonitors")
 	public List<Monitor> getMonitors() {
-		// SERVICE DISABLED: To prevent outbound traffic interfering with Render's sleep
-		// mode and to save CPU.
-		// The status page will now show "No systems Configured".
-		// An external "keep-alive" service should be used to poke the app URL instead.
-		log.info("UptimeRobotService is disabled to optimize performance. Returning empty monitor list.");
-		return Collections.emptyList();
+		if (!enabled) {
+			log.debug("UptimeRobot integration is disabled.");
+			return Collections.emptyList();
+		}
+		if (!hasText(apiToken)) {
+			log.warn("UptimeRobot API token is not configured. Returning empty monitor list.");
+			return Collections.emptyList();
+		}
+		if (!hasText(apiBaseUrl)) {
+			log.warn("UptimeRobot API base URL is not configured. Returning empty monitor list.");
+			return Collections.emptyList();
+		}
 
-		/*
-		 * log.
-		 * info("Fetching monitors from UptimeRobot API (Cache key: uptimeRobotMonitors), Timeout: {}, Retries: {}"
-		 * , API_TIMEOUT, MAX_RETRIES);
-		 *
-		 * if (apiKey == null || apiKey.isEmpty() ||
-		 * apiKey.equals("YOUR_READ_ONLY_API_KEY_HERE")) { log.
-		 * error("UptimeRobot API Key is missing or not configured in application.properties."
-		 * ); return Collections.emptyList(); } if (apiBaseUrl == null ||
-		 * apiBaseUrl.isEmpty()) { log.
-		 * error("UptimeRobot API Base URL is missing or not configured correctly in application.properties."
-		 * ); return Collections.emptyList(); }
-		 *
-		 * MultiValueMap<String, String> formData = new LinkedMultiValueMap<>();
-		 * formData.add("api_key", apiKey); formData.add("format", "json");
-		 * formData.add("custom_uptime_ratios", UPTIME_RATIO_DAYS);
-		 *
-		 * try { WebClient client = this.webClientBuilder.baseUrl(this.apiBaseUrl)
-		 * .defaultHeader(HttpHeaders.CONTENT_TYPE,
-		 * MediaType.APPLICATION_FORM_URLENCODED_VALUE)
-		 * .defaultHeader(HttpHeaders.CACHE_CONTROL, "no-cache").build();
-		 *
-		 * UptimeRobotResponse response = client.post().uri(GET_MONITORS_PATH)
-		 * .body(BodyInserters.fromFormData(formData)).retrieve().bodyToMono(
-		 * UptimeRobotResponse.class)
-		 * .timeout(API_TIMEOUT).onErrorResume(TimeoutException.class, ex -> {
-		 * log.warn("UptimeRobot API call timed out after {}. Returning empty list.",
-		 * API_TIMEOUT); return Mono.justOrEmpty(null); })
-		 * .retryWhen(Retry.backoff(MAX_RETRIES, RETRY_DELAY) .filter(throwable ->
-		 * !(throwable instanceof TimeoutException))
-		 * .onRetryExhaustedThrow((retryBackoffSpec, retrySignal) -> { log.
-		 * error("Retries exhausted for UptimeRobot API call. Last error: {}",
-		 * retrySignal.failure().getMessage()); return retrySignal.failure(); }))
-		 * .block();
-		 *
-		 * if (response != null && "ok".equalsIgnoreCase(response.getStat())) {
-		 * log.debug("Successfully retrieved {} monitors.", response.getMonitors() !=
-		 * null ? response.getMonitors().size() : 0); return response.getMonitors() !=
-		 * null ? response.getMonitors() : Collections.emptyList(); } else if (response
-		 * == null) { log.
-		 * warn("UptimeRobot API call did not return a response (likely due to timeout)."
-		 * ); return Collections.emptyList(); } else {
-		 * log.error("Failed to get monitors from UptimeRobot. Status: {}, Response: {}"
-		 * , response.getStat(), response); return Collections.emptyList(); } } catch
-		 * (Exception e) { log.error("Error calling UptimeRobot API at {}{}: {}",
-		 * apiBaseUrl, GET_MONITORS_PATH, e.getMessage(), e); return
-		 * Collections.emptyList(); }
-		 */
+		try {
+			WebClient client = webClientBuilder.baseUrl(apiBaseUrl)
+					.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiToken).build();
+
+			UptimeRobotResponse response = client.get().uri(uriBuilder -> {
+				uriBuilder.path(MONITORS_PATH).queryParam("limit", 50);
+				if (hasText(monitorUrlFilter)) {
+					uriBuilder.queryParam("url", monitorUrlFilter.trim());
+				}
+				return uriBuilder.build();
+			}).retrieve().onStatus(status -> status.isError(),
+					clientResponse -> clientResponse.bodyToMono(String.class).defaultIfEmpty("")
+							.flatMap(body -> Mono.error(new IllegalStateException(
+									"UptimeRobot API returned " + clientResponse.statusCode().value() + ": " + body))))
+					.bodyToMono(UptimeRobotResponse.class).timeout(apiTimeout).block();
+
+			List<Monitor> monitors = response != null && response.getMonitors() != null
+					? response.getMonitors()
+					: Collections.emptyList();
+			log.debug("Retrieved {} monitors from UptimeRobot.", monitors.size());
+			return monitors;
+		} catch (WebClientResponseException e) {
+			log.warn("UptimeRobot API returned HTTP {}. Returning empty monitor list.", e.getStatusCode().value());
+			return Collections.emptyList();
+		} catch (Exception e) {
+			log.warn("Unable to retrieve UptimeRobot monitors: {}", e.getMessage());
+			return Collections.emptyList();
+		}
+	}
+
+	private boolean hasText(String value) {
+		return value != null && !value.trim().isEmpty();
 	}
 }
