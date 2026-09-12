@@ -2,11 +2,13 @@ package edu.cit.audioscholar.service;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Locale;
 import java.util.function.Function;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
@@ -26,7 +28,8 @@ public class GeminiSmartRotationService {
 			@Value("${gemini.rotation.max-backoff-ms:60000}") long maxBackoff,
 			@Value("${gemini.rotation.backoff-multiplier:2.0}") double backoffMultiplier) {
 		// Parse the comma-separated string into a List
-		this.modelHierarchy = Arrays.asList(hierarchyStr.split(","));
+		this.modelHierarchy = Arrays.stream(hierarchyStr.split(",")).map(String::trim).filter(model -> !model.isEmpty())
+				.toList();
 		this.baseBackoff = baseBackoff;
 		this.maxBackoff = maxBackoff;
 		this.backoffMultiplier = backoffMultiplier;
@@ -60,6 +63,15 @@ public class GeminiSmartRotationService {
 				// DO NOT SLEEP YET. IMMEDIATE ROTATION.
 				logger.warn("Model {} is rate limited/overloaded ({}). Switching to next...", currentModel,
 						e.getStatusCode());
+
+			} catch (HttpClientErrorException e) {
+				if (isModelUnavailable(e)) {
+					logger.warn("Model {} is unavailable ({}). Switching to next configured model...", currentModel,
+							e.getStatusCode());
+				} else {
+					logger.error("Non-retriable Gemini client error on model {}. Stopping rotation.", currentModel, e);
+					throw e;
+				}
 
 			} catch (Exception e) {
 				// Check for wrapped 429/503 in unexpected wrapper exceptions if necessary
@@ -118,6 +130,14 @@ public class GeminiSmartRotationService {
 					lastFailure = e;
 					logger.warn("Model {} is rate limited/overloaded ({}). Switching to next...", model,
 							e.getStatusCode());
+				} catch (HttpClientErrorException e) {
+					if (isModelUnavailable(e)) {
+						lastFailure = e;
+						logger.warn("Model {} is unavailable ({}). Switching to next configured model...", model,
+								e.getStatusCode());
+					} else {
+						throw e;
+					}
 				} catch (RuntimeException e) {
 					throw e;
 				}
@@ -125,5 +145,18 @@ public class GeminiSmartRotationService {
 		}
 
 		throw lastFailure != null ? lastFailure : new IllegalStateException("No Gemini models are configured");
+	}
+
+	private boolean isModelUnavailable(HttpClientErrorException e) {
+		if (e.getStatusCode() != HttpStatus.NOT_FOUND) {
+			return false;
+		}
+		String response = e.getResponseBodyAsString();
+		if (response == null) {
+			return false;
+		}
+		String normalized = response.toLowerCase(Locale.ROOT);
+		return normalized.contains("model") && (normalized.contains("not available") || normalized.contains("not found")
+				|| normalized.contains("no longer available"));
 	}
 }

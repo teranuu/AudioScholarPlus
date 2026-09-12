@@ -143,6 +143,7 @@ public class SummarizationListenerService {
 				messageId);
 
 		Lock lock = null;
+		boolean[] claimedByThisHandler = {false};
 
 		try {
 			lock = metadataLocks.computeIfAbsent(metadataId, k -> new ReentrantLock());
@@ -170,8 +171,7 @@ public class SummarizationListenerService {
 								userId);
 
 						ProcessingStatus currentStatus = metadata.getStatus();
-						if (currentStatus == ProcessingStatus.SUMMARIZING
-								|| currentStatus == ProcessingStatus.SUMMARY_COMPLETE
+						if (currentStatus == ProcessingStatus.SUMMARY_COMPLETE
 								|| currentStatus == ProcessingStatus.RECOMMENDATIONS_QUEUED
 								|| currentStatus == ProcessingStatus.GENERATING_RECOMMENDATIONS
 								|| currentStatus == ProcessingStatus.COMPLETE
@@ -183,7 +183,20 @@ public class SummarizationListenerService {
 							return;
 						}
 
-						if (currentStatus != ProcessingStatus.SUMMARIZATION_QUEUED) {
+						if (currentStatus == ProcessingStatus.SUMMARIZING) {
+							if (claimedByThisHandler[0]) {
+								log.info("[{}] Continuing summarization retry already claimed by this handler.",
+										metadataId);
+							} else {
+								log.info(
+										"[{}] Summarization already in progress or complete (current status: {}). Skipping duplicate processing.",
+										metadataId, currentStatus);
+								return;
+							}
+						}
+
+						if (currentStatus != ProcessingStatus.SUMMARIZATION_QUEUED
+								&& !(currentStatus == ProcessingStatus.SUMMARIZING && claimedByThisHandler[0])) {
 							log.warn(
 									"[{}] Metadata status is not SUMMARIZATION_QUEUED (it's {}). Skipping summarization.",
 									metadataId, metadata.getStatus());
@@ -203,6 +216,7 @@ public class SummarizationListenerService {
 						}
 						String annotatedTranscript = transcriptClarityService.annotateTranscript(transcript,
 								transcriptSegments);
+						claimedByThisHandler[0] = true;
 
 						String googleFilesApiPdfUri = metadata.getGoogleFilesApiPdfUri();
 						if (googleFilesApiPdfUri != null && !googleFilesApiPdfUri.isBlank()) {
