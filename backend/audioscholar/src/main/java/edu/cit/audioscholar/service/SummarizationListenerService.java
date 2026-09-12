@@ -509,7 +509,7 @@ public class SummarizationListenerService {
 					log.warn("[{}] First part does not contain text field", metadataId);
 				}
 			} else {
-				log.warn("[{}] Response does not have the expected candidates structure. Attempting direct parsing...",
+				log.info("[{}] Response does not have the expected candidates structure. Attempting direct parsing...",
 						metadataId);
 
 				if (rootNode.has("summaryText")) {

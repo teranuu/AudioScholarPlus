@@ -10,8 +10,6 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -19,7 +17,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
@@ -44,15 +41,18 @@ public class NhostUploadListenerService {
 	private final FirebaseService firebaseService;
 	private final NhostStorageService nhostStorageService;
 	private final RabbitTemplate rabbitTemplate;
+	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	@SuppressWarnings("unused")
 	private final ObjectMapper objectMapper;
 	private final Map<String, Lock> metadataLocks = new HashMap<>();
 
 	public NhostUploadListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
-			RabbitTemplate rabbitTemplate, ObjectMapper objectMapper) {
+			RabbitTemplate rabbitTemplate, ConfirmedRabbitPublisher confirmedRabbitPublisher,
+			ObjectMapper objectMapper) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
 		this.rabbitTemplate = rabbitTemplate;
+		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.objectMapper = objectMapper;
 	}
 
@@ -325,7 +325,8 @@ public class NhostUploadListenerService {
 				transcriptionMessage.setMetadataId(metadataId);
 				transcriptionMessage.setUserId(userId);
 				transcriptionMessage.setNhostFileId(nhostFileId);
-				publishConfirmed(RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY, transcriptionMessage);
+				confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY,
+						transcriptionMessage);
 				log.info("[{}] Durable upload committed; transcription message published.", metadataId);
 			} else {
 				log.info("[{}] PowerPoint metadata updated. Sending message to PPTX conversion queue.", metadataId);
@@ -349,17 +350,48 @@ public class NhostUploadListenerService {
 					isAudio ? "audio" : "PowerPoint", e.getMessage(), e);
 			updateStatus(metadataId, userId, ProcessingStatus.FAILED, "Failed to update metadata after Nhost upload");
 			throw e;
+		} catch (RabbitPublishTimeoutException e) {
+			log.warn(
+					"[{}] Publisher confirm timed out after durable upload. Leaving processing retryable instead of marking FAILED: {}",
+					metadataId, e.getMessage());
+			markPublishUncertain(metadataId, userId, "TRANSCRIPTION_CONFIRM_TIMEOUT: " + e.getMessage());
+		} catch (RabbitPublishRejectedException e) {
+			log.error("[{}] RabbitMQ definitively rejected processing message after durable upload: {}", metadataId,
+					e.getMessage(), e);
+			markPublishRejected(metadataId, userId, "TRANSCRIPTION_QUEUE_REJECTED: " + e.getMessage());
 		} catch (Exception e) {
 			throw new IllegalStateException("Failed to publish processing message after durable upload", e);
 		}
 	}
 
-	private void publishConfirmed(String routingKey, AudioProcessingMessage message) throws Exception {
-		CorrelationData correlation = new CorrelationData(UUID.randomUUID().toString());
-		rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME, routingKey, message, correlation);
-		CorrelationData.Confirm confirm = correlation.getFuture().get(10, TimeUnit.SECONDS);
-		if (!confirm.isAck()) {
-			throw new IllegalStateException("RabbitMQ rejected message: " + confirm.getReason());
+	private void markPublishUncertain(String metadataId, @Nullable String userId, String reason) {
+		Map<String, Object> updates = new HashMap<>();
+		updates.put("status", ProcessingStatus.PROCESSING_QUEUED.name());
+		updates.put("processingStage", "TRANSCRIPTION_CONFIRM_TIMEOUT");
+		updates.put("failureReason", reason);
+		updates.put("lastUpdated", Timestamp.now());
+		try {
+			firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+			log.info("[{}] Metadata left in PROCESSING_QUEUED after uncertain RabbitMQ publish.", metadataId);
+			invalidateUserCache(userId);
+		} catch (FirestoreInteractionException e) {
+			log.error("[{}] CRITICAL: Failed to record uncertain RabbitMQ publish state: {}", metadataId,
+					e.getMessage(), e);
+		}
+	}
+
+	private void markPublishRejected(String metadataId, @Nullable String userId, String reason) {
+		Map<String, Object> updates = new HashMap<>();
+		updates.put("status", ProcessingStatus.FAILED.name());
+		updates.put("processingStage", "TRANSCRIPTION_QUEUE_REJECTED");
+		updates.put("failureReason", reason);
+		updates.put("lastUpdated", Timestamp.now());
+		try {
+			firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+			log.info("[{}] Metadata status updated to FAILED after RabbitMQ rejection.", metadataId);
+			invalidateUserCache(userId);
+		} catch (FirestoreInteractionException e) {
+			log.error("[{}] CRITICAL: Failed to record RabbitMQ rejection state: {}", metadataId, e.getMessage(), e);
 		}
 	}
 
@@ -398,11 +430,16 @@ public class NhostUploadListenerService {
 			transcriptionMessage.setUserId(latestMetadata.getUserId());
 
 			try {
-				rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME,
-						RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY, transcriptionMessage);
+				confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY,
+						transcriptionMessage);
 				log.info("Sent message (transcription queue) for metadataId {} to exchange '{}' with key '{}'",
 						metadataId, RabbitMQConfig.PROCESSING_EXCHANGE_NAME, RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY);
-			} catch (Exception e) {
+			} catch (RabbitPublishTimeoutException e) {
+				log.warn("[Completion Check - {}] Transcription publish confirm timed out: {}", metadataId,
+						e.getMessage());
+				markPublishUncertain(metadataId, latestMetadata.getUserId(),
+						"TRANSCRIPTION_CONFIRM_TIMEOUT: " + e.getMessage());
+			} catch (RabbitPublishRejectedException e) {
 				log.error("[{}] Failed to send message to transcription queue: {}", metadataId, e.getMessage(), e);
 				updateStatus(metadataId, latestMetadata.getUserId(), ProcessingStatus.FAILED,
 						"Failed to queue transcription");

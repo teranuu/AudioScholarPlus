@@ -2,12 +2,8 @@ package edu.cit.audioscholar.service;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.TimeUnit;
 
-import org.springframework.amqp.rabbit.connection.CorrelationData;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -26,15 +22,15 @@ import edu.cit.audioscholar.model.ProcessingStatus;
 public class TranscriptionRetryService {
 	private final FirebaseService firebaseService;
 	private final Firestore firestore;
-	private final RabbitTemplate rabbitTemplate;
+	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	private final String metadataCollection;
 
 	public TranscriptionRetryService(FirebaseService firebaseService, Firestore firestore,
-			RabbitTemplate rabbitTemplate,
+			ConfirmedRabbitPublisher confirmedRabbitPublisher,
 			@Value("${firebase.firestore.collection.audiometadata}") String metadataCollection) {
 		this.firebaseService = firebaseService;
 		this.firestore = firestore;
-		this.rabbitTemplate = rabbitTemplate;
+		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.metadataCollection = metadataCollection;
 	}
 
@@ -86,13 +82,9 @@ public class TranscriptionRetryService {
 			message.setMetadataId(job.metadataId());
 			message.setUserId(job.userId());
 			message.setNhostFileId(job.nhostFileId());
-			CorrelationData correlation = new CorrelationData(UUID.randomUUID().toString());
-			rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME,
-					RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY, message, correlation);
-			CorrelationData.Confirm confirm = correlation.getFuture().get(10, TimeUnit.SECONDS);
-			if (!confirm.isAck()) {
-				throw new IllegalStateException("RabbitMQ rejected transcription retry: " + confirm.getReason());
-			}
+			confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY, message);
+			return job.metadataId();
+		} catch (RabbitPublishTimeoutException e) {
 			return job.metadataId();
 		} catch (Exception e) {
 			Map<String, Object> rollback = new HashMap<>();
