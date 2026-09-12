@@ -59,6 +59,7 @@ class GeminiServiceTest {
 		// methods.
 		ReflectionTestUtils.setField(geminiService, "transcriptionModelName", "gemini-2.5-flash");
 		ReflectionTestUtils.setField(geminiService, "summarizationModelName", "gemini-2.5-flash");
+		ReflectionTestUtils.setField(geminiService, "transcriptionModels", "gemini-2.5-flash");
 		ReflectionTestUtils.setField(geminiService, "filePollIntervalMs", 1L);
 		ReflectionTestUtils.setField(geminiService, "fileReadyTimeoutMs", 1000L);
 		ReflectionTestUtils.setField(geminiService, "rotationMaxCycles", 2);
@@ -94,12 +95,6 @@ class GeminiServiceTest {
 			ResponseEntity<String> uploadResponse = new ResponseEntity<>(uploadResponseBody, HttpStatus.OK);
 			when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
 					.thenReturn(uploadResponse);
-
-			// Mock Rotation Service
-			when(rotationService.executeWithInfiniteRotation(any())).thenAnswer(invocation -> {
-				Function<String, String> apiCallFunction = invocation.getArgument(0);
-				return apiCallFunction.apply("gemini-2.5-flash");
-			});
 
 			// Mock Transcription Call
 			String transcriptionResponse = "{\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"transcript\\\": \\\"Hello world\\\"}\"}]}}]}";

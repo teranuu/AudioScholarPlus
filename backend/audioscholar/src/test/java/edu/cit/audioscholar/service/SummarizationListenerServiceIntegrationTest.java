@@ -7,6 +7,7 @@ import static org.mockito.Mockito.*;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -226,6 +227,83 @@ class SummarizationListenerServiceIntegrationTest {
 		assertEquals("(unclear audio)", summary.getTranscriptSegments().get(0).getClarityLabel());
 	}
 
+	@Test
+	void testHandleSummarizationRequest_RetriesAfterStatusBecomesSummarizing() throws Exception {
+		doAnswer(invocation -> {
+			Runnable task = invocation.getArgument(4);
+			try {
+				task.run();
+			} catch (RuntimeException firstFailure) {
+				task.run();
+			}
+			return null;
+		}).when(robustTaskExecutor).executeWithRetry(anyString(), anyString(), anyInt(), anyLong(),
+				any(Runnable.class));
+		Map<String, String> message = createValidAudioOnlyMessage();
+		AudioMetadata metadata = createAudioOnlyMetadata();
+		mockMutableFirebaseService(metadata);
+
+		doThrow(new RuntimeException("temporary Gemini model failure"))
+				.doReturn("{\"summaryText\":\"Recovered summary\",\"keyPoints\":[],\"topics\":[],\"glossary\":[]}")
+				.when(geminiService).generateTranscriptOnlySummary(anyString(), eq(METADATA_ID), eq("NOTES"));
+
+		summarizationListenerService.handleSummarizationRequest(message);
+
+		verify(geminiService, times(2)).generateTranscriptOnlySummary(anyString(), eq(METADATA_ID), eq("NOTES"));
+		verify(summaryService).createSummary(summaryCaptor.capture());
+		assertEquals("Recovered summary", summaryCaptor.getValue().getFormattedSummaryText());
+		verify(firebaseService, atLeastOnce()).updateDataWithMap(eq("audioMetadata"), eq(METADATA_ID),
+				argThat(update -> ProcessingStatus.SUMMARY_COMPLETE.name().equals(update.get("status"))));
+	}
+
+	@Test
+	void testHandleSummarizationRequest_ExhaustedRetrySetsSummaryFailed() throws Exception {
+		doAnswer(invocation -> {
+			Runnable task = invocation.getArgument(4);
+			RuntimeException lastFailure = null;
+			for (int i = 0; i < 2; i++) {
+				try {
+					task.run();
+					return null;
+				} catch (RuntimeException failure) {
+					lastFailure = failure;
+				}
+			}
+			throw lastFailure;
+		}).when(robustTaskExecutor).executeWithRetry(anyString(), anyString(), anyInt(), anyLong(),
+				any(Runnable.class));
+		Map<String, String> message = createValidAudioOnlyMessage();
+		AudioMetadata metadata = createAudioOnlyMetadata();
+		mockMutableFirebaseService(metadata);
+		doThrow(new RuntimeException("permanent Gemini model failure")).when(geminiService)
+				.generateTranscriptOnlySummary(anyString(), eq(METADATA_ID), eq("NOTES"));
+
+		summarizationListenerService.handleSummarizationRequest(message);
+
+		verify(geminiService, times(2)).generateTranscriptOnlySummary(anyString(), eq(METADATA_ID), eq("NOTES"));
+		verify(summaryService, never()).createSummary(any());
+		verify(firebaseService, atLeastOnce()).updateData(eq("audioMetadata"), eq(METADATA_ID),
+				metadataUpdateCaptor.capture());
+		Map<String, Object> finalUpdate = metadataUpdateCaptor.getAllValues()
+				.get(metadataUpdateCaptor.getAllValues().size() - 1);
+		assertEquals(ProcessingStatus.SUMMARY_FAILED.name(), finalUpdate.get("status"));
+		assertTrue(String.valueOf(finalUpdate.get("failureReason")).contains("permanent Gemini model failure"));
+	}
+
+	@Test
+	void testHandleSummarizationRequest_SkipsExternalDuplicateWhileSummarizing() throws Exception {
+		setupRobustTaskExecutorMock();
+		Map<String, String> message = createValidAudioOnlyMessage();
+		AudioMetadata metadata = createAudioOnlyMetadata();
+		metadata.setStatus(ProcessingStatus.SUMMARIZING);
+		mockFirebaseService(metadata);
+
+		summarizationListenerService.handleSummarizationRequest(message);
+
+		verify(geminiService, never()).generateTranscriptOnlySummary(anyString(), anyString(), any());
+		verify(summaryService, never()).createSummary(any());
+	}
+
 	// ==================== HELPER METHODS ====================
 
 	private Map<String, String> createValidAudioOnlyMessage() {
@@ -274,6 +352,37 @@ class SummarizationListenerServiceIntegrationTest {
 		} else {
 			doReturn(null).when(firebaseService).getData(eq("audioMetadata"), eq(METADATA_ID));
 		}
+	}
+
+	private void mockMutableFirebaseService(AudioMetadata metadata) {
+		doReturn("audioMetadata").when(firebaseService).getAudioMetadataCollectionName();
+
+		Map<String, Object> metadataMap = new HashMap<>();
+		metadataMap.put("id", metadata.getId());
+		metadataMap.put("userId", metadata.getUserId());
+		metadataMap.put("status", metadata.getStatus().name());
+		metadataMap.put("transcriptText", metadata.getTranscriptText());
+		metadataMap.put("audioOnly", metadata.isAudioOnly());
+		metadataMap.put("outputType", metadata.getOutputType());
+		metadataMap.put("failureReason", null);
+		AtomicReference<Map<String, Object>> current = new AtomicReference<>(metadataMap);
+
+		doAnswer(invocation -> new HashMap<>(current.get())).when(firebaseService).getData(eq("audioMetadata"),
+				eq(METADATA_ID));
+		doAnswer(invocation -> {
+			Map<String, Object> updates = invocation.getArgument(2);
+			Map<String, Object> updated = new HashMap<>(current.get());
+			for (Map.Entry<String, Object> entry : updates.entrySet()) {
+				if ("failureReason".equals(entry.getKey()) && entry.getValue() != null
+						&& entry.getValue().getClass().getName().contains("FieldValue")) {
+					updated.remove(entry.getKey());
+				} else {
+					updated.put(entry.getKey(), entry.getValue());
+				}
+			}
+			current.set(updated);
+			return null;
+		}).when(firebaseService).updateData(eq("audioMetadata"), eq(METADATA_ID), anyMap());
 	}
 
 	@Test
