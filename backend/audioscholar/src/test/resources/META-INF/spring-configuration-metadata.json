@@ -7,14 +7,29 @@
       "description": "Directory for temporary file uploads."
     },
     {
-      "name": "uptimerobot.api.key",
+      "name": "uptimerobot.api.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Enables fetching monitor data from the UptimeRobot API."
+    },
+    {
+      "name": "uptimerobot.api.token",
       "type": "java.lang.String",
-      "description": "API key for UptimeRobot integration."
+      "description": "Bearer token for the UptimeRobot v3 API."
     },
     {
       "name": "uptimerobot.api.base-url",
       "type": "java.lang.String",
-      "description": "Base URL for UptimeRobot API."
+      "description": "Base URL for the UptimeRobot v3 API."
+    },
+    {
+      "name": "uptimerobot.api.monitor-url-filter",
+      "type": "java.lang.String",
+      "description": "Optional UptimeRobot monitor URL filter used when listing monitors."
+    },
+    {
+      "name": "uptimerobot.api.timeout",
+      "type": "java.time.Duration",
+      "description": "Timeout for UptimeRobot API requests."
     },
     {
       "name": "firebase.web.api-key",

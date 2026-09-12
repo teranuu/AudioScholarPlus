@@ -18,10 +18,13 @@ public class Monitor {
 	private String url;
 
 	@JsonProperty("status")
-	private int status;
+	private String status;
 
 	@JsonProperty("custom_uptime_ratio")
 	private String customUptimeRatio;
+
+	@JsonProperty("currentStateDuration")
+	private Long currentStateDuration;
 
 	private static final DecimalFormat UPTIME_FORMAT = new DecimalFormat("0.000'%'");
 
@@ -31,6 +34,11 @@ public class Monitor {
 
 	public void setId(long id) {
 		this.id = id;
+	}
+
+	@JsonProperty("friendlyName")
+	public void setFriendlyNameFromV3(String friendlyName) {
+		this.friendlyName = friendlyName;
 	}
 
 	public String getFriendlyName() {
@@ -49,12 +57,12 @@ public class Monitor {
 		this.url = url;
 	}
 
-	public int getStatus() {
+	public String getStatus() {
 		return status;
 	}
 
-	public void setStatus(int status) {
-		this.status = status;
+	public void setStatus(Object status) {
+		this.status = status != null ? status.toString() : null;
 	}
 
 	public String getCustomUptimeRatio() {
@@ -65,23 +73,31 @@ public class Monitor {
 		this.customUptimeRatio = customUptimeRatio;
 	}
 
+	public Long getCurrentStateDuration() {
+		return currentStateDuration;
+	}
+
+	public void setCurrentStateDuration(Long currentStateDuration) {
+		this.currentStateDuration = currentStateDuration;
+	}
+
 	public String getStatusText() {
-		return switch (status) {
-			case 0 -> "Paused";
-			case 1 -> "Not Checked Yet";
-			case 2 -> "Up";
-			case 8 -> "Seems Down";
-			case 9 -> "Down";
+		return switch (normalizeStatus()) {
+			case "0", "PAUSED" -> "Paused";
+			case "1", "STARTED" -> "Not Checked Yet";
+			case "2", "UP" -> "Up";
+			case "8", "LOOKS_DOWN" -> "Seems Down";
+			case "9", "DOWN" -> "Down";
 			default -> "Unknown";
 		};
 	}
 
 	public String getStatusColor() {
-		return switch (status) {
-			case 2 -> "green";
-			case 8, 9 -> "red";
-			case 0 -> "grey";
-			case 1 -> "blue";
+		return switch (normalizeStatus()) {
+			case "2", "UP" -> "green";
+			case "8", "9", "LOOKS_DOWN", "DOWN" -> "red";
+			case "0", "PAUSED" -> "grey";
+			case "1", "STARTED" -> "blue";
 			default -> "orange";
 		};
 	}
@@ -96,6 +112,10 @@ public class Monitor {
 		} catch (NumberFormatException e) {
 			return "N/A";
 		}
+	}
+
+	private String normalizeStatus() {
+		return status != null ? status.trim().toUpperCase() : "";
 	}
 
 	@Override
