@@ -37,6 +37,7 @@ import com.google.cloud.Timestamp;
 import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.dto.AudioProcessingMessage;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
+import edu.cit.audioscholar.exception.NonRetryableTaskException;
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
 import edu.cit.audioscholar.model.Recording;
@@ -58,13 +59,17 @@ public class AudioTranscriptionListenerService {
 	private final Path tempFileDir;
 	private final RabbitTemplate rabbitTemplate;
 	private final RobustTaskExecutor robustTaskExecutor;
+	private final int recordingLookupMaxAttempts;
+	private final long recordingLookupDelayMs;
 	private final Map<String, ReentrantLock> metadataLocks = new ConcurrentHashMap<>();
 
 	public AudioTranscriptionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
 			GeminiService geminiService, @Lazy RecordingService recordingService,
 			QualityReportService qualityReportService, AudioProcessingGuardrailService guardrailService,
 			CacheManager cacheManager, @Value("${app.temp-file-dir}") String tempFileDirStr,
-			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor) {
+			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor,
+			@Value("${app.transcription.recording-lookup.max-attempts:6}") int recordingLookupMaxAttempts,
+			@Value("${app.transcription.recording-lookup.delay-ms:2000}") long recordingLookupDelayMs) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
 		this.geminiService = geminiService;
@@ -75,6 +80,8 @@ public class AudioTranscriptionListenerService {
 		this.tempFileDir = Paths.get(tempFileDirStr);
 		this.rabbitTemplate = rabbitTemplate;
 		this.robustTaskExecutor = robustTaskExecutor;
+		this.recordingLookupMaxAttempts = Math.max(1, recordingLookupMaxAttempts);
+		this.recordingLookupDelayMs = Math.max(0, recordingLookupDelayMs);
 		try {
 			Files.createDirectories(this.tempFileDir);
 		} catch (IOException e) {
@@ -105,19 +112,17 @@ public class AudioTranscriptionListenerService {
 			robustTaskExecutor.executeWithInfiniteRetry(metadataId, "transcribing audio", () -> {
 				try {
 					log.debug("[{}] Fetching AudioMetadata document...", metadataId);
-					Map<String, Object> metadataMap = firebaseService
-							.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
-
-					AudioMetadata metadata = AudioMetadata.fromMap(metadataMap);
+					AudioMetadata metadata = requireMetadata(metadataId, message);
+					String effectiveUserId = StringUtils.hasText(metadata.getUserId()) ? metadata.getUserId() : userId;
 					log.info("[{}] Found metadata. Current status: {}, User: {}", metadataId, metadata.getStatus(),
-							userId);
+							effectiveUserId);
 
 					ProcessingStatus currentStatus = metadata.getStatus();
 
 					if (metadata.isTranscriptionComplete()) {
 						log.info("[{}] Skipping transcription as it is already marked as complete.", metadataId);
 
-						checkCompletionAndTriggerSummarization(metadataId, userId);
+						checkCompletionAndTriggerSummarization(metadataId, effectiveUserId);
 						return;
 					}
 
@@ -135,26 +140,15 @@ public class AudioTranscriptionListenerService {
 						return;
 					}
 
-					updateMetadataStatus(metadataId, userId, ProcessingStatus.TRANSCRIBING, null);
+					updateMetadataStatus(metadataId, effectiveUserId, ProcessingStatus.TRANSCRIBING, null);
 
-					log.debug("[{}] Fetching Recording document {}...", metadataId, metadataId);
-					Recording recording = recordingService.getRecordingById(metadataId);
+					String recordingId = StringUtils.hasText(metadata.getRecordingId())
+							? metadata.getRecordingId()
+							: metadataId;
+					log.debug("[{}] Fetching Recording document {}...", metadataId, recordingId);
+					Recording recording = waitForRecordingWithAudioUrl(metadataId, recordingId, effectiveUserId);
 
-					// Loop until Audio URL is available (Fix for Race Condition)
-					while (recording == null || recording.getAudioUrl() == null || recording.getAudioUrl().isBlank()) {
-						log.warn(
-								"[{}] Audio URL missing in Firestore. Nhost upload might be lagging. Polling again in 2s...",
-								metadataId);
-						try {
-							Thread.sleep(2000);
-						} catch (InterruptedException e) {
-							Thread.currentThread().interrupt();
-							throw new RuntimeException("Interrupted while waiting for audio URL", e);
-						}
-						recording = recordingService.getRecordingById(metadataId);
-					}
-
-					log.info("[{}] Found recording {}.", metadataId, metadataId);
+					log.info("[{}] Found recording {}.", metadataId, recordingId);
 
 					String originalFileName = metadata.getFileName() != null ? metadata.getFileName() : "audio.aac";
 					Path tempFilePath = downloadAudioToFile(recording, metadataId);
@@ -176,13 +170,12 @@ public class AudioTranscriptionListenerService {
 								e.getMessage());
 					}
 
-					metadataMap = firebaseService.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
-					metadata = AudioMetadata.fromMap(metadataMap);
+					metadata = requireMetadata(metadataId, message);
 					if (metadata.isTranscriptionComplete()) {
 						log.info(
 								"[{}] Transcription was completed by another process while we were preparing. Skipping API call.",
 								metadataId);
-						checkCompletionAndTriggerSummarization(metadataId, userId);
+						checkCompletionAndTriggerSummarization(metadataId, effectiveUserId);
 						return;
 					}
 
@@ -191,8 +184,7 @@ public class AudioTranscriptionListenerService {
 					String transcript = geminiService.callGeminiTranscriptionAPIWithFallback(tempFilePath,
 							originalFileName);
 
-					metadataMap = firebaseService.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
-					metadata = AudioMetadata.fromMap(metadataMap);
+					metadata = requireMetadata(metadataId, message);
 					if (metadata.isTranscriptionComplete()) {
 						log.info(
 								"[{}] Transcription was completed by another process while we were transcribing. Skipping update.",
@@ -216,7 +208,7 @@ public class AudioTranscriptionListenerService {
 					log.info(
 							"[{}] Successfully saved transcript, set transcriptionComplete=true, and status=TRANSCRIPTION_COMPLETE.",
 							metadataId);
-					invalidateCache(userId);
+					invalidateCache(effectiveUserId);
 
 					try {
 						log.debug("[{}] Adding a short delay to ensure Firestore consistency before summarization...",
@@ -227,7 +219,7 @@ public class AudioTranscriptionListenerService {
 						log.warn("[{}] Delay before summarization was interrupted", metadataId);
 					}
 
-					checkCompletionAndTriggerSummarization(metadataId, userId);
+					checkCompletionAndTriggerSummarization(metadataId, effectiveUserId);
 
 					try {
 						Files.deleteIfExists(tempFilePath);
@@ -244,6 +236,8 @@ public class AudioTranscriptionListenerService {
 					}
 				}
 			});
+		} catch (NonRetryableTaskException e) {
+			log.warn("[{}] Acknowledging non-retryable transcription request: {}", metadataId, e.getMessage());
 		} finally {
 			metadataLock.unlock();
 			if (metadataLock instanceof ReentrantLock) {
@@ -253,6 +247,48 @@ public class AudioTranscriptionListenerService {
 				}
 			}
 		}
+	}
+
+	private AudioMetadata requireMetadata(String metadataId, AudioProcessingMessage message) {
+		AudioMetadata metadata = firebaseService.getAudioMetadataById(metadataId);
+		if (metadata == null) {
+			log.warn("[{}] Stale transcription request: metadata document no longer exists. userId={}, nhostFileId={}",
+					metadataId, message.getUserId(), message.getNhostFileId());
+			throw new NonRetryableTaskException("Audio metadata no longer exists: " + metadataId);
+		}
+		return metadata;
+	}
+
+	private Recording waitForRecordingWithAudioUrl(String metadataId, String recordingId, @Nullable String userId)
+			throws Exception {
+		Recording lastRecording = null;
+		for (int attempt = 1; attempt <= recordingLookupMaxAttempts; attempt++) {
+			lastRecording = recordingService.getRecordingById(recordingId);
+			if (lastRecording != null && StringUtils.hasText(lastRecording.getAudioUrl())) {
+				return lastRecording;
+			}
+
+			if (attempt == recordingLookupMaxAttempts) {
+				break;
+			}
+
+			log.warn("[{}] Recording/audioUrl not ready for recording {} (attempt {}/{}). Polling again in {}ms...",
+					metadataId, recordingId, attempt, recordingLookupMaxAttempts, recordingLookupDelayMs);
+			try {
+				Thread.sleep(recordingLookupDelayMs);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new RuntimeException("Interrupted while waiting for audio URL", e);
+			}
+		}
+
+		if (lastRecording == null) {
+			updateMetadataStatusToFailed(metadataId, userId, "RECORDING_NOT_FOUND");
+			throw new NonRetryableTaskException("Recording document was not found: " + recordingId);
+		}
+
+		updateMetadataStatusToFailed(metadataId, userId, "AUDIO_URL_NOT_AVAILABLE");
+		throw new NonRetryableTaskException("Recording audioUrl was not available: " + recordingId);
 	}
 
 	private Path downloadAudioToFile(Recording recording, String metadataId) {
@@ -348,17 +384,14 @@ public class AudioTranscriptionListenerService {
 			log.info("[{}] Checking if both transcription and PDF conversion are complete to trigger summarization...",
 					metadataId);
 
-			Map<String, Object> latestMetadataMap = firebaseService
-					.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
+			AudioMetadata latestMetadata = firebaseService.getAudioMetadataById(metadataId);
 
-			if (latestMetadataMap == null) {
+			if (latestMetadata == null) {
 				log.error(
 						"[{}] Failed to re-fetch metadata after transcription update. Cannot check for summarization trigger.",
 						metadataId);
 				return;
 			}
-
-			AudioMetadata latestMetadata = AudioMetadata.fromMap(latestMetadataMap);
 
 			ProcessingStatus currentStatus = latestMetadata.getStatus();
 			if (currentStatus == ProcessingStatus.SUMMARIZATION_QUEUED || currentStatus == ProcessingStatus.SUMMARIZING
@@ -375,11 +408,9 @@ public class AudioTranscriptionListenerService {
 
 			boolean statusChangeInProgress = false;
 			try {
-				Map<String, Object> latestStatusCheck = firebaseService
-						.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
+				AudioMetadata checkMetadata = firebaseService.getAudioMetadataById(metadataId);
 
-				if (latestStatusCheck != null) {
-					AudioMetadata checkMetadata = AudioMetadata.fromMap(latestStatusCheck);
+				if (checkMetadata != null) {
 					ProcessingStatus checkStatus = checkMetadata.getStatus();
 
 					if (checkStatus != currentStatus) {

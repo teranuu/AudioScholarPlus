@@ -46,27 +46,22 @@ public class RobustTaskExecutor {
 	 */
 	public <T> T executeWithInfiniteRetry(String contextId, String taskDescription, Supplier<T> task) {
 		long delayMs = initialDelayMs;
+		RuntimeException lastFailure = null;
 
 		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 			try {
 				return task.get();
-			} catch (Exception e) {
+			} catch (RuntimeException e) {
+				lastFailure = e;
 				if (containsNonRetryableFailure(e)) {
 					log.error("[{}] Cannot retry {}. Error: {}", contextId, taskDescription, e.getMessage());
 					throw e;
 				}
-				log.error("[{}] Failed to {}. Retrying in {}ms. Error: {}", contextId, taskDescription, delayMs,
-						e.getMessage());
 
-				// Optional: Add specific logic here if you want to break on IRRECOVERABLE
-				// errors
-				// (e.g., file completely deleted from DB), otherwise keep looping.
-
-				try {
-					Thread.sleep(delayMs);
-				} catch (InterruptedException ie) {
-					Thread.currentThread().interrupt();
-					throw new RuntimeException("Thread interrupted during robust retry", ie);
+				if (attempt == maxAttempts) {
+					log.error("[{}] Failed to {} after {}/{} attempts. Error: {}", contextId, taskDescription, attempt,
+							maxAttempts, e.getMessage());
+					break;
 				}
 
 				log.warn("[{}] Failed to {} on attempt {}/{}. Retrying in {}ms. Error: {}", contextId, taskDescription,
@@ -76,7 +71,7 @@ public class RobustTaskExecutor {
 			}
 		}
 
-		throw new IllegalStateException("Retry loop exited unexpectedly for " + taskDescription);
+		throw lastFailure != null ? lastFailure : new IllegalStateException("Task failed without an exception");
 	}
 
 	public <T> T executeWithRetry(String contextId, String taskDescription, int maxAttempts, long initialDelayMs,

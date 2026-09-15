@@ -55,4 +55,49 @@ class RobustTaskExecutorTest {
 
 		assertEquals(1, attempts.get());
 	}
+
+	@Test
+	void legacyRetryNamePropagatesLastFailure() {
+		AtomicInteger attempts = new AtomicInteger();
+		RobustTaskExecutor executor = new RobustTaskExecutor(3, 0, 0);
+
+		RuntimeException failure = assertThrows(RuntimeException.class,
+				() -> executor.executeWithInfiniteRetry("recording-1", "transcribe", (Supplier<String>) () -> {
+					attempts.incrementAndGet();
+					throw new RuntimeException("last failure");
+				}));
+
+		assertEquals("last failure", failure.getMessage());
+		assertEquals(3, attempts.get());
+	}
+
+	@Test
+	void legacyRetryNameDoesNotRetryAfterSuccessfulFinalAttempt() {
+		AtomicInteger attempts = new AtomicInteger();
+		RobustTaskExecutor executor = new RobustTaskExecutor(3, 0, 0);
+
+		String result = executor.executeWithInfiniteRetry("recording-1", "transcribe", () -> {
+			if (attempts.incrementAndGet() < 3) {
+				throw new RuntimeException("temporary failure");
+			}
+			return "done";
+		});
+
+		assertEquals("done", result);
+		assertEquals(3, attempts.get());
+	}
+
+	@Test
+	void legacyRetryNameStopsImmediatelyForPermanentFailure() {
+		AtomicInteger attempts = new AtomicInteger();
+		RobustTaskExecutor executor = new RobustTaskExecutor(3, 0, 0);
+
+		assertThrows(NonRetryableTaskException.class,
+				() -> executor.executeWithInfiniteRetry("recording-1", "transcribe", (Supplier<String>) () -> {
+					attempts.incrementAndGet();
+					throw new NonRetryableTaskException("invalid request");
+				}));
+
+		assertEquals(1, attempts.get());
+	}
 }
