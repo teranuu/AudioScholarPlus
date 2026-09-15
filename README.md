@@ -100,8 +100,13 @@ cd AudioScholar
 
 5. Run the backend:
    ```bash
-   mvn spring-boot:run
+   ./mvnw spring-boot:run
    ```
+   On Windows, use the bundled wrapper from PowerShell:
+   ```powershell
+   .\mvnw.cmd spring-boot:run
+   ```
+   The wrapper is the preferred backend build entrypoint because it pins the Maven version used by the project. It also supports Windows user profiles with spaces in the path, such as `C:\Users\First Last`. If the wrapper is unavailable, use a locally installed Maven as a temporary fallback.
    Or run `AudioscholarApplication.java` from your IDE. (Spring Boot version `3.5.8`)
 
 ---

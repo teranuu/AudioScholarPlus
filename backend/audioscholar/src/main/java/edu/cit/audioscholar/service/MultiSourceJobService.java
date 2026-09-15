@@ -18,6 +18,10 @@ import org.springframework.util.StringUtils;
 import org.springframework.util.unit.DataSize;
 import org.springframework.web.multipart.MultipartFile;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.KeyPoint;
 import edu.cit.audioscholar.model.MergedSummary;
@@ -32,6 +36,7 @@ import edu.cit.audioscholar.model.Summary;
 
 @Service
 public class MultiSourceJobService {
+	private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 	private static final Set<String> ALLOWED_MEDIA_TYPES = Set.of("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
 			"audio/aac", "audio/x-aac", "audio/ogg", "application/ogg", "audio/flac", "audio/x-flac", "audio/aiff",
 			"audio/x-aiff", "audio/mp4", "audio/m4a", "video/mp4", "video/webm", "video/quicktime");
@@ -143,6 +148,7 @@ public class MultiSourceJobService {
 						? geminiService.callGeminiTranscriptionAPIWithFallback(tempFile, file.getOriginalFilename())
 						: documentTextExtractionService.extractText(tempFile, file.getOriginalFilename(),
 								file.getContentType());
+				rejectGeminiErrorTranscript(transcript);
 				sourceFile.setTranscriptText(transcript);
 				sourceFiles.add(sourceFile);
 				sourceFileService.save(sourceFile);
@@ -186,12 +192,26 @@ public class MultiSourceJobService {
 		return multiSourceJobRepository.findById(jobId);
 	}
 
+	private void rejectGeminiErrorTranscript(String transcript) throws IOException {
+		if (!StringUtils.hasText(transcript)) {
+			return;
+		}
+		try {
+			JsonNode root = OBJECT_MAPPER.readTree(transcript);
+			if (root.has("error")) {
+				String details = root.path("details").asText(root.toString());
+				throw new IOException("Gemini transcription failed: " + details);
+			}
+		} catch (JsonProcessingException ignored) {
+			// Normal transcripts are plain text, not JSON.
+		}
+	}
+
 	private Summary parseMergedSummary(MultiSourceJob job, String summaryJson) throws IOException {
-		com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
-		com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(summaryJson);
+		com.fasterxml.jackson.databind.JsonNode root = OBJECT_MAPPER.readTree(summaryJson);
 		if (root.has("candidates")) {
 			String text = root.path("candidates").get(0).path("content").path("parts").get(0).path("text").asText();
-			root = mapper.readTree(text);
+			root = OBJECT_MAPPER.readTree(text);
 		}
 		if (root.has("error")) {
 			throw new IOException("Gemini summarization failed: " + root.path("details").asText(root.toString()));

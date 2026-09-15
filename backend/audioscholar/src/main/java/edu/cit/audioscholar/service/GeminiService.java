@@ -59,7 +59,7 @@ public class GeminiService {
 	@Value("${gemini.api.model.summarization:gemini-2.5-flash}")
 	private String summarizationModelName;
 
-	@Value("${gemini.transcription.models:gemini-2.5-flash}")
+	@Value("${gemini.transcription.models:${gemini.model-hierarchy:gemini-2.5-flash}}")
 	private String transcriptionModels;
 
 	@Value("${gemini.files.poll-interval-ms:2000}")
@@ -257,48 +257,76 @@ public class GeminiService {
 		} catch (NonRetryableTaskException e) {
 			log.error("Gemini permanently rejected the transcription request: {}", e.getMessage(), e);
 			throw e;
+		} catch (HttpServerErrorException.ServiceUnavailable e) {
+			Duration retryDelay = retryDelay(e);
+			throw new GeminiRateLimitException("Gemini transcription service is temporarily unavailable",
+					Instant.now().plus(retryDelay), e);
+		} catch (ResourceAccessException e) {
+			throw new GeminiRateLimitException("Gemini transcription request failed due to a temporary network error",
+					Instant.now().plus(effectiveGeminiCooldown()), e);
 		} catch (Exception e) {
 			log.error("Unexpected error during enhanced transcription process: {}", e.getMessage(), e);
-			return createErrorResponse("Unexpected Transcription Error", e.getMessage());
+			throw new IOException("Unexpected transcription error: " + e.getMessage(), e);
 		}
 	}
 
 	private String transcribeActiveFile(String fileUri, String mimeType, String apiKey, long estimatedInputTokens)
 			throws GeminiRateLimitException {
-		RuntimeException lastFailure = null;
 		GeminiRateLimitException lastRateLimit = null;
-		for (String model : transcriptionModels.split(",")) {
-			String normalizedModel = model.trim();
-			if (normalizedModel.isEmpty())
-				continue;
-			try {
-				reserveGemini("transcription.generateContent", estimatedInputTokens, null);
-				return callGeminiTranscriptionAPISingleModel(fileUri, mimeType, normalizedModel, apiKey);
-			} catch (HttpClientErrorException e) {
-				int statusCode = e.getStatusCode().value();
-				if (statusCode == 429) {
-					Duration retryDelay = retryDelay(e);
-					keyRotationManager.reportError(KeyProvider.GEMINI, apiKey, statusCode, retryDelay);
-					lastRateLimit = new GeminiRateLimitException("Gemini transcription quota is temporarily exhausted",
-							Instant.now().plus(retryDelay), e);
+		boolean attemptedModel = false;
+		for (int cycle = 1; cycle <= rotationMaxCycles; cycle++) {
+			for (String model : transcriptionModels.split(",")) {
+				String normalizedModel = model.trim();
+				if (normalizedModel.isEmpty())
 					continue;
+				attemptedModel = true;
+				try {
+					reserveGemini("transcription.generateContent", estimatedInputTokens, null);
+					return callGeminiTranscriptionAPISingleModel(fileUri, mimeType, normalizedModel, apiKey);
+				} catch (HttpClientErrorException e) {
+					int statusCode = e.getStatusCode().value();
+					if (statusCode == 429) {
+						Duration retryDelay = retryDelay(e);
+						keyRotationManager.reportError(KeyProvider.GEMINI, apiKey, statusCode, retryDelay);
+						lastRateLimit = new GeminiRateLimitException(
+								"Gemini transcription quota is temporarily exhausted", Instant.now().plus(retryDelay),
+								e);
+						continue;
+					}
+					keyRotationManager.reportError(KeyProvider.GEMINI, apiKey, statusCode);
+					throw new NonRetryableTaskException(
+							"Gemini rejected the transcription request with status " + statusCode, e);
+				} catch (HttpServerErrorException.ServiceUnavailable e) {
+					Duration retryDelay = retryDelay(e);
+					lastRateLimit = new GeminiRateLimitException(
+							"Gemini transcription service is temporarily unavailable", Instant.now().plus(retryDelay),
+							e);
+				} catch (HttpServerErrorException e) {
+					Duration retryDelay = retryDelay(e);
+					lastRateLimit = new GeminiRateLimitException(
+							"Gemini transcription service returned a temporary server error",
+							Instant.now().plus(retryDelay), e);
+				} catch (ResourceAccessException e) {
+					lastRateLimit = new GeminiRateLimitException(
+							"Gemini transcription request failed due to a temporary network error",
+							Instant.now().plus(effectiveGeminiCooldown()), e);
+				} catch (GeminiBudgetExceededException e) {
+					lastRateLimit = new GeminiRateLimitException(e.getMessage(), e.getRetryAt(), e);
 				}
-				keyRotationManager.reportError(KeyProvider.GEMINI, apiKey, statusCode);
-				throw new NonRetryableTaskException(
-						"Gemini rejected the transcription request with status " + statusCode, e);
-			} catch (HttpServerErrorException e) {
-				lastFailure = e;
-			} catch (GeminiBudgetExceededException e) {
-				lastRateLimit = new GeminiRateLimitException(e.getMessage(), e.getRetryAt(), e);
 			}
 		}
 		if (lastRateLimit != null) {
 			throw lastRateLimit;
 		}
-		throw lastFailure != null ? lastFailure : new IllegalStateException("No transcription models configured");
+		throw new IllegalStateException(
+				attemptedModel ? "All transcription models failed" : "No transcription models configured");
 	}
 
 	private Duration retryDelay(HttpClientErrorException exception) {
+		return retryDelay((RestClientResponseException) exception);
+	}
+
+	private Duration retryDelay(RestClientResponseException exception) {
 		HttpHeaders headers = exception.getResponseHeaders();
 		if (headers != null) {
 			String retryAfter = headers.getFirst(HttpHeaders.RETRY_AFTER);
@@ -316,7 +344,11 @@ public class GeminiService {
 				}
 			}
 		}
-		return geminiCooldown;
+		return effectiveGeminiCooldown();
+	}
+
+	private Duration effectiveGeminiCooldown() {
+		return geminiCooldown != null ? geminiCooldown : Duration.ofSeconds(60);
 	}
 
 	/**

@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -37,6 +38,7 @@ import com.google.cloud.Timestamp;
 import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.dto.AudioProcessingMessage;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
+import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.exception.NonRetryableTaskException;
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.ProcessingStatus;
@@ -238,6 +240,11 @@ public class AudioTranscriptionListenerService {
 			});
 		} catch (NonRetryableTaskException e) {
 			log.warn("[{}] Acknowledging non-retryable transcription request: {}", metadataId, e.getMessage());
+			markTranscriptionFailedIfPresent(metadataId, userId, e, null);
+		} catch (RuntimeException e) {
+			GeminiRateLimitException rateLimit = findCause(e, GeminiRateLimitException.class);
+			markTranscriptionFailedIfPresent(metadataId, userId, e, rateLimit);
+			throw e;
 		} finally {
 			metadataLock.unlock();
 			if (metadataLock instanceof ReentrantLock) {
@@ -486,6 +493,65 @@ public class AudioTranscriptionListenerService {
 	private void updateMetadataStatusToFailed(String metadataId, @Nullable String userId, String reason) {
 		updateMetadataStatus(metadataId, userId, ProcessingStatus.FAILED, reason);
 		log.error("[{}] Processing failed. Reason: {}", metadataId, reason);
+	}
+
+	private void markTranscriptionFailedIfPresent(String metadataId, @Nullable String fallbackUserId, Throwable failure,
+			@Nullable GeminiRateLimitException rateLimit) {
+		AudioMetadata metadata;
+		try {
+			metadata = firebaseService.getAudioMetadataById(metadataId);
+		} catch (Exception lookupFailure) {
+			log.warn("[{}] Could not load metadata to mark transcription failure: {}", metadataId,
+					lookupFailure.getMessage());
+			return;
+		}
+		if (metadata == null) {
+			log.warn("[{}] Metadata no longer exists; skipping transcription failure update.", metadataId);
+			return;
+		}
+
+		String effectiveUserId = StringUtils.hasText(metadata.getUserId()) ? metadata.getUserId() : fallbackUserId;
+		Map<String, Object> updates = new HashMap<>();
+		updates.put("status", ProcessingStatus.FAILED.name());
+		updates.put("processingStage", "TRANSCRIPTION_FAILED");
+		updates.put("transcriptionComplete", false);
+		updates.put("failureReason", transcriptionFailureReason(failure, rateLimit));
+		updates.put("lastUpdated", Timestamp.now());
+		if (rateLimit != null && rateLimit.getRetryAt() != null) {
+			Instant retryAt = rateLimit.getRetryAt();
+			updates.put("quotaRetryAt", Timestamp.ofTimeSecondsAndNanos(retryAt.getEpochSecond(), retryAt.getNano()));
+		}
+
+		try {
+			firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+			invalidateCache(effectiveUserId);
+			log.error("[{}] Transcription failed after retries. Reason: {}", metadataId, updates.get("failureReason"));
+		} catch (FirestoreInteractionException updateFailure) {
+			log.error("[{}] CRITICAL: Failed to mark transcription as FAILED. Error: {}", metadataId,
+					updateFailure.getMessage(), updateFailure);
+		}
+	}
+
+	private String transcriptionFailureReason(Throwable failure, @Nullable GeminiRateLimitException rateLimit) {
+		if (rateLimit != null) {
+			return rateLimit.getMessage();
+		}
+		Throwable root = failure;
+		while (root.getCause() != null) {
+			root = root.getCause();
+		}
+		return root.getMessage() != null ? root.getMessage() : failure.getMessage();
+	}
+
+	private <T extends Throwable> T findCause(Throwable failure, Class<T> type) {
+		Throwable current = failure;
+		while (current != null) {
+			if (type.isInstance(current)) {
+				return type.cast(current);
+			}
+			current = current.getCause();
+		}
+		return null;
 	}
 
 	private boolean updateMetadataStatus(String metadataId, @Nullable String userId, ProcessingStatus status,

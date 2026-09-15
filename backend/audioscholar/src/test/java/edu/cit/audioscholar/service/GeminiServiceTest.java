@@ -5,6 +5,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -24,8 +25,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.client.HttpClientErrorException;
+import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.model.KeyProvider;
 
 @ExtendWith(MockitoExtension.class)
@@ -201,6 +204,49 @@ class GeminiServiceTest {
 	}
 
 	@Test
+	void testCallGeminiTranscriptionAPIWithFallback_ServiceUnavailableThrowsRetryableException() throws Exception {
+		Path tempFile = Files.createTempFile("test-audio", ".mp3");
+		Files.writeString(tempFile, "dummy content");
+		try {
+			ReflectionTestUtils.setField(geminiService, "transcriptionModels", "gemini-2.5-flash");
+			when(keyRotationManager.getKey(any(KeyProvider.class))).thenReturn(API_KEY);
+			mockGeminiFileUpload("http://file-uri");
+			when(restTemplate.exchange(contains(":generateContent"), eq(HttpMethod.POST), any(), eq(String.class)))
+					.thenThrow(serviceUnavailable());
+
+			GeminiRateLimitException exception = assertThrows(GeminiRateLimitException.class,
+					() -> geminiService.callGeminiTranscriptionAPIWithFallback(tempFile, "test-audio.mp3"));
+
+			assertTrue(exception.getMessage().contains("temporarily unavailable"));
+			verify(keyRotationManager, never()).reportSuccess(any(), any());
+		} finally {
+			Files.deleteIfExists(tempFile);
+		}
+	}
+
+	@Test
+	void testCallGeminiTranscriptionAPIWithFallback_FallsBackAfterServiceUnavailable() throws Exception {
+		Path tempFile = Files.createTempFile("test-audio", ".mp3");
+		Files.writeString(tempFile, "dummy content");
+		try {
+			ReflectionTestUtils.setField(geminiService, "transcriptionModels", "overloaded,gemini-2.5-flash");
+			when(keyRotationManager.getKey(any(KeyProvider.class))).thenReturn(API_KEY);
+			mockGeminiFileUpload("http://file-uri");
+			String transcriptionResponse = "{\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"transcript\\\": \\\"Fallback transcript\\\"}\"}]}}]}";
+			ResponseEntity<String> transResponse = new ResponseEntity<>(transcriptionResponse, HttpStatus.OK);
+			when(restTemplate.exchange(contains(":generateContent"), eq(HttpMethod.POST), any(), eq(String.class)))
+					.thenThrow(serviceUnavailable()).thenReturn(transResponse);
+
+			String result = geminiService.callGeminiTranscriptionAPIWithFallback(tempFile, "test-audio.mp3");
+
+			assertEquals("Fallback transcript", result);
+			verify(keyRotationManager).reportSuccess(KeyProvider.GEMINI, API_KEY);
+		} finally {
+			Files.deleteIfExists(tempFile);
+		}
+	}
+
+	@Test
 	void testGenerateTranscriptOnlySummary_Success() {
 		// Given
 		String metadataId = "test-metadata-id";
@@ -243,5 +289,32 @@ class GeminiServiceTest {
 				+ "                \"parts\": [" + "                    {"
 				+ "                        \"text\": \"{\\\"summaryText\\\": \\\"Test summary\\\", \\\"keyPoints\\\": [\\\"Point 1\\\", \\\"Point 2\\\"], \\\"topics\\\": [\\\"Topic 1\\\"], \\\"glossary\\\": []}\""
 				+ "                    }" + "                ]" + "            }" + "        }" + "    ]" + "}";
+	}
+
+	private void mockGeminiFileUpload(String fileUri) {
+		HttpHeaders initiateHeaders = new HttpHeaders();
+		initiateHeaders.add("X-Goog-Upload-Url", "http://upload-url");
+		ResponseEntity<String> initiateResponse = new ResponseEntity<>(null, initiateHeaders, HttpStatus.OK);
+		when(restTemplate.exchange(contains("/upload/v1beta/files"), eq(HttpMethod.POST), any(), eq(String.class)))
+				.thenReturn(initiateResponse);
+
+		String uploadResponseBody = "{\"file\": {\"uri\": \"" + fileUri + "\"}}";
+		ResponseEntity<String> uploadResponse = new ResponseEntity<>(uploadResponseBody, HttpStatus.OK);
+		when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
+				.thenReturn(uploadResponse);
+	}
+
+	private HttpServerErrorException serviceUnavailable() {
+		String body = """
+				{
+				  "error": {
+				    "code": 503,
+				    "message": "This model is currently experiencing high demand.",
+				    "status": "UNAVAILABLE"
+				  }
+				}
+				""";
+		return HttpServerErrorException.create(HttpStatus.SERVICE_UNAVAILABLE, "Service Unavailable", HttpHeaders.EMPTY,
+				body.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8);
 	}
 }
