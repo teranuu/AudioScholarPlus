@@ -8,6 +8,7 @@ import java.util.concurrent.TimeoutException;
 import org.springframework.amqp.core.ReturnedMessage;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -18,6 +19,7 @@ public class ConfirmedRabbitPublisher {
 	private final RabbitTemplate rabbitTemplate;
 	private final Duration confirmTimeout;
 
+	@Autowired
 	public ConfirmedRabbitPublisher(RabbitTemplate rabbitTemplate,
 			@Value("${app.rabbitmq.publisher-confirm-timeout-ms:10000}") long confirmTimeoutMs) {
 		this(rabbitTemplate, Duration.ofMillis(confirmTimeoutMs));
