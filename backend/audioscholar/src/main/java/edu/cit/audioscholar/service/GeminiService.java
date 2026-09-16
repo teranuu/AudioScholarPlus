@@ -141,6 +141,8 @@ public class GeminiService {
 					throw new RuntimeException(e);
 				}
 			}, rotationMaxCycles);
+		} catch (GeminiBudgetExceededException e) {
+			throw e;
 		} catch (Exception e) {
 			log.error("Unexpected error in enhanced summarization API: {}", e.getMessage(), e);
 			return createErrorResponse("Unexpected Error", e.getMessage());
@@ -240,6 +242,7 @@ public class GeminiService {
 			String uploadKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 			String fileUri = uploadFile(audioFilePath, mimeType, fileSize, displayName, uploadKey);
 			log.info("File uploaded successfully. URI: {}", fileUri);
+			waitForFileActive(fileUri, uploadKey);
 
 			String activeFileUri = fileUri;
 			String activeFileKey = uploadKey;
@@ -960,6 +963,8 @@ public class GeminiService {
 				}
 			}, rotationMaxCycles);
 
+		} catch (GeminiBudgetExceededException e) {
+			throw e;
 		} catch (IOException e) {
 			log.error("[{}] IOException during PDF upload: {}", metadataId, e.getMessage(), e);
 			return createErrorResponse("File Handling Error", "Error processing PDF file: " + e.getMessage());
@@ -1341,6 +1346,8 @@ public class GeminiService {
 					throw new RuntimeException(e);
 				}
 			}, rotationMaxCycles);
+		} catch (GeminiBudgetExceededException e) {
+			throw e;
 		} catch (Exception e) {
 			log.error("[{}] Unexpected error during transcript-only summarization: {}", metadataId, e.getMessage(), e);
 			return createErrorResponse("Summarization Error", "Unexpected error: " + e.getMessage());

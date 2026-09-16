@@ -16,7 +16,6 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 
@@ -53,19 +52,19 @@ class SummarizationListenerServiceIntegrationTest {
 	private CacheManager cacheManager;
 
 	@Mock
-	private LearningMaterialRecommenderService recommenderService;
-
-	@Mock
 	private RecordingService recordingService;
 
 	@Mock
 	private Cache cache;
 
 	@Mock
-	private RabbitTemplate rabbitTemplate;
+	private ConfirmedRabbitPublisher confirmedRabbitPublisher;
 
 	@Mock
 	private RobustTaskExecutor robustTaskExecutor;
+
+	@Mock
+	private ProcessingStageClaimService stageClaimService;
 
 	private SummarizationListenerService summarizationListenerService;
 
@@ -85,8 +84,10 @@ class SummarizationListenerServiceIntegrationTest {
 		// injection issues
 		summarizationListenerService = new SummarizationListenerService(firebaseService, geminiService,
 				nhostStorageService, summaryService, cacheManager, new ObjectMapper(), "src/test/resources", // tempDir
-				recommenderService, recordingService, rabbitTemplate, robustTaskExecutor,
-				new TranscriptClarityService());
+				recordingService, confirmedRabbitPublisher, robustTaskExecutor, new TranscriptClarityService(),
+				stageClaimService);
+		lenient().when(stageClaimService.claim(any(), any(), any(), any(), any()))
+				.thenReturn(ProcessingStageClaimService.ClaimResult.acquired(createAudioOnlyMetadata()));
 	}
 
 	// ==================== SIMPLIFIED EXCEPTION HANDLING TESTS ====================
@@ -134,7 +135,7 @@ class SummarizationListenerServiceIntegrationTest {
 		assertTrue(foundFailureUpdate, "Should have updated status to SUMMARY_FAILED after bounded retry exhaustion");
 
 		// Verify that recommendations were NOT triggered
-		verify(recommenderService, never()).generateAndSaveRecommendations(any(), any(), any());
+		verify(confirmedRabbitPublisher, never()).publishToProcessingExchange(eq("recommendations.process.key"), any());
 		verify(recordingService, never()).getRecordingById(anyString());
 	}
 
@@ -292,11 +293,11 @@ class SummarizationListenerServiceIntegrationTest {
 
 	@Test
 	void testHandleSummarizationRequest_SkipsExternalDuplicateWhileSummarizing() throws Exception {
-		setupRobustTaskExecutorMock();
 		Map<String, String> message = createValidAudioOnlyMessage();
 		AudioMetadata metadata = createAudioOnlyMetadata();
 		metadata.setStatus(ProcessingStatus.SUMMARIZING);
-		mockFirebaseService(metadata);
+		when(stageClaimService.claim(any(), any(), any(), any(), any()))
+				.thenReturn(ProcessingStageClaimService.ClaimResult.skipped(metadata, "already summarizing"));
 
 		summarizationListenerService.handleSummarizationRequest(message);
 

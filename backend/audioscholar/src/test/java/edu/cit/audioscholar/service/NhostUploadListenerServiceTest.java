@@ -15,7 +15,6 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -31,10 +30,9 @@ class NhostUploadListenerServiceTest {
 	void handleNhostUploadRequest_publishTimeoutDoesNotMarkFailed() throws Exception {
 		FirebaseService firebaseService = mock(FirebaseService.class);
 		NhostStorageService nhostStorageService = mock(NhostStorageService.class);
-		RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
 		ConfirmedRabbitPublisher confirmedRabbitPublisher = mock(ConfirmedRabbitPublisher.class);
 		NhostUploadListenerService service = new NhostUploadListenerService(firebaseService, nhostStorageService,
-				rabbitTemplate, confirmedRabbitPublisher, new ObjectMapper());
+				confirmedRabbitPublisher, new ObjectMapper());
 
 		Path audioFile = tempDir.resolve("lecture.mp3");
 		Files.writeString(audioFile, "audio");
@@ -70,10 +68,9 @@ class NhostUploadListenerServiceTest {
 	void handleNhostUploadRequest_publishRejectedRecordsQueueFailure() throws Exception {
 		FirebaseService firebaseService = mock(FirebaseService.class);
 		NhostStorageService nhostStorageService = mock(NhostStorageService.class);
-		RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
 		ConfirmedRabbitPublisher confirmedRabbitPublisher = mock(ConfirmedRabbitPublisher.class);
 		NhostUploadListenerService service = new NhostUploadListenerService(firebaseService, nhostStorageService,
-				rabbitTemplate, confirmedRabbitPublisher, new ObjectMapper());
+				confirmedRabbitPublisher, new ObjectMapper());
 
 		Path audioFile = tempDir.resolve("lecture-rejected.mp3");
 		Files.writeString(audioFile, "audio");

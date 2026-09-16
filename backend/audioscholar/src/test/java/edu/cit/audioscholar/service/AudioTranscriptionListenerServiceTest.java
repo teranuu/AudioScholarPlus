@@ -1,7 +1,6 @@
 package edu.cit.audioscholar.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
@@ -18,7 +17,6 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.mockito.ArgumentCaptor;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.cache.CacheManager;
 
 import edu.cit.audioscholar.config.RabbitMQConfig;
@@ -40,18 +38,18 @@ class AudioTranscriptionListenerServiceTest {
 	void missingMetadataAcknowledgesStaleMessageWithoutProcessing() throws Exception {
 		FirebaseService firebaseService = mock(FirebaseService.class);
 		NhostStorageService storageService = mock(NhostStorageService.class);
-		GeminiService geminiService = mock(GeminiService.class);
+		TranscriptionOrchestrator transcriptionOrchestrator = mock(TranscriptionOrchestrator.class);
 		RecordingService recordingService = mock(RecordingService.class);
 		QualityReportService qualityReportService = mock(QualityReportService.class);
-		RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
+		ConfirmedRabbitPublisher publisher = mock(ConfirmedRabbitPublisher.class);
 		when(firebaseService.getAudioMetadataById("metadata-1")).thenReturn(null);
 
-		AudioTranscriptionListenerService service = service(firebaseService, storageService, geminiService,
-				recordingService, qualityReportService, rabbitTemplate, 1);
+		AudioTranscriptionListenerService service = service(firebaseService, storageService, transcriptionOrchestrator,
+				recordingService, qualityReportService, publisher, 1);
 
 		assertDoesNotThrow(() -> service.handleAudioTranscriptionRequest(message("metadata-1", "user-1")));
 
-		verify(geminiService, never()).callGeminiTranscriptionAPIWithFallback(any(), any());
+		verify(transcriptionOrchestrator, never()).transcribe(any(), any(), any());
 		verify(storageService, never()).downloadFileToPath(any(), any());
 		verify(firebaseService, never()).updateDataWithMap(any(), any(), any());
 	}
@@ -60,16 +58,16 @@ class AudioTranscriptionListenerServiceTest {
 	void missingRecordingMarksMetadataFailedWithoutTranscribing() throws Exception {
 		FirebaseService firebaseService = mock(FirebaseService.class);
 		NhostStorageService storageService = mock(NhostStorageService.class);
-		GeminiService geminiService = mock(GeminiService.class);
+		TranscriptionOrchestrator transcriptionOrchestrator = mock(TranscriptionOrchestrator.class);
 		RecordingService recordingService = mock(RecordingService.class);
 		QualityReportService qualityReportService = mock(QualityReportService.class);
-		RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
+		ConfirmedRabbitPublisher publisher = mock(ConfirmedRabbitPublisher.class);
 		when(firebaseService.getAudioMetadataCollectionName()).thenReturn("audioMetadata");
 		when(firebaseService.getAudioMetadataById("metadata-1")).thenReturn(activeMetadata("metadata-1", "user-1"));
 		when(recordingService.getRecordingById("metadata-1")).thenReturn(null);
 
-		AudioTranscriptionListenerService service = service(firebaseService, storageService, geminiService,
-				recordingService, qualityReportService, rabbitTemplate, 1);
+		AudioTranscriptionListenerService service = service(firebaseService, storageService, transcriptionOrchestrator,
+				recordingService, qualityReportService, publisher, 1);
 
 		assertDoesNotThrow(() -> service.handleAudioTranscriptionRequest(message("metadata-1", "user-1")));
 
@@ -80,7 +78,7 @@ class AudioTranscriptionListenerServiceTest {
 				.filter(update -> ProcessingStatus.FAILED.name().equals(update.get("status"))).findFirst()
 				.orElseThrow();
 		org.junit.jupiter.api.Assertions.assertEquals("RECORDING_NOT_FOUND", failureUpdate.get("failureReason"));
-		verify(geminiService, never()).callGeminiTranscriptionAPIWithFallback(any(), any());
+		verify(transcriptionOrchestrator, never()).transcribe(any(), any(), any());
 		verify(storageService, never()).downloadFileToPath(any(), any());
 	}
 
@@ -88,53 +86,52 @@ class AudioTranscriptionListenerServiceTest {
 	void completedMetadataTriggersSummarizationCheckWithoutRetranscribing() throws Exception {
 		FirebaseService firebaseService = mock(FirebaseService.class);
 		NhostStorageService storageService = mock(NhostStorageService.class);
-		GeminiService geminiService = mock(GeminiService.class);
+		TranscriptionOrchestrator transcriptionOrchestrator = mock(TranscriptionOrchestrator.class);
 		RecordingService recordingService = mock(RecordingService.class);
 		QualityReportService qualityReportService = mock(QualityReportService.class);
-		RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
+		ConfirmedRabbitPublisher publisher = mock(ConfirmedRabbitPublisher.class);
 		when(firebaseService.getAudioMetadataCollectionName()).thenReturn("audioMetadata");
 		AudioMetadata metadata = completeMetadata("metadata-1", "user-1");
 		when(firebaseService.getAudioMetadataById("metadata-1")).thenReturn(metadata, metadata, metadata);
 
-		AudioTranscriptionListenerService service = service(firebaseService, storageService, geminiService,
-				recordingService, qualityReportService, rabbitTemplate, 1);
+		AudioTranscriptionListenerService service = service(firebaseService, storageService, transcriptionOrchestrator,
+				recordingService, qualityReportService, publisher, 1);
 
 		assertDoesNotThrow(() -> service.handleAudioTranscriptionRequest(message("metadata-1", "user-1")));
 
-		verify(geminiService, never()).callGeminiTranscriptionAPIWithFallback(any(), any());
-		verify(rabbitTemplate).convertAndSend(eq(RabbitMQConfig.PROCESSING_EXCHANGE_NAME),
-				eq(RabbitMQConfig.SUMMARIZATION_ROUTING_KEY), any(Map.class));
+		verify(transcriptionOrchestrator, never()).transcribe(any(), any(), any());
+		verify(publisher).publishToProcessingExchange(eq(RabbitMQConfig.SUMMARIZATION_ROUTING_KEY), any(Map.class));
 	}
 
 	@Test
 	void transientMetadataLookupFailureStillRetries() throws Exception {
 		FirebaseService firebaseService = mock(FirebaseService.class);
 		NhostStorageService storageService = mock(NhostStorageService.class);
-		GeminiService geminiService = mock(GeminiService.class);
+		TranscriptionOrchestrator transcriptionOrchestrator = mock(TranscriptionOrchestrator.class);
 		RecordingService recordingService = mock(RecordingService.class);
 		QualityReportService qualityReportService = mock(QualityReportService.class);
-		RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
+		ConfirmedRabbitPublisher publisher = mock(ConfirmedRabbitPublisher.class);
 		when(firebaseService.getAudioMetadataById("metadata-1"))
 				.thenThrow(new FirestoreInteractionException("temporary Firestore failure"))
 				.thenReturn(skippedMetadata("metadata-1", "user-1"));
 
-		AudioTranscriptionListenerService service = service(firebaseService, storageService, geminiService,
-				recordingService, qualityReportService, rabbitTemplate, 2);
+		AudioTranscriptionListenerService service = service(firebaseService, storageService, transcriptionOrchestrator,
+				recordingService, qualityReportService, publisher, 2);
 
 		assertDoesNotThrow(() -> service.handleAudioTranscriptionRequest(message("metadata-1", "user-1")));
 
 		verify(firebaseService, org.mockito.Mockito.times(2)).getAudioMetadataById("metadata-1");
-		verify(geminiService, never()).callGeminiTranscriptionAPIWithFallback(any(), any());
+		verify(transcriptionOrchestrator, never()).transcribe(any(), any(), any());
 	}
 
 	@Test
 	void exhaustedGeminiRateLimitMarksTranscriptionFailed() throws Exception {
 		FirebaseService firebaseService = mock(FirebaseService.class);
 		NhostStorageService storageService = mock(NhostStorageService.class);
-		GeminiService geminiService = mock(GeminiService.class);
+		TranscriptionOrchestrator transcriptionOrchestrator = mock(TranscriptionOrchestrator.class);
 		RecordingService recordingService = mock(RecordingService.class);
 		QualityReportService qualityReportService = mock(QualityReportService.class);
-		RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
+		ConfirmedRabbitPublisher publisher = mock(ConfirmedRabbitPublisher.class);
 		AudioMetadata metadata = activeMetadata("metadata-1", "user-1");
 		when(firebaseService.getAudioMetadataCollectionName()).thenReturn("audioMetadata");
 		when(firebaseService.getAudioMetadataById("metadata-1")).thenReturn(metadata, metadata, metadata);
@@ -147,14 +144,13 @@ class AudioTranscriptionListenerServiceTest {
 		when(qualityReportService.analyzeAndSave(eq("metadata-1"), any()))
 				.thenReturn(QualityReport.allClear("metadata-1"));
 		Instant retryAt = Instant.now().plusSeconds(30);
-		when(geminiService.callGeminiTranscriptionAPIWithFallback(any(), any())).thenThrow(
+		when(transcriptionOrchestrator.transcribe(eq("metadata-1"), any(), any())).thenThrow(
 				new GeminiRateLimitException("Gemini transcription service is temporarily unavailable", retryAt, null));
 
-		AudioTranscriptionListenerService service = service(firebaseService, storageService, geminiService,
-				recordingService, qualityReportService, rabbitTemplate, 1);
+		AudioTranscriptionListenerService service = service(firebaseService, storageService, transcriptionOrchestrator,
+				recordingService, qualityReportService, publisher, 1);
 
-		assertThrows(RuntimeException.class,
-				() -> service.handleAudioTranscriptionRequest(message("metadata-1", "user-1")));
+		assertDoesNotThrow(() -> service.handleAudioTranscriptionRequest(message("metadata-1", "user-1")));
 
 		ArgumentCaptor<Map<String, Object>> updates = ArgumentCaptor.forClass(Map.class);
 		verify(firebaseService, atLeastOnce()).updateDataWithMap(eq("audioMetadata"), eq("metadata-1"),
@@ -173,10 +169,10 @@ class AudioTranscriptionListenerServiceTest {
 	void successfulTranscriptionStillSavesTranscriptAndQueuesSummarization() throws Exception {
 		FirebaseService firebaseService = mock(FirebaseService.class);
 		NhostStorageService storageService = mock(NhostStorageService.class);
-		GeminiService geminiService = mock(GeminiService.class);
+		TranscriptionOrchestrator transcriptionOrchestrator = mock(TranscriptionOrchestrator.class);
 		RecordingService recordingService = mock(RecordingService.class);
 		QualityReportService qualityReportService = mock(QualityReportService.class);
-		RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
+		ConfirmedRabbitPublisher publisher = mock(ConfirmedRabbitPublisher.class);
 		AudioMetadata active = activeMetadata("metadata-1", "user-1");
 		AudioMetadata complete = completeMetadata("metadata-1", "user-1");
 		when(firebaseService.getAudioMetadataCollectionName()).thenReturn("audioMetadata");
@@ -189,10 +185,10 @@ class AudioTranscriptionListenerServiceTest {
 		}).when(storageService).downloadFileToPath(any(), any());
 		when(qualityReportService.analyzeAndSave(eq("metadata-1"), any()))
 				.thenReturn(QualityReport.allClear("metadata-1"));
-		when(geminiService.callGeminiTranscriptionAPIWithFallback(any(), any())).thenReturn("lecture transcript");
+		when(transcriptionOrchestrator.transcribe(eq("metadata-1"), any(), any())).thenReturn("lecture transcript");
 
-		AudioTranscriptionListenerService service = service(firebaseService, storageService, geminiService,
-				recordingService, qualityReportService, rabbitTemplate, 1);
+		AudioTranscriptionListenerService service = service(firebaseService, storageService, transcriptionOrchestrator,
+				recordingService, qualityReportService, publisher, 1);
 
 		assertDoesNotThrow(() -> service.handleAudioTranscriptionRequest(message("metadata-1", "user-1")));
 
@@ -204,16 +200,20 @@ class AudioTranscriptionListenerServiceTest {
 				.findFirst().orElseThrow();
 		org.junit.jupiter.api.Assertions.assertEquals("lecture transcript", successUpdate.get("transcriptText"));
 		org.junit.jupiter.api.Assertions.assertEquals(true, successUpdate.get("transcriptionComplete"));
-		verify(rabbitTemplate).convertAndSend(eq(RabbitMQConfig.PROCESSING_EXCHANGE_NAME),
-				eq(RabbitMQConfig.SUMMARIZATION_ROUTING_KEY), any(Map.class));
+		verify(publisher).publishToProcessingExchange(eq(RabbitMQConfig.SUMMARIZATION_ROUTING_KEY), any(Map.class));
 	}
 
 	private AudioTranscriptionListenerService service(FirebaseService firebaseService,
-			NhostStorageService storageService, GeminiService geminiService, RecordingService recordingService,
-			QualityReportService qualityReportService, RabbitTemplate rabbitTemplate, int robustAttempts) {
-		return new AudioTranscriptionListenerService(firebaseService, storageService, geminiService, recordingService,
-				qualityReportService, mock(AudioProcessingGuardrailService.class), mock(CacheManager.class),
-				tempDir.toString(), rabbitTemplate, new RobustTaskExecutor(robustAttempts, 0, 0), 1, 0);
+			NhostStorageService storageService, TranscriptionOrchestrator transcriptionOrchestrator,
+			RecordingService recordingService, QualityReportService qualityReportService,
+			ConfirmedRabbitPublisher publisher, int robustAttempts) {
+		ProcessingStageClaimService stageClaimService = mock(ProcessingStageClaimService.class);
+		when(stageClaimService.claim(any(), any(), any(), any(), any()))
+				.thenReturn(ProcessingStageClaimService.ClaimResult.acquired(activeMetadata("metadata-1", "user-1")));
+		return new AudioTranscriptionListenerService(firebaseService, storageService, transcriptionOrchestrator,
+				recordingService, qualityReportService, mock(AudioProcessingGuardrailService.class),
+				mock(CacheManager.class), tempDir.toString(), publisher, new RobustTaskExecutor(robustAttempts, 0, 0),
+				stageClaimService, 1, 0);
 	}
 
 	private AudioProcessingMessage message(String metadataId, String userId) {

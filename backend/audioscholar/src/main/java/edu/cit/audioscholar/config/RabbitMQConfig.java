@@ -3,6 +3,7 @@ package edu.cit.audioscholar.config;
 import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.core.TopicExchange;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
@@ -32,12 +33,16 @@ public class RabbitMQConfig {
 
 	public static final String TRANSCRIPTION_QUEUE_NAME = "audio.transcription.queue";
 	public static final String TRANSCRIPTION_ROUTING_KEY = "audio.transcription.key";
+	public static final String TRANSCRIPTION_RETRY_QUEUE_NAME = "audio.transcription.retry.queue";
+	public static final String TRANSCRIPTION_RETRY_ROUTING_KEY = "audio.transcription.retry.key";
 
 	public static final String PPTX_CONVERSION_QUEUE_NAME = "pptx.conversion.queue";
 	public static final String PPTX_CONVERSION_ROUTING_KEY = "pptx.conversion.key";
 
 	public static final String SUMMARIZATION_QUEUE_NAME = "summarization.queue";
 	public static final String SUMMARIZATION_ROUTING_KEY = "summarization.process.key";
+	public static final String SUMMARIZATION_RETRY_QUEUE_NAME = "summarization.retry.queue";
+	public static final String SUMMARIZATION_RETRY_ROUTING_KEY = "summarization.retry.key";
 
 	public static final String RECOMMENDATIONS_QUEUE_NAME = "recommendations.queue";
 	public static final String RECOMMENDATIONS_ROUTING_KEY = "recommendations.process.key";
@@ -47,6 +52,36 @@ public class RabbitMQConfig {
 
 	@Value("${spring.rabbitmq.listener.simple.max-concurrency:1}")
 	private int maxConcurrency;
+
+	@Value("${audio.upload.worker-concurrency:${spring.rabbitmq.listener.simple.concurrency:1}}")
+	private int uploadConcurrency;
+
+	@Value("${audio.upload.worker-max-concurrency:${spring.rabbitmq.listener.simple.max-concurrency:1}}")
+	private int uploadMaxConcurrency;
+
+	@Value("${audio.pptx.worker-concurrency:${spring.rabbitmq.listener.simple.concurrency:1}}")
+	private int pptxConcurrency;
+
+	@Value("${audio.pptx.worker-max-concurrency:${spring.rabbitmq.listener.simple.max-concurrency:1}}")
+	private int pptxMaxConcurrency;
+
+	@Value("${audio.transcription.worker-concurrency:1}")
+	private int transcriptionConcurrency;
+
+	@Value("${audio.transcription.worker-max-concurrency:1}")
+	private int transcriptionMaxConcurrency;
+
+	@Value("${audio.summarization.worker-concurrency:${spring.rabbitmq.listener.simple.concurrency:1}}")
+	private int summarizationConcurrency;
+
+	@Value("${audio.summarization.worker-max-concurrency:${spring.rabbitmq.listener.simple.max-concurrency:1}}")
+	private int summarizationMaxConcurrency;
+
+	@Value("${audio.recommendation.worker-concurrency:${spring.rabbitmq.listener.simple.concurrency:1}}")
+	private int recommendationConcurrency;
+
+	@Value("${audio.recommendation.worker-max-concurrency:${spring.rabbitmq.listener.simple.max-concurrency:1}}")
+	private int recommendationMaxConcurrency;
 
 	@Bean
 	TopicExchange exchange() {
@@ -73,6 +108,12 @@ public class RabbitMQConfig {
 		return new Queue(TRANSCRIPTION_QUEUE_NAME, true);
 	}
 
+	@Bean("transcriptionRetryQueue")
+	Queue transcriptionRetryQueue() {
+		return QueueBuilder.durable(TRANSCRIPTION_RETRY_QUEUE_NAME).deadLetterExchange(PROCESSING_EXCHANGE_NAME)
+				.deadLetterRoutingKey(TRANSCRIPTION_ROUTING_KEY).build();
+	}
+
 	@Bean("pptxConversionQueue")
 	Queue pptxConversionQueue() {
 		return new Queue(PPTX_CONVERSION_QUEUE_NAME, true);
@@ -81,6 +122,12 @@ public class RabbitMQConfig {
 	@Bean("summarizationQueue")
 	Queue summarizationQueue() {
 		return new Queue(SUMMARIZATION_QUEUE_NAME, true);
+	}
+
+	@Bean("summarizationRetryQueue")
+	Queue summarizationRetryQueue() {
+		return QueueBuilder.durable(SUMMARIZATION_RETRY_QUEUE_NAME).deadLetterExchange(PROCESSING_EXCHANGE_NAME)
+				.deadLetterRoutingKey(SUMMARIZATION_ROUTING_KEY).build();
 	}
 
 	@Bean("recommendationsQueue")
@@ -109,6 +156,11 @@ public class RabbitMQConfig {
 	}
 
 	@Bean
+	Binding transcriptionRetryBinding(@Qualifier("transcriptionRetryQueue") Queue queue, TopicExchange exchange) {
+		return BindingBuilder.bind(queue).to(exchange).with(TRANSCRIPTION_RETRY_ROUTING_KEY);
+	}
+
+	@Bean
 	Binding pptxConversionBinding(@Qualifier("pptxConversionQueue") Queue queue, TopicExchange exchange) {
 		return BindingBuilder.bind(queue).to(exchange).with(PPTX_CONVERSION_ROUTING_KEY);
 	}
@@ -116,6 +168,11 @@ public class RabbitMQConfig {
 	@Bean
 	Binding summarizationBinding(@Qualifier("summarizationQueue") Queue queue, TopicExchange exchange) {
 		return BindingBuilder.bind(queue).to(exchange).with(SUMMARIZATION_ROUTING_KEY);
+	}
+
+	@Bean
+	Binding summarizationRetryBinding(@Qualifier("summarizationRetryQueue") Queue queue, TopicExchange exchange) {
+		return BindingBuilder.bind(queue).to(exchange).with(SUMMARIZATION_RETRY_ROUTING_KEY);
 	}
 
 	@Bean
@@ -147,25 +204,49 @@ public class RabbitMQConfig {
 	@Bean("summarizationContainerFactory")
 	public SimpleRabbitListenerContainerFactory summarizationContainerFactory(ConnectionFactory connectionFactory,
 			MessageConverter messageConverter) {
-		SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
-		factory.setConnectionFactory(connectionFactory);
-		factory.setMessageConverter(messageConverter);
-
-		factory.setConcurrentConsumers(concurrency);
-		factory.setMaxConcurrentConsumers(maxConcurrency);
-
-		factory.setPrefetchCount(1);
-		return factory;
+		return listenerFactory(connectionFactory, messageConverter, summarizationConcurrency,
+				summarizationMaxConcurrency);
 	}
 
 	@Bean("transcriptionContainerFactory")
 	public SimpleRabbitListenerContainerFactory transcriptionContainerFactory(ConnectionFactory connectionFactory,
 			MessageConverter messageConverter) {
+		return listenerFactory(connectionFactory, messageConverter, transcriptionConcurrency,
+				transcriptionMaxConcurrency);
+	}
+
+	@Bean("uploadContainerFactory")
+	public SimpleRabbitListenerContainerFactory uploadContainerFactory(ConnectionFactory connectionFactory,
+			MessageConverter messageConverter) {
+		return listenerFactory(connectionFactory, messageConverter, uploadConcurrency, uploadMaxConcurrency);
+	}
+
+	@Bean("pptxContainerFactory")
+	public SimpleRabbitListenerContainerFactory pptxContainerFactory(ConnectionFactory connectionFactory,
+			MessageConverter messageConverter) {
+		return listenerFactory(connectionFactory, messageConverter, pptxConcurrency, pptxMaxConcurrency);
+	}
+
+	@Bean("recommendationContainerFactory")
+	public SimpleRabbitListenerContainerFactory recommendationContainerFactory(ConnectionFactory connectionFactory,
+			MessageConverter messageConverter) {
+		return listenerFactory(connectionFactory, messageConverter, recommendationConcurrency,
+				recommendationMaxConcurrency);
+	}
+
+	@Bean("defaultContainerFactory")
+	public SimpleRabbitListenerContainerFactory defaultContainerFactory(ConnectionFactory connectionFactory,
+			MessageConverter messageConverter) {
+		return listenerFactory(connectionFactory, messageConverter, concurrency, maxConcurrency);
+	}
+
+	private SimpleRabbitListenerContainerFactory listenerFactory(ConnectionFactory connectionFactory,
+			MessageConverter messageConverter, int concurrentConsumers, int maxConcurrentConsumers) {
 		SimpleRabbitListenerContainerFactory factory = new SimpleRabbitListenerContainerFactory();
 		factory.setConnectionFactory(connectionFactory);
 		factory.setMessageConverter(messageConverter);
-		factory.setConcurrentConsumers(1);
-		factory.setMaxConcurrentConsumers(1);
+		factory.setConcurrentConsumers(Math.max(1, concurrentConsumers));
+		factory.setMaxConcurrentConsumers(Math.max(1, maxConcurrentConsumers));
 		factory.setPrefetchCount(1);
 		return factory;
 	}

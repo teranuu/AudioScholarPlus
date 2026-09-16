@@ -306,6 +306,7 @@ public class FirebaseService {
 			String updateTime = future.get().getUpdateTime().toString();
 			log.info("Data of type {} saved to {}/{} at {}", dataPojo.getClass().getSimpleName(), collection, document,
 					updateTime);
+			invalidateAudioMetadataCaches(collection, document);
 			return updateTime;
 		} catch (ExecutionException | InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -352,6 +353,7 @@ public class FirebaseService {
 			String updateTime = future.get().getUpdateTime().toString();
 			log.info("Data of type {} updated (merged) for {}/{} at {}", dataPojo.getClass().getSimpleName(),
 					collection, document, updateTime);
+			invalidateAudioMetadataCaches(collection, document);
 			return updateTime;
 		} catch (ExecutionException | InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -376,6 +378,7 @@ public class FirebaseService {
 			ApiFuture<WriteResult> future = firestore.collection(collection).document(document).update(data);
 			String updateTime = future.get().getUpdateTime().toString();
 			log.info("Data updated via Map for {}/{} at {}", collection, document, updateTime);
+			invalidateAudioMetadataCaches(collection, document);
 			return updateTime;
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -399,6 +402,7 @@ public class FirebaseService {
 			ApiFuture<WriteResult> future = firestore.collection(collection).document(document).delete();
 			String updateTime = future.get().getUpdateTime().toString();
 			log.info("Data deleted from {}/{} at {}", collection, document, updateTime);
+			invalidateAudioMetadataCaches(collection, document);
 			return updateTime;
 		} catch (ExecutionException | InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -1201,6 +1205,24 @@ public class FirebaseService {
 			if (e instanceof InterruptedException)
 				Thread.currentThread().interrupt();
 			throw e;
+		}
+	}
+
+	private void invalidateAudioMetadataCaches(String collection, String metadataId) {
+		if (!Objects.equals(audioMetadataCollectionName, collection)) {
+			return;
+		}
+		try {
+			Cache byIdCache = cacheManager.getCache(CACHE_METADATA_BY_ID);
+			if (byIdCache != null && metadataId != null) {
+				byIdCache.evict(metadataId);
+			}
+			Cache byUserCache = cacheManager.getCache(CACHE_METADATA_BY_USER);
+			if (byUserCache != null) {
+				byUserCache.clear();
+			}
+		} catch (RuntimeException e) {
+			log.warn("Failed to invalidate audio metadata caches for {}: {}", metadataId, e.getMessage());
 		}
 	}
 }

@@ -33,7 +33,20 @@ public class ConfirmedRabbitPublisher {
 	public void publishToProcessingExchange(String routingKey, Object message) {
 		CorrelationData correlation = new CorrelationData(UUID.randomUUID().toString());
 		rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME, routingKey, message, correlation);
+		awaitConfirm(routingKey, correlation);
+	}
 
+	public void publishToProcessingExchange(String routingKey, Object message, Duration delay) {
+		CorrelationData correlation = new CorrelationData(UUID.randomUUID().toString());
+		long delayMillis = Math.max(1L, delay.toMillis());
+		rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME, routingKey, message, rabbitMessage -> {
+			rabbitMessage.getMessageProperties().setExpiration(Long.toString(delayMillis));
+			return rabbitMessage;
+		}, correlation);
+		awaitConfirm(routingKey, correlation);
+	}
+
+	private void awaitConfirm(String routingKey, CorrelationData correlation) {
 		CorrelationData.Confirm confirm;
 		try {
 			confirm = correlation.getFuture().get(confirmTimeout.toMillis(), TimeUnit.MILLISECONDS);

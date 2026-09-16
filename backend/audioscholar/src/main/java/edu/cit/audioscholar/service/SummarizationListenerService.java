@@ -4,8 +4,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,7 +23,6 @@ import java.util.regex.Pattern;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
@@ -35,7 +37,9 @@ import com.google.cloud.Timestamp;
 import com.google.cloud.firestore.FieldValue;
 
 import edu.cit.audioscholar.config.RabbitMQConfig;
+import edu.cit.audioscholar.exception.DeferredProcessingException;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
+import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.ProcessingStatus;
@@ -56,11 +60,11 @@ public class SummarizationListenerService {
 	private final CacheManager cacheManager;
 	private final ObjectMapper objectMapper;
 	private final Path tempDir;
-	private final LearningMaterialRecommenderService recommenderService;
 	private final RecordingService recordingService;
-	private final RabbitTemplate rabbitTemplate;
+	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	private final RobustTaskExecutor robustTaskExecutor;
 	private final TranscriptClarityService transcriptClarityService;
+	private final ProcessingStageClaimService stageClaimService;
 	private final Map<String, Long> processedMessageIds = new ConcurrentHashMap<>();
 	private final Map<String, Lock> metadataLocks = new ConcurrentHashMap<>();
 	private static final long MESSAGE_ID_EXPIRATION_TIME = 10 * 60 * 1000;
@@ -74,9 +78,9 @@ public class SummarizationListenerService {
 	public SummarizationListenerService(FirebaseService firebaseService, GeminiService geminiService,
 			NhostStorageService nhostStorageService, @Lazy SummaryService summaryService, CacheManager cacheManager,
 			ObjectMapper objectMapper, @Value("${app.temp-file-dir:./temp_files}") String tempDirStr,
-			@Lazy LearningMaterialRecommenderService recommenderService, @Lazy RecordingService recordingService,
-			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor,
-			TranscriptClarityService transcriptClarityService) {
+			@Lazy RecordingService recordingService, ConfirmedRabbitPublisher confirmedRabbitPublisher,
+			RobustTaskExecutor robustTaskExecutor, TranscriptClarityService transcriptClarityService,
+			ProcessingStageClaimService stageClaimService) {
 		this.firebaseService = firebaseService;
 		this.geminiService = geminiService;
 		this.nhostStorageService = nhostStorageService;
@@ -84,11 +88,11 @@ public class SummarizationListenerService {
 		this.cacheManager = cacheManager;
 		this.objectMapper = objectMapper;
 		this.tempDir = Paths.get(tempDirStr);
-		this.recommenderService = recommenderService;
 		this.recordingService = recordingService;
-		this.rabbitTemplate = rabbitTemplate;
+		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.robustTaskExecutor = robustTaskExecutor;
 		this.transcriptClarityService = transcriptClarityService;
+		this.stageClaimService = stageClaimService;
 		try {
 			Files.createDirectories(this.tempDir);
 		} catch (IOException e) {
@@ -149,6 +153,16 @@ public class SummarizationListenerService {
 			lock = metadataLocks.computeIfAbsent(metadataId, k -> new ReentrantLock());
 			lock.lock();
 			log.debug("[{}] Acquired lock for summarization processing", metadataId);
+			ProcessingStageClaimService.ClaimResult claim = stageClaimService.claim(metadataId,
+					ProcessingStatus.SUMMARIZING, "SUMMARIZING", EnumSet.of(ProcessingStatus.SUMMARIZATION_QUEUED),
+					EnumSet.of(ProcessingStatus.SUMMARY_COMPLETE, ProcessingStatus.RECOMMENDATIONS_QUEUED,
+							ProcessingStatus.GENERATING_RECOMMENDATIONS, ProcessingStatus.COMPLETE,
+							ProcessingStatus.COMPLETED_WITH_WARNINGS, ProcessingStatus.FAILED));
+			if (!claim.claimed()) {
+				log.info("[{}] Skipping summarization because claim was not acquired: {}", metadataId, claim.reason());
+				return;
+			}
+			claimedByThisHandler[0] = true;
 
 			robustTaskExecutor.executeWithRetry(metadataId, "summarization", summarizationMaxAttempts,
 					summarizationRetryDelayMs, () -> {
@@ -416,7 +430,27 @@ public class SummarizationListenerService {
 						}
 					});
 
+		} catch (DeferredProcessingException e) {
+			log.info("[{}] Deferring summarization retry until {} because {}", metadataId, e.getRetryAt(),
+					e.getMessage());
+			deferSummarization(metadataId, e);
 		} catch (RuntimeException e) {
+			DeferredProcessingException deferred = findCause(e, DeferredProcessingException.class);
+			if (deferred != null) {
+				log.info("[{}] Deferring summarization retry until {} because {}", metadataId, deferred.getRetryAt(),
+						deferred.getMessage());
+				deferSummarization(metadataId, deferred);
+				return;
+			}
+			GeminiBudgetExceededException budget = findCause(e, GeminiBudgetExceededException.class);
+			if (budget != null) {
+				DeferredProcessingException quotaDeferral = new DeferredProcessingException("WAITING_FOR_GEMINI_QUOTA",
+						budget.getRetryAt(), budget.getMessage());
+				log.info("[{}] Deferring summarization retry until {} because {}", metadataId,
+						quotaDeferral.getRetryAt(), quotaDeferral.getMessage());
+				deferSummarization(metadataId, quotaDeferral);
+				return;
+			}
 			log.error("[{}] Summarization failed after bounded retry handling: {}", metadataId, e.getMessage(), e);
 			updateMetadataStatus(metadataId, null, ProcessingStatus.SUMMARY_FAILED, e.getMessage());
 		} finally {
@@ -441,8 +475,12 @@ public class SummarizationListenerService {
 
 			// Check for error response from GeminiService
 			if (rootNode.has("error")) {
-				// Throw exception to trigger retry
-				throw new RuntimeException("Received error in summarization result: " + rootNode.toString());
+				String errorText = rootNode.toString();
+				if (isQuotaLikeError(errorText)) {
+					throw new DeferredProcessingException("WAITING_FOR_GEMINI_QUOTA", Instant.now().plusSeconds(60),
+							"Received retryable Gemini summarization error: " + errorText);
+				}
+				throw new RuntimeException("Received error in summarization result: " + errorText);
 			}
 
 			Map<String, Object> latestMetadataMap = firebaseService
@@ -629,6 +667,7 @@ public class SummarizationListenerService {
 			if (e instanceof InterruptedException) {
 				Thread.currentThread().interrupt();
 			}
+			throw new RuntimeException("Could not save summary to Firestore", e);
 		}
 
 		return summary;
@@ -703,57 +742,51 @@ public class SummarizationListenerService {
 		updateMetadataStatus(metadataId, userId, ProcessingStatus.RECOMMENDATIONS_QUEUED, null);
 
 		try {
-			log.info("[{}] Attempting direct call to recommender service with recordingId {} and summaryId {}",
-					metadataId, recordingId, summaryId);
-			recommenderService.generateAndSaveRecommendations(userId, recordingId, summaryId);
-			log.info("[{}] Successfully generated recommendations via direct call.", metadataId);
-
-			// Check current status. If recommender service set it to
-			// COMPLETED_WITH_WARNINGS, don't overwrite with COMPLETE
-			// However, since we don't fetch metadata again here, we can fetch or trust the
-			// service.
-			// But we are in the service layer.
-			// Recommender service now handles status updates for warnings.
-			// But if it returns success (empty list or list), we might be overwriting
-			// "COMPLETED_WITH_WARNINGS" with "COMPLETE" here.
-
-			// Let's check the status in Firestore before setting to COMPLETE
-			try {
-				Map<String, Object> currentMetadata = firebaseService
-						.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
-				if (currentMetadata != null) {
-					String currentStatusStr = (String) currentMetadata.get("status");
-					if (ProcessingStatus.COMPLETED_WITH_WARNINGS.name().equals(currentStatusStr)) {
-						log.info(
-								"[{}] Status was set to COMPLETED_WITH_WARNINGS by recommender. Not overwriting with COMPLETE.",
-								metadataId);
-					} else {
-						updateMetadataStatus(metadataId, userId, ProcessingStatus.COMPLETE, null);
-					}
-				} else {
-					updateMetadataStatus(metadataId, userId, ProcessingStatus.COMPLETE, null);
-				}
-			} catch (Exception fetchEx) {
-				log.warn("[{}] Could not fetch metadata to check status. Defaulting to COMPLETE.", metadataId);
-				updateMetadataStatus(metadataId, userId, ProcessingStatus.COMPLETE, null);
-			}
-
+			confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.RECOMMENDATIONS_ROUTING_KEY,
+					recommendationMessage);
+			log.info("[{}] Sent message to recommendations queue. Message details: {}", metadataId,
+					recommendationMessage);
 		} catch (Exception e) {
-			log.error("[{}] Direct call to recommender failed: {}. Falling back to message queue.", metadataId,
-					e.getMessage());
-			try {
-				String messageJson = objectMapper.writeValueAsString(recommendationMessage);
-				rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME,
-						RabbitMQConfig.RECOMMENDATIONS_ROUTING_KEY, messageJson);
-				log.info("[{}] Sent message to recommendations queue. Message details: {}", metadataId,
-						recommendationMessage);
-			} catch (Exception mqEx) {
-				log.error("[{}] CRITICAL: Failed to send message to recommendations queue after direct call failed: {}",
-						metadataId, mqEx.getMessage(), mqEx);
-				updateMetadataStatus(metadataId, userId, ProcessingStatus.FAILED, "Failed to queue recommendations");
-			}
+			log.error("[{}] CRITICAL: Failed to send message to recommendations queue: {}", metadataId, e.getMessage(),
+					e);
+			updateMetadataStatus(metadataId, userId, ProcessingStatus.FAILED, "Failed to queue recommendations");
 		}
 		invalidateCache(userId);
+	}
+
+	private void deferSummarization(String metadataId, DeferredProcessingException e) {
+		Map<String, Object> updates = new HashMap<>();
+		updates.put("status", ProcessingStatus.SUMMARIZATION_QUEUED.name());
+		updates.put("processingStage", e.getProcessingStage());
+		updates.put("failureReason", null);
+		updates.put("lastUpdated", Timestamp.now());
+		updates.put("quotaRetryAt",
+				Timestamp.ofTimeSecondsAndNanos(e.getRetryAt().getEpochSecond(), e.getRetryAt().getNano()));
+		firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+
+		Map<String, String> retryMessage = new HashMap<>();
+		retryMessage.put("metadataId", metadataId);
+		retryMessage.put("messageId", UUID.randomUUID().toString());
+		Duration delay = Duration.between(Instant.now(), e.getRetryAt());
+		confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.SUMMARIZATION_RETRY_ROUTING_KEY,
+				retryMessage, delay);
+	}
+
+	private boolean isQuotaLikeError(String errorText) {
+		String normalized = errorText == null ? "" : errorText.toLowerCase(java.util.Locale.ROOT);
+		return normalized.contains("quota") || normalized.contains("rate") || normalized.contains("429")
+				|| normalized.contains("temporarily unavailable") || normalized.contains("too many requests");
+	}
+
+	private <T extends Throwable> T findCause(Throwable failure, Class<T> type) {
+		Throwable current = failure;
+		while (current != null) {
+			if (type.isInstance(current)) {
+				return type.cast(current);
+			}
+			current = current.getCause();
+		}
+		return null;
 	}
 
 	private String extractNhostIdFromUrl(String url) {

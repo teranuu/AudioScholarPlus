@@ -57,8 +57,7 @@ class LocalPptxConversionProviderTest {
 		assertEquals("local-poi-pdfbox", result.providerName());
 
 		ArgumentCaptor<File> uploadedFile = ArgumentCaptor.forClass(File.class);
-		verify(nhostStorageService).uploadFile(uploadedFile.capture(), eq("lecture-slides.pdf"),
-				eq("application/pdf"));
+		verify(nhostStorageService).uploadFile(uploadedFile.capture(), eq("lecture-slides.pdf"), eq("application/pdf"));
 		assertTrue(uploadedFile.getValue().getName().endsWith(".pdf"));
 	}
 }

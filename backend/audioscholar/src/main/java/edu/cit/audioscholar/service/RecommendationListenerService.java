@@ -28,7 +28,7 @@ public class RecommendationListenerService {
 		this.objectMapper = objectMapper;
 	}
 
-	@RabbitListener(queues = RabbitMQConfig.RECOMMENDATIONS_QUEUE_NAME)
+	@RabbitListener(queues = RabbitMQConfig.RECOMMENDATIONS_QUEUE_NAME, containerFactory = "recommendationContainerFactory")
 	public void handleRecommendationRequest(Object payload) {
 		Map<String, Object> message = normalizePayload(payload);
 		String metadataId = stringValue(message.get("metadataId"));

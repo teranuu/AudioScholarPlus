@@ -1,5 +1,6 @@
 package edu.cit.audioscholar.service;
 
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -30,6 +31,9 @@ public class RecommendationService {
 	@Autowired
 	private ObjectMapper objectMapper;
 
+	@Autowired
+	private ProcessingStageClaimService stageClaimService;
+
 	public String recommendAndSave(String metadataId, String userId) {
 		log.info("[{}] Starting learning materials recommendation for user {}...", metadataId, userId);
 		try {
@@ -40,12 +44,26 @@ public class RecommendationService {
 				return errorResponseToString("Metadata Not Found", errorMsg);
 			}
 
-			if (metadata.getStatus() != ProcessingStatus.SUMMARY_COMPLETE) {
+			if (metadata.getStatus() != ProcessingStatus.SUMMARY_COMPLETE
+					&& metadata.getStatus() != ProcessingStatus.RECOMMENDATIONS_QUEUED
+					&& metadata.getStatus() != ProcessingStatus.GENERATING_RECOMMENDATIONS) {
 				String errorMsg = "Cannot generate recommendations because recording status is " + metadata.getStatus()
-						+ ", not SUMMARY_COMPLETE";
+						+ ", not ready for recommendations";
 				log.error("[{}] {}", metadataId, errorMsg);
 				return errorResponseToString("Invalid Status", errorMsg);
 			}
+
+			ProcessingStageClaimService.ClaimResult claim = stageClaimService.claim(metadataId,
+					ProcessingStatus.GENERATING_RECOMMENDATIONS, "GENERATING_RECOMMENDATIONS",
+					EnumSet.of(ProcessingStatus.SUMMARY_COMPLETE, ProcessingStatus.RECOMMENDATIONS_QUEUED),
+					EnumSet.of(ProcessingStatus.COMPLETE, ProcessingStatus.COMPLETED_WITH_WARNINGS,
+							ProcessingStatus.FAILED));
+			if (!claim.claimed()) {
+				log.info("[{}] Skipping recommendations because claim was not acquired: {}", metadataId,
+						claim.reason());
+				return successResponseToString(0, "Recommendations already handled or not claimable");
+			}
+			metadata = claim.metadata();
 
 			String recordingId = metadata.getRecordingId();
 			if (recordingId == null || recordingId.isBlank()) {
@@ -103,24 +121,23 @@ public class RecommendationService {
 				log.info("[{}] Audio-only recording detected, skipping PDF text retrieval", metadataId);
 			}
 
-			metadata.setStatus(ProcessingStatus.GENERATING_RECOMMENDATIONS);
-			Map<String, Object> updates = new HashMap<>();
-			updates.put("status", ProcessingStatus.GENERATING_RECOMMENDATIONS.name());
-			updates.put("lastUpdated", Timestamp.now());
-			firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
-			log.info("[{}] Updated metadata status to GENERATING_RECOMMENDATIONS", metadataId);
-
 			List<LearningRecommendation> savedRecommendations = learningMaterialRecommenderService
 					.generateAndSaveRecommendations(userId, recordingId, metadata.getSummaryId());
 
 			int savedCount = savedRecommendations != null ? savedRecommendations.size() : 0;
 			log.info("[{}] Saved {} recommendations to database", metadataId, savedCount);
 
-			Map<String, Object> completeUpdates = new HashMap<>();
-			completeUpdates.put("status", ProcessingStatus.COMPLETE.name());
-			completeUpdates.put("lastUpdated", Timestamp.now());
-			firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId, completeUpdates);
-			log.info("[{}] Updated metadata status to COMPLETE and set lastUpdated timestamp", metadataId);
+			AudioMetadata latest = firebaseService.getAudioMetadataById(metadataId);
+			if (latest != null && latest.getStatus() == ProcessingStatus.COMPLETED_WITH_WARNINGS) {
+				log.info("[{}] Preserving COMPLETED_WITH_WARNINGS status after recommendation generation", metadataId);
+			} else {
+				Map<String, Object> completeUpdates = new HashMap<>();
+				completeUpdates.put("status", ProcessingStatus.COMPLETE.name());
+				completeUpdates.put("lastUpdated", Timestamp.now());
+				firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId,
+						completeUpdates);
+				log.info("[{}] Updated metadata status to COMPLETE and set lastUpdated timestamp", metadataId);
+			}
 
 			Map<String, Object> response = new HashMap<>();
 			response.put("status", "success");
@@ -202,6 +219,18 @@ public class RecommendationService {
 		} catch (JsonProcessingException e) {
 			log.error("Error creating error response JSON: {}", e.getMessage(), e);
 			return "{\"status\":\"error\",\"message\":\"" + errorMessage + "\"}";
+		}
+	}
+
+	private String successResponseToString(int count, String message) {
+		try {
+			Map<String, Object> response = new HashMap<>();
+			response.put("status", "success");
+			response.put("count", count);
+			response.put("message", message);
+			return objectMapper.writeValueAsString(response);
+		} catch (JsonProcessingException e) {
+			return "{\"status\":\"success\",\"count\":" + count + "}";
 		}
 	}
 }

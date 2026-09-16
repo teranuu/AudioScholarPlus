@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import edu.cit.audioscholar.exception.DeferredProcessingException;
 import edu.cit.audioscholar.exception.NonRetryableTaskException;
 
 @Component
@@ -113,6 +114,9 @@ public class RobustTaskExecutor {
 		Throwable current = failure;
 		while (current != null) {
 			if (current instanceof NonRetryableTaskException) {
+				return true;
+			}
+			if (current instanceof DeferredProcessingException) {
 				return true;
 			}
 			current = current.getCause();

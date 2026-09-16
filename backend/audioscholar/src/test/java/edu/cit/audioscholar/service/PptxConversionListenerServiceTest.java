@@ -3,7 +3,6 @@ package edu.cit.audioscholar.service;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -13,7 +12,6 @@ import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -28,9 +26,10 @@ class PptxConversionListenerServiceTest {
 		FirebaseService firebaseService = org.mockito.Mockito.mock(FirebaseService.class);
 		NhostStorageService nhostStorageService = org.mockito.Mockito.mock(NhostStorageService.class);
 		PptxConversionProvider conversionProvider = org.mockito.Mockito.mock(PptxConversionProvider.class);
-		RabbitTemplate rabbitTemplate = org.mockito.Mockito.mock(RabbitTemplate.class);
+		ConfirmedRabbitPublisher confirmedRabbitPublisher = org.mockito.Mockito.mock(ConfirmedRabbitPublisher.class);
+		ProcessingStageClaimService stageClaimService = org.mockito.Mockito.mock(ProcessingStageClaimService.class);
 		PptxConversionListenerService service = new PptxConversionListenerService(firebaseService, nhostStorageService,
-				conversionProvider, rabbitTemplate, new ObjectMapper());
+				conversionProvider, confirmedRabbitPublisher, new ObjectMapper(), stageClaimService);
 
 		AudioMetadata metadata = new AudioMetadata();
 		metadata.setId("metadata-1");
@@ -52,10 +51,11 @@ class PptxConversionListenerServiceTest {
 		when(firebaseService.getAudioMetadataCollectionName()).thenReturn("audioMetadata");
 		when(firebaseService.getData("audioMetadata", "metadata-1")).thenReturn(metadata.toMap())
 				.thenReturn(metadata.toMap()).thenReturn(convertedMetadata.toMap());
+		when(stageClaimService.claim(any(), any(), any(), any(), any()))
+				.thenReturn(ProcessingStageClaimService.ClaimResult.acquired(metadata));
 		when(nhostStorageService.getPublicUrl("pptx-file-id")).thenReturn("https://storage.test/v1/files/pptx-file-id");
-		when(conversionProvider.convert(any(AudioMetadata.class)))
-				.thenReturn(new PptxConversionResult("pdf-file-id", "https://storage.test/v1/files/pdf-file-id",
-						"local-poi-pdfbox"));
+		when(conversionProvider.convert(any(AudioMetadata.class))).thenReturn(new PptxConversionResult("pdf-file-id",
+				"https://storage.test/v1/files/pdf-file-id", "local-poi-pdfbox"));
 
 		AudioProcessingMessage message = new AudioProcessingMessage();
 		message.setMetadataId("metadata-1");
@@ -73,7 +73,6 @@ class PptxConversionListenerServiceTest {
 						&& "https://storage.test/v1/files/pdf-file-id".equals(updates.get("generatedPdfUrl"))
 						&& Boolean.TRUE.equals(updates.get("pdfConversionComplete"))));
 		assertFalse(updatesCaptor.getAllValues().stream().anyMatch(updates -> updates.containsKey("convertApiPdfUrl")));
-		verify(rabbitTemplate, never()).convertAndSend(eq("audio.exchange"), eq("summarization.process.key"),
-				anyMap());
+		verify(confirmedRabbitPublisher, never()).publishToProcessingExchange(eq("summarization.process.key"), any());
 	}
 }

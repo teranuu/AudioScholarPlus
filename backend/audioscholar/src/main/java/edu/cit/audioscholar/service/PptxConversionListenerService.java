@@ -1,5 +1,6 @@
 package edu.cit.audioscholar.service;
 
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -10,7 +11,6 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -29,21 +29,24 @@ public class PptxConversionListenerService {
 	private final FirebaseService firebaseService;
 	private final NhostStorageService nhostStorageService;
 	private final PptxConversionProvider pptxConversionProvider;
-	private final RabbitTemplate rabbitTemplate;
+	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
+	private final ProcessingStageClaimService stageClaimService;
 	@SuppressWarnings("unused")
 	private final ObjectMapper objectMapper;
 	private final Map<String, Lock> metadataLocks = new ConcurrentHashMap<>();
 
 	public PptxConversionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
-			PptxConversionProvider pptxConversionProvider, RabbitTemplate rabbitTemplate, ObjectMapper objectMapper) {
+			PptxConversionProvider pptxConversionProvider, ConfirmedRabbitPublisher confirmedRabbitPublisher,
+			ObjectMapper objectMapper, ProcessingStageClaimService stageClaimService) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
 		this.pptxConversionProvider = pptxConversionProvider;
-		this.rabbitTemplate = rabbitTemplate;
+		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.objectMapper = objectMapper;
+		this.stageClaimService = stageClaimService;
 	}
 
-	@RabbitListener(queues = RabbitMQConfig.PPTX_CONVERSION_QUEUE_NAME)
+	@RabbitListener(queues = RabbitMQConfig.PPTX_CONVERSION_QUEUE_NAME, containerFactory = "pptxContainerFactory")
 	public void handlePptxConversion(AudioProcessingMessage messageDto) {
 		String metadataId = messageDto.getMetadataId();
 		logger.info("Processing PPTX conversion for metadata ID: {}", metadataId);
@@ -73,7 +76,18 @@ public class PptxConversionListenerService {
 				return;
 			}
 
-			updateStatus(metadataId, ProcessingStatus.PDF_CONVERTING, null);
+			ProcessingStageClaimService.ClaimResult claim = stageClaimService.claim(metadataId,
+					ProcessingStatus.PDF_CONVERTING, "PDF_CONVERTING",
+					EnumSet.of(ProcessingStatus.UPLOAD_IN_PROGRESS, ProcessingStatus.PROCESSING_QUEUED),
+					EnumSet.of(ProcessingStatus.SUMMARIZATION_QUEUED, ProcessingStatus.SUMMARIZING,
+							ProcessingStatus.SUMMARY_COMPLETE, ProcessingStatus.RECOMMENDATIONS_QUEUED,
+							ProcessingStatus.GENERATING_RECOMMENDATIONS, ProcessingStatus.COMPLETE,
+							ProcessingStatus.COMPLETED_WITH_WARNINGS, ProcessingStatus.FAILED));
+			if (!claim.claimed()) {
+				logger.info("Skipping PPTX conversion for {} because claim was not acquired: {}", metadataId,
+						claim.reason());
+				return;
+			}
 
 			metadataMap = firebaseService.getData(firebaseService.getAudioMetadataCollectionName(), metadataId);
 			metadata = AudioMetadata.fromMap(metadataMap);
@@ -142,8 +156,7 @@ public class PptxConversionListenerService {
 				message.put("metadataId", metadataId);
 				message.put("messageId", UUID.randomUUID().toString());
 
-				rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME,
-						RabbitMQConfig.SUMMARIZATION_ROUTING_KEY, message);
+				confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.SUMMARIZATION_ROUTING_KEY, message);
 				logger.info("Sent message to summarization queue for metadata ID: {}", metadataId);
 			} else {
 				logger.info(
@@ -159,8 +172,8 @@ public class PptxConversionListenerService {
 					transcriptionMessage.setMetadataId(metadataId);
 					transcriptionMessage.setUserId(metadata.getUserId());
 
-					rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME,
-							RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY, transcriptionMessage);
+					confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.TRANSCRIPTION_ROUTING_KEY,
+							transcriptionMessage);
 					logger.info("Sent retry message to transcription queue for metadata ID: {}", metadataId);
 				}
 			}

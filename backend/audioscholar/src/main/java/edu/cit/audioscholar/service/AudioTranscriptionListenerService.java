@@ -5,7 +5,10 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.time.Instant;
+import java.util.Comparator;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
@@ -23,7 +26,6 @@ import org.jaudiotagger.tag.TagException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.cache.Cache;
@@ -37,6 +39,7 @@ import com.google.cloud.Timestamp;
 
 import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.dto.AudioProcessingMessage;
+import edu.cit.audioscholar.exception.DeferredProcessingException;
 import edu.cit.audioscholar.exception.FirestoreInteractionException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.exception.NonRetryableTaskException;
@@ -53,35 +56,38 @@ public class AudioTranscriptionListenerService {
 
 	private final FirebaseService firebaseService;
 	private final NhostStorageService nhostStorageService;
-	private final GeminiService geminiService;
+	private final TranscriptionOrchestrator transcriptionOrchestrator;
 	private final RecordingService recordingService;
 	private final QualityReportService qualityReportService;
 	private final AudioProcessingGuardrailService guardrailService;
 	private final CacheManager cacheManager;
 	private final Path tempFileDir;
-	private final RabbitTemplate rabbitTemplate;
+	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	private final RobustTaskExecutor robustTaskExecutor;
+	private final ProcessingStageClaimService stageClaimService;
 	private final int recordingLookupMaxAttempts;
 	private final long recordingLookupDelayMs;
 	private final Map<String, ReentrantLock> metadataLocks = new ConcurrentHashMap<>();
 
 	public AudioTranscriptionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
-			GeminiService geminiService, @Lazy RecordingService recordingService,
+			TranscriptionOrchestrator transcriptionOrchestrator, @Lazy RecordingService recordingService,
 			QualityReportService qualityReportService, AudioProcessingGuardrailService guardrailService,
 			CacheManager cacheManager, @Value("${app.temp-file-dir}") String tempFileDirStr,
-			RabbitTemplate rabbitTemplate, RobustTaskExecutor robustTaskExecutor,
+			ConfirmedRabbitPublisher confirmedRabbitPublisher, RobustTaskExecutor robustTaskExecutor,
+			ProcessingStageClaimService stageClaimService,
 			@Value("${app.transcription.recording-lookup.max-attempts:6}") int recordingLookupMaxAttempts,
 			@Value("${app.transcription.recording-lookup.delay-ms:2000}") long recordingLookupDelayMs) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
-		this.geminiService = geminiService;
+		this.transcriptionOrchestrator = transcriptionOrchestrator;
 		this.recordingService = recordingService;
 		this.qualityReportService = qualityReportService;
 		this.guardrailService = guardrailService;
 		this.cacheManager = cacheManager;
 		this.tempFileDir = Paths.get(tempFileDirStr);
-		this.rabbitTemplate = rabbitTemplate;
+		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.robustTaskExecutor = robustTaskExecutor;
+		this.stageClaimService = stageClaimService;
 		this.recordingLookupMaxAttempts = Math.max(1, recordingLookupMaxAttempts);
 		this.recordingLookupDelayMs = Math.max(0, recordingLookupDelayMs);
 		try {
@@ -91,7 +97,7 @@ public class AudioTranscriptionListenerService {
 		}
 	}
 
-	@RabbitListener(queues = RabbitMQConfig.TRANSCRIPTION_QUEUE_NAME)
+	@RabbitListener(queues = RabbitMQConfig.TRANSCRIPTION_QUEUE_NAME, containerFactory = "transcriptionContainerFactory")
 	public void handleAudioTranscriptionRequest(AudioProcessingMessage message) {
 		String metadataId = message.getMetadataId();
 		String userId = message.getUserId();
@@ -142,7 +148,20 @@ public class AudioTranscriptionListenerService {
 						return;
 					}
 
-					updateMetadataStatus(metadataId, effectiveUserId, ProcessingStatus.TRANSCRIBING, null);
+					ProcessingStageClaimService.ClaimResult claim = stageClaimService.claim(metadataId,
+							ProcessingStatus.TRANSCRIBING, "TRANSCRIBING",
+							EnumSet.of(ProcessingStatus.UPLOAD_IN_PROGRESS, ProcessingStatus.PROCESSING_QUEUED,
+									ProcessingStatus.PDF_CONVERTING, ProcessingStatus.PDF_CONVERTING_API,
+									ProcessingStatus.PDF_CONVERSION_COMPLETE),
+							EnumSet.of(ProcessingStatus.SUMMARIZATION_QUEUED, ProcessingStatus.SUMMARIZING,
+									ProcessingStatus.SUMMARY_COMPLETE, ProcessingStatus.RECOMMENDATIONS_QUEUED,
+									ProcessingStatus.GENERATING_RECOMMENDATIONS, ProcessingStatus.COMPLETE,
+									ProcessingStatus.COMPLETED_WITH_WARNINGS, ProcessingStatus.FAILED));
+					if (!claim.claimed()) {
+						log.info("[{}] Skipping transcription because claim was not acquired: {}", metadataId,
+								claim.reason());
+						return;
+					}
 
 					String recordingId = StringUtils.hasText(metadata.getRecordingId())
 							? metadata.getRecordingId()
@@ -157,77 +176,72 @@ public class AudioTranscriptionListenerService {
 					if (tempFilePath == null) {
 						throw new RuntimeException("Failed to download audio file (downloadAudioToFile returned null)");
 					}
+					Path chunkWorkDirectory = tempFileDir.resolve(metadataId + "_transcription_chunks");
 
 					try {
-						var qualityReport = qualityReportService.analyzeAndSave(metadataId, tempFilePath);
-						Map<String, Object> qualityUpdates = new HashMap<>();
-						qualityUpdates.put("qualityReport", qualityReport.toMap());
-						qualityUpdates.put("lastUpdated", Timestamp.now());
+						try {
+							var qualityReport = qualityReportService.analyzeAndSave(metadataId, tempFilePath);
+							Map<String, Object> qualityUpdates = new HashMap<>();
+							qualityUpdates.put("qualityReport", qualityReport.toMap());
+							qualityUpdates.put("lastUpdated", Timestamp.now());
+							firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(),
+									metadataId, qualityUpdates);
+							log.info("[{}] Quality report generated with status {} and {} issue(s).", metadataId,
+									qualityReport.getStatus(), qualityReport.getIssues().size());
+						} catch (Exception e) {
+							log.warn("[{}] Quality report generation failed without blocking transcription: {}",
+									metadataId, e.getMessage());
+						}
+
+						metadata = requireMetadata(metadataId, message);
+						if (metadata.isTranscriptionComplete()) {
+							log.info(
+									"[{}] Transcription was completed by another process while we were preparing. Skipping API call.",
+									metadataId);
+							checkCompletionAndTriggerSummarization(metadataId, effectiveUserId);
+							return;
+						}
+
+						log.info("[{}] Calling Gemini API for transcription... Original Filename: {}, ContentType: {}",
+								metadataId, originalFileName, metadata.getContentType());
+						String transcript = transcriptionOrchestrator.transcribe(metadataId, tempFilePath,
+								chunkWorkDirectory);
+
+						metadata = requireMetadata(metadataId, message);
+						if (metadata.isTranscriptionComplete()) {
+							log.info(
+									"[{}] Transcription was completed by another process while we were transcribing. Skipping update.",
+									metadataId);
+							return;
+						}
+
+						log.info("[{}] Transcription completed successfully. Saving transcript and updating status.",
+								metadataId);
+						Map<String, Object> updates = new HashMap<>();
+						updates.put("transcriptText", transcript);
+						updates.put("transcriptionComplete", true);
+						updates.put("status", ProcessingStatus.TRANSCRIPTION_COMPLETE.name());
+						updates.put("lastUpdated", Timestamp.now());
+
+						log.info("[{}] Saving transcript with size: {} characters", metadataId,
+								transcript != null ? transcript.length() : 0);
+
 						firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId,
-								qualityUpdates);
-						log.info("[{}] Quality report generated with status {} and {} issue(s).", metadataId,
-								qualityReport.getStatus(), qualityReport.getIssues().size());
-					} catch (Exception e) {
-						log.warn("[{}] Quality report generation failed without blocking transcription: {}", metadataId,
-								e.getMessage());
-					}
-
-					metadata = requireMetadata(metadataId, message);
-					if (metadata.isTranscriptionComplete()) {
+								updates);
 						log.info(
-								"[{}] Transcription was completed by another process while we were preparing. Skipping API call.",
+								"[{}] Successfully saved transcript, set transcriptionComplete=true, and status=TRANSCRIPTION_COMPLETE.",
 								metadataId);
+						invalidateCache(effectiveUserId);
+
 						checkCompletionAndTriggerSummarization(metadataId, effectiveUserId);
-						return;
-					}
-
-					log.info("[{}] Calling Gemini API for transcription... Original Filename: {}, ContentType: {}",
-							metadataId, originalFileName, metadata.getContentType());
-					String transcript = geminiService.callGeminiTranscriptionAPIWithFallback(tempFilePath,
-							originalFileName);
-
-					metadata = requireMetadata(metadataId, message);
-					if (metadata.isTranscriptionComplete()) {
-						log.info(
-								"[{}] Transcription was completed by another process while we were transcribing. Skipping update.",
-								metadataId);
-						return;
-					}
-
-					log.info("[{}] Transcription completed successfully. Saving transcript and updating status.",
-							metadataId);
-					Map<String, Object> updates = new HashMap<>();
-					updates.put("transcriptText", transcript);
-					updates.put("transcriptionComplete", true);
-					updates.put("status", ProcessingStatus.TRANSCRIPTION_COMPLETE.name());
-					updates.put("lastUpdated", Timestamp.now());
-
-					log.info("[{}] Saving transcript with size: {} characters", metadataId,
-							transcript != null ? transcript.length() : 0);
-
-					firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId,
-							updates);
-					log.info(
-							"[{}] Successfully saved transcript, set transcriptionComplete=true, and status=TRANSCRIPTION_COMPLETE.",
-							metadataId);
-					invalidateCache(effectiveUserId);
-
-					try {
-						log.debug("[{}] Adding a short delay to ensure Firestore consistency before summarization...",
-								metadataId);
-						Thread.sleep(3000);
-					} catch (InterruptedException e) {
-						Thread.currentThread().interrupt();
-						log.warn("[{}] Delay before summarization was interrupted", metadataId);
-					}
-
-					checkCompletionAndTriggerSummarization(metadataId, effectiveUserId);
-
-					try {
-						Files.deleteIfExists(tempFilePath);
-						log.debug("[{}] Deleted temporary audio file: {}", metadataId, tempFilePath);
-					} catch (IOException e) {
-						log.warn("[{}] Failed to delete temporary audio file: {}", metadataId, e.getMessage());
+					} finally {
+						try {
+							Files.deleteIfExists(tempFilePath);
+							log.debug("[{}] Deleted temporary audio file: {}", metadataId, tempFilePath);
+						} catch (IOException e) {
+							log.warn("[{}] Failed to delete temporary audio file: {}", metadataId, e.getMessage());
+						}
+						deleteDirectoryQuietly(chunkWorkDirectory, metadataId);
 					}
 				} catch (Exception e) {
 					// Wrap any checked exceptions or rethrow RuntimeExceptions to trigger retry
@@ -238,13 +252,16 @@ public class AudioTranscriptionListenerService {
 					}
 				}
 			});
+		} catch (DeferredProcessingException e) {
+			log.info("[{}] Deferring transcription retry until {} because {}", metadataId, e.getRetryAt(),
+					e.getMessage());
+			deferTranscription(metadataId, userId, e);
 		} catch (NonRetryableTaskException e) {
 			log.warn("[{}] Acknowledging non-retryable transcription request: {}", metadataId, e.getMessage());
 			markTranscriptionFailedIfPresent(metadataId, userId, e, null);
 		} catch (RuntimeException e) {
 			GeminiRateLimitException rateLimit = findCause(e, GeminiRateLimitException.class);
 			markTranscriptionFailedIfPresent(metadataId, userId, e, rateLimit);
-			throw e;
 		} finally {
 			metadataLock.unlock();
 			if (metadataLock instanceof ReentrantLock) {
@@ -467,8 +484,8 @@ public class AudioTranscriptionListenerService {
 				messagePayload.put("metadataId", metadataId);
 				messagePayload.put("messageId", messageId);
 
-				rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME,
-						RabbitMQConfig.SUMMARIZATION_ROUTING_KEY, messagePayload);
+				confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.SUMMARIZATION_ROUTING_KEY,
+						messagePayload);
 
 				log.info("[{}] Message (ID: {}) sent successfully to queue '{}' with routing key '{}'.", metadataId,
 						messageId, RabbitMQConfig.SUMMARIZATION_QUEUE_NAME, RabbitMQConfig.SUMMARIZATION_ROUTING_KEY);
@@ -487,6 +504,38 @@ public class AudioTranscriptionListenerService {
 				lock.unlock();
 				log.debug("[{}] Released lock for trigger summarization check", metadataId);
 			}
+		}
+	}
+
+	private void deferTranscription(String metadataId, @Nullable String fallbackUserId, DeferredProcessingException e) {
+		AudioMetadata metadata = firebaseService.getAudioMetadataById(metadataId);
+		String effectiveUserId = metadata != null && StringUtils.hasText(metadata.getUserId())
+				? metadata.getUserId()
+				: fallbackUserId;
+		Map<String, Object> updates = new HashMap<>();
+		updates.put("status", ProcessingStatus.PROCESSING_QUEUED.name());
+		updates.put("processingStage", e.getProcessingStage());
+		updates.put("failureReason", null);
+		updates.put("lastUpdated", Timestamp.now());
+		updates.put("quotaRetryAt",
+				Timestamp.ofTimeSecondsAndNanos(e.getRetryAt().getEpochSecond(), e.getRetryAt().getNano()));
+		firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+
+		AudioProcessingMessage retryMessage = new AudioProcessingMessage();
+		retryMessage.setMetadataId(metadataId);
+		retryMessage.setUserId(effectiveUserId);
+		if (metadata != null) {
+			retryMessage.setNhostFileId(metadata.getNhostFileId());
+		}
+		Duration delay = Duration.between(Instant.now(), e.getRetryAt());
+		try {
+			confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.TRANSCRIPTION_RETRY_ROUTING_KEY,
+					retryMessage, delay);
+			invalidateCache(effectiveUserId);
+		} catch (RabbitPublishTimeoutException timeout) {
+			log.warn("[{}] Transcription retry publish confirm timed out: {}", metadataId, timeout.getMessage());
+		} catch (RabbitPublishRejectedException rejected) {
+			markTranscriptionFailedIfPresent(metadataId, effectiveUserId, rejected, null);
 		}
 	}
 
@@ -612,6 +661,24 @@ public class AudioTranscriptionListenerService {
 			}
 		} else {
 			log.warn("Cannot invalidate cache because userId is null.");
+		}
+	}
+
+	private void deleteDirectoryQuietly(Path directory, String metadataId) {
+		if (directory == null || !Files.exists(directory)) {
+			return;
+		}
+		try (var paths = Files.walk(directory)) {
+			paths.sorted(Comparator.reverseOrder()).forEach(path -> {
+				try {
+					Files.deleteIfExists(path);
+				} catch (IOException e) {
+					log.warn("[{}] Failed to delete transcription temp path {}: {}", metadataId, path, e.getMessage());
+				}
+			});
+		} catch (IOException e) {
+			log.warn("[{}] Failed to clean transcription chunk directory {}: {}", metadataId, directory,
+					e.getMessage());
 		}
 	}
 }

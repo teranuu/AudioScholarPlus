@@ -15,7 +15,6 @@ import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.CacheEvict;
@@ -47,7 +46,7 @@ public class AudioProcessingService {
 
 	private final FirebaseService firebaseService;
 	private final NhostStorageService storageService;
-	private final RabbitTemplate rabbitTemplate;
+	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	private final LearningMaterialRecommenderService learningMaterialRecommenderService;
 	private final RecordingService recordingService;
 	private final AudioProcessingGuardrailService guardrailService;
@@ -58,14 +57,15 @@ public class AudioProcessingService {
 	private final CacheManager cacheManager;
 
 	public AudioProcessingService(FirebaseService firebaseService, NhostStorageService storageService,
-			RabbitTemplate rabbitTemplate, LearningMaterialRecommenderService learningMaterialRecommenderService,
-			RecordingService recordingService, AudioProcessingGuardrailService guardrailService,
+			ConfirmedRabbitPublisher confirmedRabbitPublisher,
+			LearningMaterialRecommenderService learningMaterialRecommenderService, RecordingService recordingService,
+			AudioProcessingGuardrailService guardrailService,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue,
 			@Value("${app.temp-min-free-space:100MB}") String tempMinFreeSpaceValue,
 			@Value("${app.temp-file-dir}") String tempFileDirStr, CacheManager cacheManager) {
 		this.firebaseService = firebaseService;
 		this.storageService = storageService;
-		this.rabbitTemplate = rabbitTemplate;
+		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.learningMaterialRecommenderService = learningMaterialRecommenderService;
 		this.recordingService = recordingService;
 		this.guardrailService = guardrailService;
@@ -265,7 +265,7 @@ public class AudioProcessingService {
 	}
 
 	private void publishUploadMessage(String routingKey, NhostUploadMessage message) {
-		rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME, routingKey, message);
+		confirmedRabbitPublisher.publishToProcessingExchange(routingKey, message);
 	}
 
 	private void validateMultipartFile(MultipartFile file, String fileTypeLabel, String userId)

@@ -24,6 +24,7 @@ import org.springframework.stereotype.Service;
 
 import com.google.cloud.Timestamp;
 
+import edu.cit.audioscholar.exception.DeferredProcessingException;
 import edu.cit.audioscholar.exception.GeminiQuotaTimeoutException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.exception.NonRetryableTaskException;
@@ -95,6 +96,9 @@ public class TranscriptionOrchestrator {
 				} catch (ExecutionException e) {
 					if (e.getCause() instanceof NonRetryableTaskException nonRetryable) {
 						throw nonRetryable;
+					}
+					if (e.getCause() instanceof DeferredProcessingException deferred) {
+						throw deferred;
 					}
 					throw unwrap(e);
 				}
@@ -170,13 +174,8 @@ public class TranscriptionOrchestrator {
 		Map<String, Object> updates = progressUpdates("WAITING_FOR_GEMINI_QUOTA", total, completed, startedAt);
 		updates.put("quotaRetryAt", Timestamp.of(java.util.Date.from(retryAt)));
 		firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
-		try {
-			Thread.sleep(waitMillis);
-		} catch (InterruptedException e) {
-			Thread.currentThread().interrupt();
-			throw new IOException("Quota wait was interrupted", e);
-		}
-		updateProgress(metadataId, "TRANSCRIBING_CHUNKS", total, completed, startedAt);
+		throw new DeferredProcessingException("WAITING_FOR_GEMINI_QUOTA", retryAt,
+				"Gemini quota unavailable until " + retryAt);
 	}
 
 	private void sleepBeforeRetry(int attempt) throws IOException {

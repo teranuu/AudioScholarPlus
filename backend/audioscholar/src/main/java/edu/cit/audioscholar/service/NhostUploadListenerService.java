@@ -10,6 +10,7 @@ import java.time.Instant;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -17,7 +18,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -40,23 +40,20 @@ public class NhostUploadListenerService {
 
 	private final FirebaseService firebaseService;
 	private final NhostStorageService nhostStorageService;
-	private final RabbitTemplate rabbitTemplate;
 	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	@SuppressWarnings("unused")
 	private final ObjectMapper objectMapper;
-	private final Map<String, Lock> metadataLocks = new HashMap<>();
+	private final Map<String, Lock> metadataLocks = new ConcurrentHashMap<>();
 
 	public NhostUploadListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
-			RabbitTemplate rabbitTemplate, ConfirmedRabbitPublisher confirmedRabbitPublisher,
-			ObjectMapper objectMapper) {
+			ConfirmedRabbitPublisher confirmedRabbitPublisher, ObjectMapper objectMapper) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
-		this.rabbitTemplate = rabbitTemplate;
 		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.objectMapper = objectMapper;
 	}
 
-	@RabbitListener(queues = RabbitMQConfig.UPLOAD_QUEUE_NAME)
+	@RabbitListener(queues = RabbitMQConfig.UPLOAD_QUEUE_NAME, containerFactory = "uploadContainerFactory")
 	public void handleNhostUploadRequest(NhostUploadMessage message, Message amqpMessage) {
 		if (amqpMessage != null && amqpMessage.getMessageProperties() != null) {
 			Date timestamp = amqpMessage.getMessageProperties().getTimestamp();
@@ -335,8 +332,8 @@ public class NhostUploadListenerService {
 				conversionMessage.setUserId(userId);
 
 				try {
-					rabbitTemplate.convertAndSend(RabbitMQConfig.PROCESSING_EXCHANGE_NAME,
-							RabbitMQConfig.PPTX_CONVERSION_ROUTING_KEY, conversionMessage);
+					confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.PPTX_CONVERSION_ROUTING_KEY,
+							conversionMessage);
 					log.info("[{}] Message sent to queue {} with routing key {}", metadataId,
 							RabbitMQConfig.PPTX_CONVERSION_QUEUE_NAME, RabbitMQConfig.PPTX_CONVERSION_ROUTING_KEY);
 				} catch (Exception e) {
