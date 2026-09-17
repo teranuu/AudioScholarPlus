@@ -204,8 +204,11 @@ public class AudioTranscriptionListenerService {
 
 						log.info("[{}] Calling Gemini API for transcription... Original Filename: {}, ContentType: {}",
 								metadataId, originalFileName, metadata.getContentType());
+						long transcriptionStart = System.currentTimeMillis();
 						String transcript = transcriptionOrchestrator.transcribe(metadataId, tempFilePath,
 								chunkWorkDirectory);
+						log.info("[{}] Gemini transcription orchestration took {} ms", metadataId,
+								System.currentTimeMillis() - transcriptionStart);
 
 						metadata = requireMetadata(metadataId, message);
 						if (metadata.isTranscriptionComplete()) {

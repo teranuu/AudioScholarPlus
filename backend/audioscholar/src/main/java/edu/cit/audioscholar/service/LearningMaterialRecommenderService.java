@@ -100,6 +100,7 @@ public class LearningMaterialRecommenderService {
 
 	public List<LearningRecommendation> generateAndSaveRecommendations(String userId, String recordingId,
 			String summaryId) {
+		long pipelineStart = System.currentTimeMillis();
 		log.info("Starting recommendation generation and storage for recording ID: {}, user: {}, summary: {}",
 				recordingId, userId, summaryId);
 		AnalysisResults analysisResults = lectureContentAnalyzerService.analyzeLectureContent(recordingId);
@@ -119,9 +120,11 @@ public class LearningMaterialRecommenderService {
 		log.debug("Using search queries for recording ID {}: {}", recordingId, searchQueries);
 
 		try {
+			long youtubeStart = System.currentTimeMillis();
 			List<SearchResult> youtubeResults = robustTaskExecutor.executeWithInfiniteRetry(recordingId,
 					"searching YouTube videos",
 					() -> youTubeAPIClient.searchVideos(searchQueries, SEARCH_RESULTS_POOL_SIZE));
+			log.info("[{}] YouTube search took {} ms", recordingId, System.currentTimeMillis() - youtubeStart);
 
 			if (youtubeResults.isEmpty()) {
 				log.info(
@@ -194,7 +197,10 @@ public class LearningMaterialRecommenderService {
 			}
 			log.info("Successfully processed {} unique recommendations for recording ID: {}", recommendations.size(),
 					recordingId);
+			long saveStart = System.currentTimeMillis();
 			List<LearningRecommendation> savedRecommendationsWithIds = saveRecommendationsBatch(recommendations);
+			log.info("[{}] Recommendation Firestore save took {} ms", recordingId,
+					System.currentTimeMillis() - saveStart);
 			if (!savedRecommendationsWithIds.isEmpty()) {
 				linkRecommendationsAndNotify(userId, recordingId, summaryId, savedRecommendationsWithIds);
 			} else {
@@ -202,6 +208,8 @@ public class LearningMaterialRecommenderService {
 						recordingId);
 				notifyProcessingComplete(userId, recordingId, summaryId);
 			}
+			log.info("[{}] Recommendation pipeline completed in {} ms", recordingId,
+					System.currentTimeMillis() - pipelineStart);
 			return savedRecommendationsWithIds;
 		} catch (Exception e) {
 			log.error("Unexpected error during recommendation generation or saving for recording ID: {}", recordingId,

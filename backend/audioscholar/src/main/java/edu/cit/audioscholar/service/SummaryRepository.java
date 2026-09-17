@@ -1,5 +1,6 @@
 package edu.cit.audioscholar.service;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -40,6 +41,16 @@ public class SummaryRepository {
 	public SummaryKeyPoint saveKeyPoint(SummaryKeyPoint keyPoint) {
 		firebaseService.saveData(SUMMARY_KEY_POINTS_COLLECTION, keyPoint.getKeyPointId(), keyPoint.toMap());
 		return keyPoint;
+	}
+
+	public void saveKeyPoints(List<SummaryKeyPoint> keyPoints) {
+		Map<String, Object> documents = new LinkedHashMap<>();
+		for (SummaryKeyPoint keyPoint : keyPoints) {
+			if (keyPoint != null && keyPoint.getKeyPointId() != null) {
+				documents.put(keyPoint.getKeyPointId(), keyPoint.toMap());
+			}
+		}
+		firebaseService.saveDataBatch(SUMMARY_KEY_POINTS_COLLECTION, documents);
 	}
 
 	public void delete(String summaryId) {

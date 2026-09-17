@@ -59,6 +59,7 @@ public class WarningIndicatorService {
 						continue;
 					}
 					WarningIndicator warning = new WarningIndicator();
+					warning.setSummaryId(summary.getSummaryId());
 					warning.setKeyPointId(keyPoint.getKeyPointId());
 					warning.setIssueId(issue.getIssueId());
 					warning.setIssueType(issue.getIssueType());
@@ -82,6 +83,7 @@ public class WarningIndicatorService {
 						continue;
 					}
 					WarningIndicator warning = new WarningIndicator();
+					warning.setSummaryId(summary.getSummaryId());
 					warning.setCardId(flashcard.getCardId());
 					warning.setIssueId(issue.getIssueId());
 					warning.setIssueType(issue.getIssueType());
@@ -102,31 +104,42 @@ public class WarningIndicatorService {
 			throw new IllegalArgumentException("Summary not found.");
 		}
 		List<SummaryKeyPoint> keyPoints = getSummaryKeyPoints(summary);
-		List<WarningIndicator> warnings = new ArrayList<>();
-		for (SummaryKeyPoint keyPoint : keyPoints) {
-			List<Map<String, Object>> stored = firebaseService.queryCollection(WARNING_INDICATORS_COLLECTION,
-					"keyPointId", keyPoint.getKeyPointId());
-			for (Map<String, Object> item : stored) {
-				WarningIndicator warning = WarningIndicator.fromMap(item);
-				if (warning != null) {
-					warnings.add(warning);
-				}
-			}
-		}
-		for (Flashcard flashcard : summary.getFlashcards()) {
-			if (flashcard == null || flashcard.getCardId() == null) {
-				continue;
-			}
-			List<Map<String, Object>> stored = firebaseService.queryCollection(WARNING_INDICATORS_COLLECTION, "cardId",
-					flashcard.getCardId());
-			for (Map<String, Object> item : stored) {
-				WarningIndicator warning = WarningIndicator.fromMap(item);
-				if (warning != null) {
-					warnings.add(warning);
-				}
-			}
+		List<WarningIndicator> warnings = mapWarnings(
+				firebaseService.queryCollection(WARNING_INDICATORS_COLLECTION, "summaryId", summaryId));
+		if (warnings.isEmpty()) {
+			warnings = getLegacyWarnings(keyPoints, summary.getFlashcards());
 		}
 		return warnings.isEmpty() ? generateWarningIndicators(summaryId) : warnings;
+	}
+
+	private List<WarningIndicator> getLegacyWarnings(List<SummaryKeyPoint> keyPoints, List<Flashcard> flashcards) {
+		List<WarningIndicator> warnings = new ArrayList<>();
+		List<String> keyPointIds = keyPoints.stream().filter(java.util.Objects::nonNull)
+				.map(SummaryKeyPoint::getKeyPointId).filter(StringUtils::hasText).toList();
+		for (List<String> chunk : chunks(keyPointIds, 30)) {
+			warnings.addAll(mapWarnings(
+					firebaseService.queryCollectionWhereIn(WARNING_INDICATORS_COLLECTION, "keyPointId", chunk)));
+		}
+		List<Flashcard> safeFlashcards = flashcards == null ? List.of() : flashcards;
+		List<String> cardIds = safeFlashcards.stream().filter(java.util.Objects::nonNull).map(Flashcard::getCardId)
+				.filter(StringUtils::hasText).toList();
+		for (List<String> chunk : chunks(cardIds, 30)) {
+			warnings.addAll(mapWarnings(
+					firebaseService.queryCollectionWhereIn(WARNING_INDICATORS_COLLECTION, "cardId", chunk)));
+		}
+		return warnings;
+	}
+
+	private List<WarningIndicator> mapWarnings(List<Map<String, Object>> stored) {
+		return stored.stream().map(WarningIndicator::fromMap).filter(java.util.Objects::nonNull).toList();
+	}
+
+	private List<List<String>> chunks(List<String> values, int size) {
+		List<List<String>> chunks = new ArrayList<>();
+		for (int start = 0; start < values.size(); start += size) {
+			chunks.add(values.subList(start, Math.min(start + size, values.size())));
+		}
+		return chunks;
 	}
 
 	public boolean checkTimestampOverlap(String keyPointStart, String keyPointEnd, String issueStart, String issueEnd) {

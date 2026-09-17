@@ -320,6 +320,27 @@ public class FirebaseService {
 		}
 	}
 
+	public void saveDataBatch(String collection, Map<String, ?> documentsById) {
+		if (documentsById == null || documentsById.isEmpty()) {
+			return;
+		}
+		try {
+			Firestore firestore = getFirestore();
+			WriteBatch batch = firestore.batch();
+			for (Map.Entry<String, ?> entry : documentsById.entrySet()) {
+				if (StringUtils.hasText(entry.getKey()) && entry.getValue() != null) {
+					batch.set(firestore.collection(collection).document(entry.getKey()), entry.getValue());
+				}
+			}
+			batch.commit().get();
+			log.info("Batch saved {} documents to {}", documentsById.size(), collection);
+			invalidateAudioMetadataCaches(collection, null);
+		} catch (ExecutionException | InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Error batch saving data to Firestore", e);
+		}
+	}
+
 	@SuppressWarnings("null")
 	public Map<String, Object> getData(String collection, String document) {
 		try {
@@ -432,6 +453,25 @@ public class FirebaseService {
 			Thread.currentThread().interrupt();
 			log.error("Error querying collection '{}' where '{}' == '{}'", collection, field, value, e);
 			throw new FirestoreInteractionException("Error querying collection in Firestore", e);
+		}
+	}
+
+	public List<Map<String, Object>> queryCollectionWhereIn(String collection, String field, List<?> values) {
+		if (values == null || values.isEmpty()) {
+			return List.of();
+		}
+		try {
+			List<Map<String, Object>> results = new ArrayList<>();
+			for (QueryDocumentSnapshot document : getFirestore().collection(collection).whereIn(field, values).get()
+					.get().getDocuments()) {
+				Map<String, Object> data = document.getData();
+				data.putIfAbsent("id", document.getId());
+				results.add(data);
+			}
+			return results;
+		} catch (ExecutionException | InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Error querying collection with whereIn", e);
 		}
 	}
 

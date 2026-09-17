@@ -12,6 +12,7 @@ import {
   getProcessingStatusCopy,
   isActiveProcessingStatus,
   isFailureProcessingStatus,
+  isTerminalProcessingStatus,
 } from '../../utils/processingStatus';
 import { Header } from '../Home/HomePage';
 
@@ -780,7 +781,10 @@ const SummaryDetailScreen = () => {
       }
     }
 
-    const shouldFetchRecommendations = summaryStatus === 200;
+    const metadataStatus = recordingData?.status;
+    const shouldFetchRecommendations = summaryStatus === 200
+      && isTerminalProcessingStatus(metadataStatus)
+      && !isFailureProcessingStatus(metadataStatus);
 
     if (shouldFetchRecommendations) {
       if (cachedRecommendations) {
@@ -827,14 +831,14 @@ const SummaryDetailScreen = () => {
         }
       }
     } else {
-      console.log("Skipping recommendations fetch because summary was not successful or processing.");
-      setRecommendationsError(summaryStatus === 202
+      console.log("Skipping recommendations fetch until recording processing is terminal.");
+      setRecommendationsError(summaryStatus === 202 || isActiveProcessingStatus(metadataStatus)
         ? null
         : "Recommendations not available as processing did not complete successfully.");
-      setRecommendationsLoading(false);
+      setRecommendationsLoading(summaryStatus === 202 || isActiveProcessingStatus(metadataStatus));
       setRecommendationsData([]);
     }
-  }, [navigate]);
+  }, [navigate, recordingData?.status]);
 
   useEffect(() => {
     if (id) {

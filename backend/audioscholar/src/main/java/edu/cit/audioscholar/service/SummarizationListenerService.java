@@ -301,8 +301,11 @@ public class SummarizationListenerService {
 							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
 
 							try {
+								long geminiStart = System.currentTimeMillis();
 								String summarizationJson = geminiService.generateTranscriptOnlySummary(
 										annotatedTranscript, metadataId, metadata.getOutputType());
+								log.info("[{}] Gemini summarization took {} ms", metadataId,
+										System.currentTimeMillis() - geminiStart);
 								processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 							} catch (Exception e) {
 								throw new RuntimeException("Transcript-only summarization failed: " + e.getMessage(),
@@ -420,8 +423,11 @@ public class SummarizationListenerService {
 									metadataId);
 							updateMetadataStatus(metadataId, userId, ProcessingStatus.SUMMARIZING, null);
 							try {
+								long geminiStart = System.currentTimeMillis();
 								String summarizationJson = geminiService.generateTranscriptOnlySummary(
 										annotatedTranscript, metadataId, metadata.getOutputType());
+								log.info("[{}] Gemini summarization took {} ms", metadataId,
+										System.currentTimeMillis() - geminiStart);
 								processSummarizationResult(summarizationJson, metadataId, userId, metadata);
 							} catch (Exception e) {
 								throw new RuntimeException(
@@ -471,6 +477,7 @@ public class SummarizationListenerService {
 			}
 
 			log.debug("[{}] Attempting to parse summarization result as JSON...", metadataId);
+			long parseStart = System.currentTimeMillis();
 			JsonNode rootNode = objectMapper.readTree(summarizationJson);
 
 			// Check for error response from GeminiService
@@ -583,6 +590,7 @@ public class SummarizationListenerService {
 				throw new RuntimeException("Could not extract summaryText from Gemini summarization response");
 			}
 			flashcards = ensureReviewMaterialFlashcards(metadata.getOutputType(), flashcards, glossary);
+			log.info("[{}] Summary response parsing took {} ms", metadataId, System.currentTimeMillis() - parseStart);
 
 			log.info(
 					"[{}] Successfully extracted summary text (length: {}) and {} key points, {} topics, {} flashcards",
@@ -599,14 +607,11 @@ public class SummarizationListenerService {
 						metadata.getQualityReport());
 			}
 			String clarifiedSummaryText = transcriptClarityService.ensureClarityNotes(summaryText, transcriptSegments);
+			long summarySaveStart = System.currentTimeMillis();
 			Summary summary = createSummary(metadataId, userId, clarifiedSummaryText, keyPoints, topics, pdfContextUrl,
 					glossary, flashcards, metadata.getOutputType(), metadata, transcriptSegments);
-			try {
-				summaryService.updateSummary(summary);
-			} catch (Exception e) {
-				log.warn("[{}] Summary generated but new AudioScholar+ fields were not updated: {}", metadataId,
-						e.getMessage());
-			}
+			log.info("[{}] Summary Firestore save took {} ms", metadataId,
+					System.currentTimeMillis() - summarySaveStart);
 
 			Map<String, Object> updates = new HashMap<>();
 			updates.put("summaryId", summary.getSummaryId());
@@ -614,8 +619,6 @@ public class SummarizationListenerService {
 			updates.put("lastUpdated", Timestamp.now());
 			firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
 			log.info("[{}] Updated metadata with summaryId and set status to SUMMARY_COMPLETE", metadataId);
-
-			updateRecordingWithSummaryId(metadataId, summary.getSummaryId(), metadataId);
 
 			triggerRecommendations(metadataId, userId, metadataId, summary.getSummaryId());
 
@@ -742,10 +745,11 @@ public class SummarizationListenerService {
 		updateMetadataStatus(metadataId, userId, ProcessingStatus.RECOMMENDATIONS_QUEUED, null);
 
 		try {
+			long enqueueStart = System.currentTimeMillis();
 			confirmedRabbitPublisher.publishToProcessingExchange(RabbitMQConfig.RECOMMENDATIONS_ROUTING_KEY,
 					recommendationMessage);
-			log.info("[{}] Sent message to recommendations queue. Message details: {}", metadataId,
-					recommendationMessage);
+			log.info("[{}] Sent message to recommendations queue in {} ms. Message details: {}", metadataId,
+					System.currentTimeMillis() - enqueueStart, recommendationMessage);
 		} catch (Exception e) {
 			log.error("[{}] CRITICAL: Failed to send message to recommendations queue: {}", metadataId, e.getMessage(),
 					e);

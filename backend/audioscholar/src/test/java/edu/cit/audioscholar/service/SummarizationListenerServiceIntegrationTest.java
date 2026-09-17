@@ -153,6 +153,7 @@ class SummarizationListenerServiceIntegrationTest {
 
 		verify(geminiService).generateTranscriptOnlySummary(eq("Test transcript text"), eq(METADATA_ID), eq("NOTES"));
 		verify(summaryService).createSummary(summaryCaptor.capture());
+		verify(summaryService, never()).updateSummary(any());
 		assertEquals("NOTES", summaryCaptor.getValue().getOutputType());
 		assertEquals("Personal notes", summaryCaptor.getValue().getFormattedSummaryText());
 	}

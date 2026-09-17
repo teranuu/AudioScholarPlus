@@ -1,9 +1,11 @@
 package edu.cit.audioscholar.service;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.core.Message;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Service;
 
@@ -50,13 +52,23 @@ public class RecommendationListenerService {
 		}
 
 		log.info("[{}] Processing recommendation queue message.", metadataId);
-		recommendationService.recommendAndSave(metadataId, userId);
+		long startedAt = System.currentTimeMillis();
+		RecommendationService.RecommendationResult result = recommendationService.recommendAndSaveResult(metadataId,
+				userId);
+		log.info("[{}] Recommendation consume completed in {} ms: {}", metadataId,
+				System.currentTimeMillis() - startedAt, result.message());
 	}
 
 	@SuppressWarnings("unchecked")
 	private Map<String, Object> normalizePayload(Object payload) {
 		if (payload instanceof Map<?, ?> map) {
 			return (Map<String, Object>) map;
+		}
+		if (payload instanceof Message message) {
+			return normalizePayload(message.getBody());
+		}
+		if (payload instanceof byte[] bytes) {
+			return normalizePayload(new String(bytes, StandardCharsets.UTF_8));
 		}
 		if (payload instanceof String text) {
 			try {

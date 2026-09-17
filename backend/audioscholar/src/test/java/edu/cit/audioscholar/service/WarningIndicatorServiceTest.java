@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -18,6 +19,7 @@ import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.QualityIssue;
 import edu.cit.audioscholar.model.QualityReport;
 import edu.cit.audioscholar.model.Summary;
+import edu.cit.audioscholar.model.SummaryKeyPoint;
 import edu.cit.audioscholar.model.WarningIndicator;
 
 class WarningIndicatorServiceTest {
@@ -62,6 +64,29 @@ class WarningIndicatorServiceTest {
 		@SuppressWarnings("unchecked")
 		Map<String, Object> savedMap = (Map<String, Object>) savedWarning.getValue();
 		assertEquals("card-1", savedMap.get("cardId"));
+		assertEquals("summary-1", savedMap.get("summaryId"));
 		assertNull(savedMap.get("keyPointId"));
+	}
+
+	@Test
+	void getsWarningsBySummaryIdWithoutPerItemQueries() throws Exception {
+		SummaryService summaryService = mock(SummaryService.class);
+		QualityReportService qualityReportService = mock(QualityReportService.class);
+		FirebaseService firebaseService = mock(FirebaseService.class);
+		WarningIndicatorService service = new WarningIndicatorService(summaryService, qualityReportService,
+				firebaseService);
+		Summary summary = new Summary();
+		summary.setSummaryId("summary-1");
+		summary.setSummaryKeyPoints(List.of(new SummaryKeyPoint()));
+		when(summaryService.getSummaryById("summary-1")).thenReturn(summary);
+		when(firebaseService.queryCollection("summaryKeyPoints", "summaryId", "summary-1")).thenReturn(List.of());
+		when(firebaseService.queryCollection("warningIndicators", "summaryId", "summary-1"))
+				.thenReturn(List.of(Map.of("warningId", "warning-1", "summaryId", "summary-1")));
+
+		List<WarningIndicator> warnings = service.getWarningIndicators("summary-1");
+
+		assertEquals(1, warnings.size());
+		assertEquals("summary-1", warnings.get(0).getSummaryId());
+		verify(firebaseService, never()).queryCollectionWhereIn(any(), any(), any());
 	}
 }

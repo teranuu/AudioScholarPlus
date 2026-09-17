@@ -138,8 +138,8 @@ public class SummaryService {
 				continue;
 			}
 			keyPoint.setSummaryId(summary.getSummaryId());
-			summaryRepository.saveKeyPoint(keyPoint);
 		}
+		summaryRepository.saveKeyPoints(keyPoints);
 	}
 
 	private void populateMissingKeyPointTimestamps(Summary summary) {
