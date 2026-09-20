@@ -103,6 +103,7 @@ The following environment variables must be configured in your deployment enviro
 UPTIME_ROBOT_API_TOKEN= # UptimeRobot v3 bearer token for status-page data
 UPTIME_ROBOT_MONITOR_URL_FILTER= # Optional hostname filter for the Render backend monitor
 NHOST_ADMIN_SECRET=     # Admin secret for Nhost storage access
+NHOST_STORAGE_URL=      # Nhost storage API URL
 YOUTUBE_API_KEY=        # Google Cloud Console API Key for YouTube Data API
 GOOGLE_AI_API_KEY=      # Gemini AI API Key
 GOOGLE_CLIENT_ID=       # OAuth Client ID for Google
@@ -110,6 +111,7 @@ GOOGLE_CLIENT_SECRET=   # OAuth Client Secret for Google
 GITHUB_CLIENT_ID=       # OAuth Client ID for GitHub
 GITHUB_CLIENT_SECRET=   # OAuth Client Secret for GitHub
 JWT_SECRET=             # Secret key for signing JWT tokens
+FIREBASE_SERVICE_ACCOUNT_BASE64= # Base64-encoded Firebase service-account JSON
 CONVERTAPI_SECRET=      # Secret for ConvertAPI (PPT to PDF)
 GEMINI_API_KEYS=        # (Optional) Comma-separated list for key rotation
 CONVERTAPI_SECRETS=     # (Optional) Comma-separated list for key rotation
@@ -122,13 +124,13 @@ CONVERTAPI_SECRETS=     # (Optional) Comma-separated list for key rotation
 4.  Add the environment variables listed above.
 5.  Set Render's health check path to `/actuator/health`.
 6.  Deploy. Render will build the Docker image using the `Dockerfile` present in the directory.
-7.  In UptimeRobot, create an HTTP monitor for `https://it342-g3-audioscholar-onrender-com.onrender.com/actuator/health` and use a 300-second interval for free-plan compatibility.
+7.  In UptimeRobot, create an HTTP monitor for `https://audioscholarplus.onrender.com/actuator/health` and use a 300-second interval for free-plan compatibility.
 
 ### 3. Web Frontend Deployment (Vercel)
 1.  Import the project into Vercel.
 2.  Set the **Root Directory** to `frontend_web/audioscholar-app`.
 3.  The build command should be detected automatically (`vite build`).
-4.  Configure any necessary public environment variables (e.g., Firebase config if not hardcoded).
+4.  Set `VITE_API_URL=https://audioscholarplus.onrender.com`, or leave it unset so the checked-in `.env.production` value is used. Remove any stale Vercel override that points to the old Render service.
 5.  Deploy.
 
 ### 4. Mobile App Build
@@ -163,7 +165,7 @@ Use these credentials to test the different user roles and access levels during 
 ## Live Demo URLs
 
 *   **Web Application:** [https://audioscholar.vercel.app/](https://audioscholar.vercel.app/)
-*   **Backend API:** [https://it342-g3-audioscholar-onrender-com.onrender.com/](https://it342-g3-audioscholar-onrender-com.onrender.com/)
+*   **Backend API:** [https://audioscholarplus.onrender.com/](https://audioscholarplus.onrender.com/)
 *   **GitHub Repository:** [https://github.com/MasuRii/AudioScholar](https://github.com/MasuRii/AudioScholar)
 *   **Android APK Download:** [Download APK](https://drive.usercontent.google.com/download?id=1Dqqb75CKhFxc12OIsxBsc8JSiGSaFSOG&export=download)
 *   **All Links (Linktree):** [https://linktr.ee/AudioScholar](https://linktr.ee/AudioScholar)

@@ -1,11 +1,11 @@
 import { getAuth, GoogleAuthProvider, sendEmailVerification, signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { FaGithub } from 'react-icons/fa';
 import { FcGoogle } from 'react-icons/fc';
 import { FiBriefcase, FiCheckCircle, FiCloud, FiLoader, FiMic, FiUpload, FiYoutube, FiEye, FiEyeOff } from 'react-icons/fi';
 import { Link, useNavigate } from 'react-router-dom';
 import { firebaseApp } from '../../../config/firebaseConfig';
-import { verifyFirebaseTokenWithBackend, verifyGoogleTokenWithBackend } from '../../../services/authService';
+import { verifyFirebaseTokenWithBackend, warmBackend } from '../../../services/authService';
 import { Footer, Header } from '../../Home/HomePage';
 
 const SignIn = () => {
@@ -21,6 +21,10 @@ const SignIn = () => {
         const [showResendVerification, setShowResendVerification] = useState(false);
         const navigate = useNavigate();
         const auth = getAuth(firebaseApp);
+
+        useEffect(() => {
+                warmBackend();
+        }, []);
 
         // State for feature carousel
         const [currentFeatureIndex, setCurrentFeatureIndex] = useState(0);

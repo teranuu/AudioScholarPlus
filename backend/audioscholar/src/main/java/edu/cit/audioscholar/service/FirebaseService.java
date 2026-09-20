@@ -21,7 +21,6 @@ import org.springframework.cache.CacheManager;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.context.annotation.Lazy;
-import org.springframework.core.io.Resource;
 import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -46,7 +45,6 @@ import com.google.cloud.firestore.SetOptions;
 import com.google.cloud.firestore.WriteBatch;
 import com.google.cloud.firestore.WriteResult;
 import com.google.firebase.FirebaseApp;
-import com.google.firebase.FirebaseOptions;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseAuthException;
 import com.google.firebase.auth.FirebaseToken;
@@ -90,9 +88,6 @@ public class FirebaseService {
 	@Value("${google.oauth.android.client.id}")
 	private String androidClientId;
 
-	@Value("classpath:firebase-service-account.json")
-	private Resource serviceAccountResource;
-
 	private final CacheManager cacheManager;
 	private static final String CACHE_METADATA_BY_USER = "audioMetadataByUser";
 	private static final String CACHE_METADATA_BY_ID = "audioMetadataById";
@@ -109,24 +104,10 @@ public class FirebaseService {
 
 	@PostConstruct
 	private void initializeFirebase() {
-		try {
-			if (FirebaseApp.getApps().isEmpty()) {
-				FirebaseOptions options = FirebaseOptions.builder().setCredentials(
-						com.google.auth.oauth2.GoogleCredentials.fromStream(serviceAccountResource.getInputStream()))
-						.build();
-				FirebaseApp.initializeApp(options);
-				log.info("Firebase Admin SDK initialized successfully.");
-			} else {
-				log.info("Firebase Admin SDK already initialized.");
-			}
-			this.firestore = FirestoreClient.getFirestore(this.firebaseApp);
-			this.firebaseAuth = FirebaseAuth.getInstance(this.firebaseApp);
-			this.firebaseMessaging = FirebaseMessaging.getInstance(this.firebaseApp);
-
-		} catch (IOException e) {
-			log.error("Failed to initialize Firebase Admin SDK", e);
-			throw new IllegalStateException("Failed to initialize Firebase Admin SDK", e);
-		}
+		this.firestore = FirestoreClient.getFirestore(this.firebaseApp);
+		this.firebaseAuth = FirebaseAuth.getInstance(this.firebaseApp);
+		this.firebaseMessaging = FirebaseMessaging.getInstance(this.firebaseApp);
+		log.info("Firebase Admin SDK services initialized.");
 	}
 
 	FirebaseAuth getFirebaseAuth() {

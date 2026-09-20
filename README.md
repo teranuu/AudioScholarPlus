@@ -68,17 +68,23 @@ cd AudioScholar
    ```bash
    cd backend/audioscholar
    ```
-2. **Required Configuration Files:**
-   The backend requires two specific files to function correctly. You must create/place them in the specified locations:
+2. **Required Configuration:**
+   Create a local `.env` file at `backend\audioscholar\.env`. Firebase credentials can be supplied in any one of these forms:
 
-   *   **`.env` file**: Required at `backend\audioscholar\.env`
-   *   **Firebase Service Account**: Required at `backend\audioscholar\src\main\resources\firebase-service-account.json`
+   *   `FIREBASE_SERVICE_ACCOUNT_BASE64`: Base64-encoded service-account JSON (recommended for Render)
+   *   `FIREBASE_SERVICE_ACCOUNT_JSON`: Raw service-account JSON
+   *   `GOOGLE_APPLICATION_CREDENTIALS`: Absolute path to a service-account JSON file
+   *   `src/main/resources/firebase-service-account.json`: Local-development fallback only
 
 3. **Set up `.env` content:**
    Create the `.env` file in `backend/audioscholar/` with the following variables:
    ```dotenv
    # Nhost Storage Configuration
    NHOST_ADMIN_SECRET=your-nhost-admin-secret # Used by Spring Boot to access Nhost Storage
+   NHOST_STORAGE_URL=your-nhost-storage-url
+
+   # Firebase Admin credentials (choose one supported form)
+   FIREBASE_SERVICE_ACCOUNT_BASE64=your-base64-encoded-service-account-json
 
    # API Keys
    GEMINI_API_KEY=your-gemini-api-key
@@ -89,16 +95,7 @@ cd AudioScholar
    # UPTIME_ROBOT_MONITOR_URL_FILTER=your-render-backend-hostname
    ```
 
-4. **Configure Application Properties:**
-   In `backend/audioscholar/src/main/resources/application.properties`:
-   - Ensure `nhost.storage.url` is correctly set.
-   - Configure Firebase properties:
-     ```properties
-     spring.cloud.gcp.project-id=your-firebase-project-id
-     firebase.service-account.file=firebase-service-account.json
-     ```
-
-5. Run the backend:
+4. Run the backend:
    ```bash
    ./mvnw spring-boot:run
    ```

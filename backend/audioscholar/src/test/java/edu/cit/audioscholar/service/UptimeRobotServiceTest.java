@@ -40,10 +40,10 @@ class UptimeRobotServiceTest {
 	void getMonitorsMapsV3DataResponse() throws IOException {
 		try (TestHttpServer server = new TestHttpServer(200,
 				"{\"data\":[{\"id\":123,\"friendlyName\":\"AudioScholar Render Backend\","
-						+ "\"url\":\"https://it342-g3-audioscholar-onrender-com.onrender.com/actuator/health\","
+						+ "\"url\":\"https://audioscholarplus.onrender.com/actuator/health\","
 						+ "\"status\":\"UP\",\"currentStateDuration\":3600}],\"nextLink\":null}")) {
 			UptimeRobotService service = new UptimeRobotService(WebClient.builder(), true, "test-token",
-					server.baseUrl(), "it342-g3-audioscholar-onrender-com.onrender.com", Duration.ofSeconds(2));
+					server.baseUrl(), "audioscholarplus.onrender.com", Duration.ofSeconds(2));
 
 			List<Monitor> monitors = service.getMonitors();
 
@@ -52,8 +52,7 @@ class UptimeRobotServiceTest {
 			assertEquals("AudioScholar Render Backend", monitors.get(0).getFriendlyName());
 			assertEquals("Up", monitors.get(0).getStatusText());
 			assertEquals("green", monitors.get(0).getStatusColor());
-			assertEquals("/monitors?limit=50&url=it342-g3-audioscholar-onrender-com.onrender.com",
-					server.getRequestUri());
+			assertEquals("/monitors?limit=50&url=audioscholarplus.onrender.com", server.getRequestUri());
 			assertEquals("Bearer test-token", server.getAuthorizationHeader());
 		}
 	}
