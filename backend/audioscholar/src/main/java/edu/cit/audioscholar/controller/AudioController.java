@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -102,7 +103,8 @@ public class AudioController {
 			@RequestParam(value = "powerpointFile", required = false) MultipartFile powerpointFile,
 			@RequestParam(value = "title", required = false) String title,
 			@RequestParam(value = "description", required = false) String description,
-			@RequestParam(value = "outputType", required = false) String outputType) throws IOException {
+			@RequestParam(value = "outputType", required = false) String outputType,
+			@RequestHeader(value = "X-AudioScholar-Client", required = false) String clientHeader) throws IOException {
 		log.info("Received request to /api/audio/upload with audio and potentially PowerPoint");
 		Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
 		if (authentication == null || !authentication.isAuthenticated()) {
@@ -153,7 +155,7 @@ public class AudioController {
 				userId);
 
 		AudioMetadata initialMetadata = audioProcessingService.queueFilesForUpload(audioFile, powerpointFile,
-				optTitle.orElse(null), optDescription.orElse(null), outputType, userId);
+				optTitle.orElse(null), optDescription.orElse(null), outputType, userId, clientHeader);
 
 		log.info("Successfully queued file(s) for upload. Metadata ID: {}, Status: {}, User ID: {}",
 				initialMetadata.getId(), initialMetadata.getStatus(), userId);

@@ -2,6 +2,7 @@ package edu.cit.audioscholar.service;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -22,13 +23,14 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import edu.cit.audioscholar.config.RabbitMQConfig;
+import edu.cit.audioscholar.dto.MultiSourceJobMessage;
 import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.KeyPoint;
 import edu.cit.audioscholar.model.MergedSummary;
 import edu.cit.audioscholar.model.MultiSourceJob;
 import edu.cit.audioscholar.model.OutputType;
 import edu.cit.audioscholar.model.ProcessingStatus;
-import edu.cit.audioscholar.model.QualityReport;
 import edu.cit.audioscholar.model.SourceAttribution;
 import edu.cit.audioscholar.model.SourceFile;
 import edu.cit.audioscholar.model.SourceKind;
@@ -60,6 +62,10 @@ public class MultiSourceJobService {
 	private final AudioProcessingGuardrailService guardrailService;
 	private final Path tempDir;
 	private final String maxFileSizeValue;
+	private final ConfirmedRabbitPublisher publisher;
+	private final ValidationEventService events;
+	private final TimedTranscriptSegmentService timedSegments;
+	private final SemanticEvidenceService semanticEvidence;
 
 	public MultiSourceJobService(GeminiService geminiService, QualityReportService qualityReportService,
 			SummaryService summaryService, DeduplicationService deduplicationService,
@@ -68,7 +74,9 @@ public class MultiSourceJobService {
 			DocumentTextExtractionService documentTextExtractionService,
 			MergedSummaryRepository mergedSummaryRepository, MultiSourceJobRepository multiSourceJobRepository,
 			AudioProcessingGuardrailService guardrailService, @Value("${app.temp-file-dir}") String tempDirStr,
-			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue) throws IOException {
+			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue,
+			ConfirmedRabbitPublisher publisher, ValidationEventService events,
+			TimedTranscriptSegmentService timedSegments, SemanticEvidenceService semanticEvidence) throws IOException {
 		this.geminiService = geminiService;
 		this.qualityReportService = qualityReportService;
 		this.summaryService = summaryService;
@@ -82,12 +90,22 @@ public class MultiSourceJobService {
 		this.guardrailService = guardrailService;
 		this.tempDir = Path.of(tempDirStr);
 		this.maxFileSizeValue = maxFileSizeValue;
+		this.publisher = publisher;
+		this.events = events;
+		this.timedSegments = timedSegments;
+		this.semanticEvidence = semanticEvidence;
 		Files.createDirectories(this.tempDir);
 	}
 
 	public MultiSourceJob createAndProcess(String userId, List<MultipartFile> mediaFiles,
 			List<MultipartFile> documentFiles, String title, String description, String outputTypeValue)
 			throws Exception {
+		return createAndProcess(userId, mediaFiles, documentFiles, title, description, outputTypeValue, null);
+	}
+
+	public MultiSourceJob createAndProcess(String userId, List<MultipartFile> mediaFiles,
+			List<MultipartFile> documentFiles, String title, String description, String outputTypeValue,
+			String clientHeader) throws Exception {
 		OutputType outputType = OutputType.fromValue(outputTypeValue);
 		List<MultipartFile> normalizedMediaFiles = normalizeFiles(mediaFiles);
 		List<MultipartFile> normalizedDocumentFiles = normalizeFiles(documentFiles);
@@ -102,11 +120,16 @@ public class MultiSourceJobService {
 		job.setOutputType(outputType.name());
 		job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
 		job.setSourceCount(normalizedMediaFiles.size() + normalizedDocumentFiles.size());
+		job.setClientSource(ValidationEventService.clientSource(clientHeader));
+		job.setAcceptedAt(new Date());
 		save(job);
+		event(job, "BATCH_VALIDATED", List.of(9), "initial", Map.of("sourceCount", job.getSourceCount()));
+		event(job, "CONFIG_CONFIRMED", List.of(2), "initial",
+				Map.of("jobId", job.getJobId(), "outputType", outputType.name()));
+		event(job, "JOB_ACCEPTED", List.of(2, 9), "initial", Map.of("jobId", job.getJobId()));
 
 		List<Path> tempFiles = new ArrayList<>();
 		try {
-			List<PendingSource> pendingSources = new ArrayList<>();
 			List<AudioProcessingGuardrailService.GuardrailResult> mediaGuardrails = new ArrayList<>();
 			List<MultipartFile> allFiles = new ArrayList<>();
 			allFiles.addAll(normalizedMediaFiles);
@@ -128,55 +151,26 @@ public class MultiSourceJobService {
 					sourceFile.setAudioFingerprint(guardrail.fingerprint());
 					mediaGuardrails.add(guardrail);
 				}
-				pendingSources.add(new PendingSource(file, tempFile, sourceKind, sourceFile, sourceLabel));
+				sourceFileService.save(sourceFile);
+				job.getSourceFiles().add(sourceFile);
+				save(job);
+				event(job, "SOURCE_UPLOADED", List.of(9), sourceFile.getSourceFileId(), Map.of("jobId", job.getJobId(),
+						"sourceFileId", sourceFile.getSourceFileId(), "sourceKind", sourceKind.name()));
 			}
 			guardrailService.validateMultiSourceAggregate(mediaGuardrails);
-
-			List<SourceFile> sourceFiles = new ArrayList<>();
-			for (PendingSource pending : pendingSources) {
-				MultipartFile file = pending.file();
-				Path tempFile = pending.tempFile();
-				SourceKind sourceKind = pending.sourceKind();
-				SourceFile sourceFile = pending.sourceFile();
-				String sourceLabel = pending.sourceLabel();
-				QualityReport report = SourceKind.MEDIA == sourceKind
-						? qualityReportService.analyze(job.getJobId() + "-" + sourceLabel, tempFile)
-						: QualityReport.unavailable(job.getJobId() + "-" + sourceLabel);
-				sourceFile.setQualityReport(report);
-
-				String transcript = SourceKind.MEDIA == sourceKind
-						? geminiService.callGeminiTranscriptionAPIWithFallback(tempFile, file.getOriginalFilename())
-						: documentTextExtractionService.extractText(tempFile, file.getOriginalFilename(),
-								file.getContentType());
-				rejectGeminiErrorTranscript(transcript);
-				sourceFile.setTranscriptText(transcript);
-				sourceFiles.add(sourceFile);
-				sourceFileService.save(sourceFile);
-				sourceTranscriptService.saveTranscript(job.getJobId(), sourceFile);
-			}
-
-			job.setSourceFiles(sourceFiles);
-			job.setStatus(ProcessingStatus.SUMMARIZING.name());
-			job.setUpdatedAt(new Date());
+			event(job, "ALL_SOURCES_UPLOADED", List.of(9), "initial", Map.of("sourceCount", job.getSourceCount()));
+			job.setQueuedAt(new Date());
 			save(job);
-
-			String mergedTranscript = buildMergedTranscript(sourceFiles);
-			String summaryJson = geminiService.generateTranscriptOnlySummary(mergedTranscript, job.getJobId(),
-					outputType.name());
-			Summary summary = parseMergedSummary(job, summaryJson);
-			summaryService.createSummary(summary);
-			MergedSummary mergedSummary = buildMergedSummaryRecord(job, summary);
-			mergedSummaryRepository.save(mergedSummary);
-			job.setMergedSummary(summary);
-			job.setStatus(ProcessingStatus.COMPLETE.name());
-			job.setUpdatedAt(new Date());
-			save(job);
+			publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY,
+					new MultiSourceJobMessage(job.getJobId()));
+			event(job, "JOB_QUEUED", List.of(9), "initial", Map.of("jobId", job.getJobId()));
 			return job;
 		} catch (Exception e) {
 			job.setStatus(ProcessingStatus.FAILED.name());
 			job.setFailureReason(e.getMessage());
 			job.setUpdatedAt(new Date());
 			save(job);
+			event(job, "JOB_FAILED", List.of(9), "submission", Map.of("jobId", job.getJobId(), "outcome", "FAILED"));
 			throw e;
 		} finally {
 			for (Path tempFile : tempFiles) {
@@ -185,6 +179,81 @@ public class MultiSourceJobService {
 				} catch (IOException ignored) {
 				}
 			}
+		}
+	}
+
+	public void processQueuedJob(String jobId) throws Exception {
+		if (!multiSourceJobRepository.claim(jobId))
+			return;
+		MultiSourceJob job = hydrateJob(multiSourceJobRepository.findById(jobId));
+		job.setStatus("PROCESSING");
+		job.setProcessingStartedAt(new Date());
+		job.setProcessingAttempts(job.getProcessingAttempts() + 1);
+		save(job);
+		event(job, "PROCESSING_STARTED", List.of(2, 9), "initial", Map.of("jobId", jobId));
+		List<Path> localFiles = new ArrayList<>();
+		try {
+			List<SourceFile> sources = new ArrayList<>();
+			for (Map<String, Object> row : sourceFileService.findByJobId(jobId)) {
+				SourceFile source = hydrateSource(row);
+				Path local = downloadSource(source);
+				localFiles.add(local);
+				SourceKind kind = SourceKind.valueOf(source.getSourceKind());
+				if (kind == SourceKind.MEDIA)
+					source.setQualityReport(qualityReportService.analyzeAndSave(source.getSourceFileId(), local, jobId,
+							"MULTI_SOURCE", job.getClientSource(), "multiSourceJobs"));
+				String transcript = kind == SourceKind.MEDIA
+						? geminiService.callGeminiTranscriptionAPIWithFallback(local, source.getFileName())
+						: documentTextExtractionService.extractText(local, source.getFileName(),
+								source.getContentType());
+				rejectGeminiErrorTranscript(transcript);
+				source.setTranscriptText(transcript);
+				source.setTranscriptionCompletedAt(new Date());
+				sourceFileService.save(source);
+				sourceTranscriptService.saveTranscript(jobId, source);
+				timedSegments.persist(source);
+				sources.add(source);
+				event(job, "SOURCE_TRANSCRIPTION_COMPLETED", List.of(12), source.getSourceFileId(),
+						Map.of("jobId", jobId, "sourceFileId", source.getSourceFileId()));
+			}
+			job.setSourceFiles(sources);
+			job.setFinalTranscriptionCompletedAt(new Date());
+			job.setStatus(ProcessingStatus.SUMMARIZING.name());
+			save(job);
+			Summary summary = parseMergedSummary(job, geminiService
+					.generateTranscriptOnlySummary(buildMergedTranscript(sources), jobId, job.getOutputType()));
+			List<SourceAttribution> attributions = semanticEvidence.evaluate(job, summary);
+			summaryService.createSummary(summary);
+			MergedSummary merged = buildMergedSummaryRecord(job, summary, attributions);
+			mergedSummaryRepository.save(merged);
+			job.setMergedSummary(summary);
+			job.setMergedSummaryAvailableAt(new Date());
+			event(job, "MERGED_SUMMARY_AVAILABLE", List.of(12), summary.getSummaryId(),
+					Map.of("jobId", jobId, "summaryId", summary.getSummaryId()));
+			job.setStatus(ProcessingStatus.COMPLETE.name());
+			job.setUpdatedAt(new Date());
+			save(job);
+			event(job, "JOB_COMPLETED", List.of(9), "initial", Map.of("jobId", jobId));
+		} catch (Exception e) {
+			job.setFailureReason(e.getMessage());
+			job.setUpdatedAt(new Date());
+			if (job.getProcessingAttempts() < 3) {
+				job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
+				save(job);
+				publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY,
+						new MultiSourceJobMessage(jobId),
+						java.time.Duration.ofSeconds(job.getProcessingAttempts() * 5L));
+				event(job, "JOB_RETRY_QUEUED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(),
+						Map.of("jobId", jobId, "outcome", "RETRY_QUEUED", "attempt", job.getProcessingAttempts()));
+			} else {
+				job.setStatus(ProcessingStatus.FAILED.name());
+				save(job);
+				event(job, "JOB_FAILED", List.of(9, 12), "initial",
+						Map.of("jobId", jobId, "outcome", "FAILED", "attempts", job.getProcessingAttempts()));
+			}
+		} finally {
+			for (Path file : localFiles)
+				Files.deleteIfExists(file);
 		}
 	}
 
@@ -321,6 +390,90 @@ public class MultiSourceJobService {
 				.forEach(attribution -> sourceAttributionService.save(mergedSummary.getMergedSummaryId(), attribution));
 		mergedSummary.setSourceAttributions(attributions);
 		return mergedSummary;
+	}
+
+	private MergedSummary buildMergedSummaryRecord(MultiSourceJob job, Summary summary,
+			List<SourceAttribution> attributions) {
+		MergedSummary merged = new MergedSummary();
+		merged.setJobId(job.getJobId());
+		merged.setUserId(job.getUserId());
+		merged.setContent(summary.getFormattedSummaryText());
+		merged.setFlashcards(summary.getFlashcards());
+		merged.setStatus(ProcessingStatus.COMPLETE.name());
+		for (SourceAttribution attribution : attributions)
+			sourceAttributionService.save(merged.getMergedSummaryId(), attribution);
+		merged.setSourceAttributions(attributions);
+		return merged;
+	}
+
+	private void event(MultiSourceJob job, String type, List<Integer> objectives, String key, Map<String, ?> payload) {
+		if (!events.emit(job.getJobId(), "MULTI_SOURCE", job.getClientSource(), type, objectives, key, payload,
+				"multiSourceJobs"))
+			job.setMeasurementIncomplete(true);
+	}
+
+	private MultiSourceJob hydrateJob(Map<String, Object> row) {
+		if (row == null)
+			throw new IllegalArgumentException("Multi-source job not found");
+		MultiSourceJob job = new MultiSourceJob();
+		job.setJobId((String) row.get("jobId"));
+		job.setUserId((String) row.get("userId"));
+		job.setTitle((String) row.get("title"));
+		job.setDescription((String) row.get("description"));
+		job.setOutputType((String) row.get("outputType"));
+		job.setStatus((String) row.get("status"));
+		job.setClientSource((String) row.getOrDefault("clientSource", "UNKNOWN"));
+		job.setSourceCount(row.get("sourceCount") instanceof Number n ? n.intValue() : 0);
+		job.setMeasurementIncomplete(Boolean.TRUE.equals(row.get("measurementIncomplete")));
+		job.setProcessingAttempts(row.get("processingAttempts") instanceof Number n ? n.intValue() : 0);
+		if (row.get("sourceFiles") instanceof List<?> rawSources) {
+			List<SourceFile> sources = new ArrayList<>();
+			for (Object raw : rawSources)
+				if (raw instanceof Map<?, ?> map) {
+					Map<String, Object> typed = new HashMap<>();
+					map.forEach((key, value) -> typed.put(String.valueOf(key), value));
+					sources.add(hydrateSource(typed));
+				}
+			job.setSourceFiles(sources);
+		}
+		job.setAcceptedAt(date(row.get("acceptedAt")));
+		job.setQueuedAt(date(row.get("queuedAt")));
+		job.setProcessingStartedAt(date(row.get("processingStartedAt")));
+		return job;
+	}
+
+	private SourceFile hydrateSource(Map<String, Object> row) {
+		SourceFile source = new SourceFile();
+		source.setSourceFileId((String) row.get("sourceFileId"));
+		source.setJobId((String) row.get("jobId"));
+		source.setSourceLabel((String) row.get("sourceLabel"));
+		source.setSourceKind((String) row.get("sourceKind"));
+		source.setFileUrl((String) row.get("fileUrl"));
+		source.setFileName((String) row.get("fileName"));
+		source.setContentType((String) row.get("contentType"));
+		source.setFileType((String) row.get("fileType"));
+		source.setUploadStatus((String) row.get("uploadStatus"));
+		if (row.get("durationSeconds") instanceof Number n)
+			source.setDurationSeconds(n.longValue());
+		source.setUploadCompletedAt(date(row.get("uploadCompletedAt")));
+		return source;
+	}
+
+	private Date date(Object value) {
+		if (value instanceof Date date)
+			return date;
+		if (value instanceof com.google.cloud.Timestamp timestamp)
+			return timestamp.toDate();
+		return null;
+	}
+
+	private Path downloadSource(SourceFile source) throws Exception {
+		String extension = StringUtils.getFilenameExtension(source.getFileName());
+		Path target = tempDir.resolve("multi-worker-" + UUID.randomUUID() + (extension == null ? "" : "." + extension));
+		try (InputStream input = URI.create(source.getFileUrl()).toURL().openStream()) {
+			Files.copy(input, target);
+		}
+		return target;
 	}
 
 	private String detectSourceLabel(String text, List<SourceFile> sourceFiles) {

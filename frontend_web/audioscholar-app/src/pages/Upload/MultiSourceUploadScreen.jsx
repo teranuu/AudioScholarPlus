@@ -235,7 +235,7 @@ const MultiSourceUploadScreen = () => {
     try {
       const response = await fetch(`${API_BASE_URL}api/audio/multi-source`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${token}`, 'X-AudioScholar-Client': 'WEB' },
         body: formData,
       });
       const responseForTextFallback = response.clone();
@@ -258,7 +258,19 @@ const MultiSourceUploadScreen = () => {
         }
         throw new Error(data.message || `Upload failed with status ${response.status}`);
       }
-      setJob(data);
+	  let current = data;
+	  const terminal = new Set(['COMPLETE', 'FAILED']);
+	  while (current.jobId && !terminal.has(current.status)) {
+		await new Promise((resolve) => setTimeout(resolve, 2000));
+		const poll = await fetch(`${API_BASE_URL}api/audio/multi-source/${current.jobId}`, {
+		  headers: { Authorization: `Bearer ${token}`, 'X-AudioScholar-Client': 'WEB' },
+		});
+		if (!poll.ok) throw new Error(`Could not check processing status (${poll.status}).`);
+		current = await poll.json();
+		setJob(current);
+	  }
+	  if (current.status === 'FAILED') throw new Error(current.failureReason || 'Multi-source processing failed.');
+	  setJob(current);
     } catch (err) {
       setFormError(err.message);
     } finally {

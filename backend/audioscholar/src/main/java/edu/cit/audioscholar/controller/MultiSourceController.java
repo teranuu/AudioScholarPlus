@@ -10,6 +10,7 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -34,10 +35,12 @@ public class MultiSourceController {
 			@RequestParam(value = "documentFiles", required = false) List<MultipartFile> documentFiles,
 			@RequestParam(value = "title", required = false) String title,
 			@RequestParam(value = "description", required = false) String description,
-			@RequestParam(value = "outputType", required = false) String outputType, Authentication authentication) {
+			@RequestParam(value = "outputType", required = false) String outputType,
+			@RequestHeader(value = "X-AudioScholar-Client", required = false) String clientHeader,
+			Authentication authentication) {
 		try {
 			MultiSourceJob job = multiSourceJobService.createAndProcess(authentication.getName(), mediaFiles,
-					documentFiles, title, description, outputType);
+					documentFiles, title, description, outputType, clientHeader);
 			return ResponseEntity.status(HttpStatus.ACCEPTED).body(job.toMap());
 		} catch (IllegalArgumentException | ProcessingGuardrailException e) {
 			return ResponseEntity.badRequest().body(Map.of("status", "FAILED", "message", e.getMessage()));

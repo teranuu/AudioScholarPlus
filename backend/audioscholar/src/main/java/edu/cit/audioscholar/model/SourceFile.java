@@ -22,6 +22,8 @@ public class SourceFile {
 	private String transcriptText;
 	private QualityReport qualityReport;
 	private Date createdAt = new Date();
+	private Date uploadCompletedAt;
+	private Date transcriptionCompletedAt;
 
 	public String getSourceFileId() {
 		return sourceFileId;
@@ -119,6 +121,18 @@ public class SourceFile {
 	public void setCreatedAt(Date createdAt) {
 		this.createdAt = createdAt;
 	}
+	public Date getUploadCompletedAt() {
+		return uploadCompletedAt;
+	}
+	public void setUploadCompletedAt(Date value) {
+		uploadCompletedAt = value;
+	}
+	public Date getTranscriptionCompletedAt() {
+		return transcriptionCompletedAt;
+	}
+	public void setTranscriptionCompletedAt(Date value) {
+		transcriptionCompletedAt = value;
+	}
 
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
@@ -138,6 +152,8 @@ public class SourceFile {
 		map.put("transcriptText", transcriptText);
 		map.put("qualityReport", qualityReport != null ? qualityReport.toMap() : null);
 		map.put("createdAt", createdAt);
+		map.put("uploadCompletedAt", uploadCompletedAt);
+		map.put("transcriptionCompletedAt", transcriptionCompletedAt);
 		return map;
 	}
 }

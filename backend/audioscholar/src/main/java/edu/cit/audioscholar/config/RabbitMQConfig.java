@@ -46,6 +46,8 @@ public class RabbitMQConfig {
 
 	public static final String RECOMMENDATIONS_QUEUE_NAME = "recommendations.queue";
 	public static final String RECOMMENDATIONS_ROUTING_KEY = "recommendations.process.key";
+	public static final String MULTI_SOURCE_QUEUE_NAME = "multi.source.processing.queue";
+	public static final String MULTI_SOURCE_ROUTING_KEY = "multi.source.process.key";
 
 	@Value("${spring.rabbitmq.listener.simple.concurrency:1}")
 	private int concurrency;
@@ -134,6 +136,10 @@ public class RabbitMQConfig {
 	Queue recommendationsQueue() {
 		return new Queue(RECOMMENDATIONS_QUEUE_NAME, true);
 	}
+	@Bean("multiSourceQueue")
+	Queue multiSourceQueue() {
+		return new Queue(MULTI_SOURCE_QUEUE_NAME, true);
+	}
 
 	@Bean
 	Binding processingBinding(@Qualifier("processingQueue") Queue queue, TopicExchange exchange) {
@@ -178,6 +184,10 @@ public class RabbitMQConfig {
 	@Bean
 	Binding recommendationsBinding(@Qualifier("recommendationsQueue") Queue queue, TopicExchange exchange) {
 		return BindingBuilder.bind(queue).to(exchange).with(RECOMMENDATIONS_ROUTING_KEY);
+	}
+	@Bean
+	Binding multiSourceBinding(@Qualifier("multiSourceQueue") Queue queue, TopicExchange exchange) {
+		return BindingBuilder.bind(queue).to(exchange).with(MULTI_SOURCE_ROUTING_KEY);
 	}
 
 	@Bean

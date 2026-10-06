@@ -162,7 +162,7 @@ public class SecurityConfig {
 		configuration.setAllowedOrigins(parseAllowedOrigins());
 		configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
 		configuration.setAllowedHeaders(Arrays.asList("Authorization", "Cache-Control", "Content-Type",
-				"X-Requested-With", "Accept", "X-CSRF-TOKEN"));
+				"X-Requested-With", "Accept", "X-CSRF-TOKEN", "X-AudioScholar-Client"));
 		configuration.setAllowCredentials(true);
 		configuration.setExposedHeaders(List.of("Authorization"));
 		configuration.setMaxAge(3600L);

@@ -14,6 +14,8 @@ public class Flashcard {
 	private String back;
 	private String sourceStartTime;
 	private String sourceEndTime;
+	private String sourceFileId;
+	private String sourceSegmentId;
 	private Date createdAt = new Date();
 
 	public Flashcard() {
@@ -71,6 +73,18 @@ public class Flashcard {
 	public void setSourceEndTime(String sourceEndTime) {
 		this.sourceEndTime = sourceEndTime;
 	}
+	public String getSourceFileId() {
+		return sourceFileId;
+	}
+	public void setSourceFileId(String value) {
+		sourceFileId = value;
+	}
+	public String getSourceSegmentId() {
+		return sourceSegmentId;
+	}
+	public void setSourceSegmentId(String value) {
+		sourceSegmentId = value;
+	}
 
 	public Date getCreatedAt() {
 		return createdAt;
@@ -88,6 +102,8 @@ public class Flashcard {
 		map.put("back", back);
 		map.put("sourceStartTime", sourceStartTime);
 		map.put("sourceEndTime", sourceEndTime);
+		map.put("sourceFileId", sourceFileId);
+		map.put("sourceSegmentId", sourceSegmentId);
 		map.put("createdAt", createdAt);
 		return map;
 	}
@@ -103,6 +119,8 @@ public class Flashcard {
 		flashcard.back = (String) map.get("back");
 		flashcard.sourceStartTime = (String) map.get("sourceStartTime");
 		flashcard.sourceEndTime = (String) map.get("sourceEndTime");
+		flashcard.sourceFileId = (String) map.get("sourceFileId");
+		flashcard.sourceSegmentId = (String) map.get("sourceSegmentId");
 		Object created = map.get("createdAt");
 		if (created instanceof Timestamp timestamp) {
 			flashcard.createdAt = timestamp.toDate();

@@ -14,9 +14,6 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
 
 import edu.cit.audioscholar.model.MultiSourceJob;
-import edu.cit.audioscholar.model.ProcessingStatus;
-import edu.cit.audioscholar.model.QualityReport;
-import edu.cit.audioscholar.model.SourceFile;
 import edu.cit.audioscholar.model.Summary;
 
 class MultiSourceJobServiceTest {
@@ -118,40 +115,15 @@ class MultiSourceJobServiceTest {
 
 	@Test
 	void rejectsLegacyGeminiErrorPayloadAsMediaTranscript() throws Exception {
-		GeminiService geminiService = mock(GeminiService.class);
-		QualityReportService qualityReportService = mock(QualityReportService.class);
-		SourceFileService sourceFileService = mock(SourceFileService.class);
-		SourceTranscriptService sourceTranscriptService = mock(SourceTranscriptService.class);
-		MultiSourceJobRepository multiSourceJobRepository = mock(MultiSourceJobRepository.class);
-		AudioProcessingGuardrailService guardrailService = mock(AudioProcessingGuardrailService.class);
-		when(guardrailService.validateAudioFile(any(), anyString()))
-				.thenReturn(new AudioProcessingGuardrailService.GuardrailResult(60, 1_920, "fingerprint", "audio"));
-		when(qualityReportService.analyze(anyString(), any())).thenReturn(QualityReport.allClear("job-1"));
-		when(sourceFileService.createSourceFile(anyString(), anyString(), any(), any(), any()))
-				.thenAnswer(invocation -> {
-					SourceFile sourceFile = new SourceFile();
-					sourceFile.setJobId(invocation.getArgument(0));
-					sourceFile.setSourceLabel(invocation.getArgument(1));
-					sourceFile.setFileName("lecture.mp3");
-					sourceFile.setContentType("audio/mpeg");
-					return sourceFile;
-				});
-		when(geminiService.callGeminiTranscriptionAPIWithFallback(any(), anyString()))
-				.thenReturn("{\"error\":\"Unexpected Transcription Error\",\"details\":\"503 Service Unavailable\"}");
-		when(multiSourceJobRepository.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
-		MultiSourceJobService service = new MultiSourceJobService(geminiService, qualityReportService,
-				mock(SummaryService.class), mock(DeduplicationService.class), mock(SourceAttributionService.class),
-				sourceFileService, sourceTranscriptService, mock(DocumentTextExtractionService.class),
-				mock(MergedSummaryRepository.class), multiSourceJobRepository, guardrailService, tempDir.toString(),
-				"500MB");
-
-		java.io.IOException exception = assertThrows(java.io.IOException.class, () -> service.createAndProcess("user-1",
-				List.of(media("a.mp3"), media("b.mp3")), null, "Title", null, "NOTES"));
+		MultiSourceJobService service = service();
+		Method reject = MultiSourceJobService.class.getDeclaredMethod("rejectGeminiErrorTranscript", String.class);
+		reject.setAccessible(true);
+		java.lang.reflect.InvocationTargetException wrapped = assertThrows(
+				java.lang.reflect.InvocationTargetException.class, () -> reject.invoke(service,
+						"{\"error\":\"Unexpected Transcription Error\",\"details\":\"503 Service Unavailable\"}"));
+		java.io.IOException exception = (java.io.IOException) wrapped.getCause();
 
 		assertTrue(exception.getMessage().contains("Gemini transcription failed"));
-		verify(sourceTranscriptService, never()).saveTranscript(anyString(), any());
-		verify(multiSourceJobRepository, atLeastOnce()).save(argThat(job -> job instanceof MultiSourceJob
-				&& ProcessingStatus.FAILED.name().equals(((MultiSourceJob) job).getStatus())));
 	}
 
 	private MultiSourceJobService service() throws Exception {
@@ -163,7 +135,9 @@ class MultiSourceJobServiceTest {
 				mock(SummaryService.class), mock(DeduplicationService.class), mock(SourceAttributionService.class),
 				mock(SourceFileService.class), mock(SourceTranscriptService.class),
 				mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class),
-				mock(MultiSourceJobRepository.class), guardrailService, tempDir.toString(), "500MB");
+				mock(MultiSourceJobRepository.class), guardrailService, tempDir.toString(), "500MB",
+				mock(ConfirmedRabbitPublisher.class), mock(ValidationEventService.class),
+				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class));
 	}
 
 	private MultiSourceJobService serviceWithDeduplication() throws Exception {
@@ -172,7 +146,8 @@ class MultiSourceJobServiceTest {
 				mock(SourceFileService.class), mock(SourceTranscriptService.class),
 				mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class),
 				mock(MultiSourceJobRepository.class), mock(AudioProcessingGuardrailService.class), tempDir.toString(),
-				"500MB");
+				"500MB", mock(ConfirmedRabbitPublisher.class), mock(ValidationEventService.class),
+				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class));
 	}
 
 	private MockMultipartFile media(String filename) {

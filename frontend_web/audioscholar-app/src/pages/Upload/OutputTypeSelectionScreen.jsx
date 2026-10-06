@@ -257,6 +257,7 @@ const OutputTypeSelectionScreen = () => {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${AuthToken}`,
+          'X-AudioScholar-Client': 'WEB',
         },
         body: formData,
       });

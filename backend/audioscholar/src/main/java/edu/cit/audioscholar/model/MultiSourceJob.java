@@ -20,6 +20,14 @@ public class MultiSourceJob {
 	private Summary mergedSummary;
 	private Date createdAt = new Date();
 	private Date updatedAt = new Date();
+	private Date acceptedAt;
+	private Date queuedAt;
+	private Date processingStartedAt;
+	private Date finalTranscriptionCompletedAt;
+	private Date mergedSummaryAvailableAt;
+	private boolean measurementIncomplete;
+	private String clientSource = "UNKNOWN";
+	private int processingAttempts;
 
 	public String getJobId() {
 		return jobId;
@@ -95,6 +103,54 @@ public class MultiSourceJob {
 	public void setUpdatedAt(Date updatedAt) {
 		this.updatedAt = updatedAt;
 	}
+	public Date getAcceptedAt() {
+		return acceptedAt;
+	}
+	public void setAcceptedAt(Date value) {
+		acceptedAt = value;
+	}
+	public Date getQueuedAt() {
+		return queuedAt;
+	}
+	public void setQueuedAt(Date value) {
+		queuedAt = value;
+	}
+	public Date getProcessingStartedAt() {
+		return processingStartedAt;
+	}
+	public void setProcessingStartedAt(Date value) {
+		processingStartedAt = value;
+	}
+	public Date getFinalTranscriptionCompletedAt() {
+		return finalTranscriptionCompletedAt;
+	}
+	public void setFinalTranscriptionCompletedAt(Date value) {
+		finalTranscriptionCompletedAt = value;
+	}
+	public Date getMergedSummaryAvailableAt() {
+		return mergedSummaryAvailableAt;
+	}
+	public void setMergedSummaryAvailableAt(Date value) {
+		mergedSummaryAvailableAt = value;
+	}
+	public boolean isMeasurementIncomplete() {
+		return measurementIncomplete;
+	}
+	public void setMeasurementIncomplete(boolean value) {
+		measurementIncomplete = value;
+	}
+	public String getClientSource() {
+		return clientSource;
+	}
+	public void setClientSource(String value) {
+		clientSource = value;
+	}
+	public int getProcessingAttempts() {
+		return processingAttempts;
+	}
+	public void setProcessingAttempts(int value) {
+		processingAttempts = value;
+	}
 
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
@@ -110,6 +166,14 @@ public class MultiSourceJob {
 		map.put("mergedSummary", mergedSummary != null ? mergedSummary.toMap() : null);
 		map.put("createdAt", createdAt);
 		map.put("updatedAt", updatedAt);
+		map.put("acceptedAt", acceptedAt);
+		map.put("queuedAt", queuedAt);
+		map.put("processingStartedAt", processingStartedAt);
+		map.put("finalTranscriptionCompletedAt", finalTranscriptionCompletedAt);
+		map.put("mergedSummaryAvailableAt", mergedSummaryAvailableAt);
+		map.put("measurementIncomplete", measurementIncomplete);
+		map.put("clientSource", clientSource);
+		map.put("processingAttempts", processingAttempts);
 		return map;
 	}
 }

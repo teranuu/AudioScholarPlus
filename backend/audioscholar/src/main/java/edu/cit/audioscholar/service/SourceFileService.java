@@ -2,6 +2,9 @@ package edu.cit.audioscholar.service;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
 
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -33,7 +36,11 @@ public class SourceFileService {
 		sourceFile.setFileUrl(
 				storageService.storeSourceFile(localPath, file.getOriginalFilename(), file.getContentType()));
 		sourceFile.setUploadStatus("UPLOADED");
+		sourceFile.setUploadCompletedAt(new Date());
 		return sourceFile;
+	}
+	public List<Map<String, Object>> findByJobId(String jobId) {
+		return sourceFileRepository.findByJobId(jobId);
 	}
 
 	public SourceFile save(SourceFile sourceFile) {

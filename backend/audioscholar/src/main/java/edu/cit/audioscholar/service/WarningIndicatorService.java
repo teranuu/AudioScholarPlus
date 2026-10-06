@@ -6,6 +6,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -24,12 +25,19 @@ public class WarningIndicatorService {
 	private final SummaryService summaryService;
 	private final QualityReportService qualityReportService;
 	private final FirebaseService firebaseService;
+	private final ValidationEventService validationEvents;
 
 	public WarningIndicatorService(SummaryService summaryService, QualityReportService qualityReportService,
 			FirebaseService firebaseService) {
+		this(summaryService, qualityReportService, firebaseService, null);
+	}
+	@Autowired
+	public WarningIndicatorService(SummaryService summaryService, QualityReportService qualityReportService,
+			FirebaseService firebaseService, ValidationEventService validationEvents) {
 		this.summaryService = summaryService;
 		this.qualityReportService = qualityReportService;
 		this.firebaseService = firebaseService;
+		this.validationEvents = validationEvents;
 	}
 
 	public List<WarningIndicator> generateWarningIndicators(String summaryId) throws Exception {
@@ -52,8 +60,10 @@ public class WarningIndicatorService {
 		existingLinks.addAll(existingFlashcardWarningLinks(summary.getFlashcards()));
 		for (SummaryKeyPoint keyPoint : keyPoints) {
 			for (QualityIssue issue : report.getIssues()) {
-				if (checkTimestampOverlap(keyPoint.getSourceStartTime(), keyPoint.getSourceEndTime(),
-						issue.getStartTime(), issue.getEndTime())) {
+				String decision = persistMapping(summary, keyPoint.getKeyPointId(), null, keyPoint.getSourceFileId(),
+						keyPoint.getSourceSegmentId(), keyPoint.getSourceStartTime(), keyPoint.getSourceEndTime(),
+						issue);
+				if ("OVERLAP".equals(decision)) {
 					String linkKey = keyPoint.getKeyPointId() + "::" + issue.getIssueId();
 					if (existingLinks.contains(linkKey)) {
 						continue;
@@ -76,8 +86,10 @@ public class WarningIndicatorService {
 				continue;
 			}
 			for (QualityIssue issue : report.getIssues()) {
-				if (checkTimestampOverlap(flashcard.getSourceStartTime(), flashcard.getSourceEndTime(),
-						issue.getStartTime(), issue.getEndTime())) {
+				String decision = persistMapping(summary, null, flashcard.getCardId(), flashcard.getSourceFileId(),
+						flashcard.getSourceSegmentId(), flashcard.getSourceStartTime(), flashcard.getSourceEndTime(),
+						issue);
+				if ("OVERLAP".equals(decision)) {
 					String linkKey = flashcard.getCardId() + "::" + issue.getIssueId();
 					if (existingLinks.contains(linkKey)) {
 						continue;
@@ -150,7 +162,65 @@ public class WarningIndicatorService {
 		if (kpStart == null || kpEnd == null || isStart == null || isEnd == null) {
 			return false;
 		}
-		return kpStart <= isEnd && isStart <= kpEnd;
+		return kpStart < isEnd && isStart < kpEnd;
+	}
+
+	private String persistMapping(Summary summary, String keyPointId, String cardId, String sourceFileId,
+			String segmentId, String itemStart, String itemEnd, QualityIssue issue) {
+		Integer start = parseTimestamp(itemStart), end = parseTimestamp(itemEnd);
+		Long issueStart = issue.getStartMs(), issueEnd = issue.getEndMs();
+		String itemId = keyPointId != null ? keyPointId : cardId;
+		String decision;
+		long overlapMs = 0;
+		if (!StringUtils.hasText(sourceFileId) || !StringUtils.hasText(segmentId) || start == null || end == null
+				|| issueStart == null || issueEnd == null) {
+			decision = "UNMAPPABLE";
+		} else {
+			long itemStartMs = start * 1000L, itemEndMs = end * 1000L;
+			overlapMs = Math.max(0, Math.min(itemEndMs, issueEnd) - Math.max(itemStartMs, issueStart));
+			decision = overlapMs > 0 ? "OVERLAP" : "NO_OVERLAP";
+		}
+		String id = ValidationEventService.digest(summary.getSummaryId() + ":" + itemId + ":" + issue.getIssueId());
+		Map<String, Object> row = new java.util.LinkedHashMap<>();
+		row.put("mappingId", id);
+		row.put("summaryId", summary.getSummaryId());
+		row.put("recordingId", summary.getRecordingId());
+		row.put("itemId", itemId);
+		row.put("keyPointId", keyPointId);
+		row.put("cardId", cardId);
+		row.put("sourceFileId", sourceFileId);
+		row.put("segmentId", segmentId);
+		row.put("issueId", issue.getIssueId());
+		row.put("itemStartMs", start == null ? null : start * 1000L);
+		row.put("itemEndMs", end == null ? null : end * 1000L);
+		row.put("issueStartMs", issueStart);
+		row.put("issueEndMs", issueEnd);
+		row.put("overlapMs", overlapMs);
+		row.put("decision", decision);
+		row.put("algorithmVersion", "strict-interval-overlap-v1");
+		firebaseService.saveData("warningMappings", id, row);
+		Map<String, Object> multiWorkflow = StringUtils.hasText(summary.getRecordingId())
+				? firebaseService.getData("multiSourceJobs", summary.getRecordingId())
+				: null;
+		String workflowCollection = multiWorkflow != null ? "multiSourceJobs" : "audio_metadata";
+		String workflowType = multiWorkflow != null ? "MULTI_SOURCE" : "SINGLE_SOURCE";
+		Map<String, Object> workflow = multiWorkflow != null
+				? multiWorkflow
+				: StringUtils.hasText(summary.getRecordingId())
+						? firebaseService.getData("audio_metadata", summary.getRecordingId())
+						: null;
+		if ("UNMAPPABLE".equals(decision) && StringUtils.hasText(summary.getRecordingId()))
+			firebaseService.updateDataWithMap(workflowCollection, summary.getRecordingId(),
+					Map.of("measurementIncomplete", true));
+		String clientSource = workflow != null
+				? String.valueOf(workflow.getOrDefault("clientSource", "UNKNOWN"))
+				: "UNKNOWN";
+		if (validationEvents != null && StringUtils.hasText(summary.getRecordingId()))
+			validationEvents.emit(summary.getRecordingId(), workflowType, clientSource, "WARNING_MAPPING_PERSISTED",
+					List.of(7), id, Map.of("summaryId", summary.getSummaryId(), "decisionId", id, "algorithmVersion",
+							"strict-interval-overlap-v1"),
+					workflowCollection);
+		return decision;
 	}
 
 	private List<SummaryKeyPoint> getSummaryKeyPoints(Summary summary) {

@@ -55,6 +55,7 @@ public class AudioProcessingService {
 	private final Path tempFileDir;
 	@SuppressWarnings("unused")
 	private final CacheManager cacheManager;
+	private final ValidationEventService validationEvents;
 
 	public AudioProcessingService(FirebaseService firebaseService, NhostStorageService storageService,
 			ConfirmedRabbitPublisher confirmedRabbitPublisher,
@@ -62,7 +63,8 @@ public class AudioProcessingService {
 			AudioProcessingGuardrailService guardrailService,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue,
 			@Value("${app.temp-min-free-space:100MB}") String tempMinFreeSpaceValue,
-			@Value("${app.temp-file-dir}") String tempFileDirStr, CacheManager cacheManager) {
+			@Value("${app.temp-file-dir}") String tempFileDirStr, CacheManager cacheManager,
+			ValidationEventService validationEvents) {
 		this.firebaseService = firebaseService;
 		this.storageService = storageService;
 		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
@@ -82,6 +84,7 @@ public class AudioProcessingService {
 		}
 
 		this.cacheManager = cacheManager;
+		this.validationEvents = validationEvents;
 	}
 
 	private long getMaxFileSizeInBytes() {
@@ -91,6 +94,12 @@ public class AudioProcessingService {
 	@Caching(evict = {@CacheEvict(value = CACHE_METADATA_BY_USER, allEntries = true)})
 	public AudioMetadata queueFilesForUpload(MultipartFile audioFile, @Nullable MultipartFile powerpointFile,
 			@Nullable String title, @Nullable String description, String outputType, String userId)
+			throws IOException, InvalidAudioFileException, FirestoreInteractionException {
+		return queueFilesForUpload(audioFile, powerpointFile, title, description, outputType, userId, null);
+	}
+
+	public AudioMetadata queueFilesForUpload(MultipartFile audioFile, @Nullable MultipartFile powerpointFile,
+			@Nullable String title, @Nullable String description, String outputType, String userId, String clientHeader)
 			throws IOException, InvalidAudioFileException, FirestoreInteractionException {
 
 		log.info("Queueing files for upload: Audio: {}, PowerPoint: {}, Title: {}, User: {}",
@@ -148,6 +157,7 @@ public class AudioProcessingService {
 			initialMetadata.setLastUpdated(Timestamp.of(new Date()));
 			initialMetadata.setStatus(ProcessingStatus.UPLOAD_PENDING);
 			initialMetadata.setOutputType(selectedOutputType.name());
+			initialMetadata.setClientSource(ValidationEventService.clientSource(clientHeader));
 			initialMetadata.setTranscriptionComplete(false);
 			initialMetadata.setPdfConversionComplete(false);
 			initialMetadata.setRecordingId(metadataId);
@@ -207,6 +217,10 @@ public class AudioProcessingService {
 
 				firebaseService.saveData(firebaseService.getAudioMetadataCollectionName(), metadataId,
 						initialMetadata.toMap());
+				validationEvents.emit(metadataId, "SINGLE_SOURCE", initialMetadata.getClientSource(),
+						"CONFIG_CONFIRMED", List.of(2), "initial",
+						Map.of("recordingId", metadataId, "outputType", selectedOutputType.name()),
+						firebaseService.getAudioMetadataCollectionName());
 				log.info("Initial metadata (ID: {}) saved to Firestore with status UPLOAD_PENDING.", metadataId);
 			} catch (Exception e) {
 				log.error("Firestore error saving initial metadata for user {}: {}", userId, e.getMessage(), e);
@@ -216,6 +230,9 @@ public class AudioProcessingService {
 			}
 
 			try {
+				validationEvents.emit(metadataId, "SINGLE_SOURCE", initialMetadata.getClientSource(),
+						"PROCESSING_STARTED", List.of(2), "initial", Map.of("recordingId", metadataId),
+						firebaseService.getAudioMetadataCollectionName());
 				initialMetadata = updateMetadataStatus(metadataId, userId, ProcessingStatus.UPLOAD_IN_PROGRESS, null,
 						false);
 				publishUploadMessage(RabbitMQConfig.UPLOAD_AUDIO_ROUTING_KEY,

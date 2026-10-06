@@ -397,6 +397,40 @@ public class FirebaseService {
 		}
 	}
 
+	/**
+	 * Creates immutable evidence; retrying an existing deterministic document is
+	 * successful.
+	 */
+	public void createEvidence(String collection, String document, Map<String, Object> data) {
+		try {
+			getFirestore().collection(collection).document(document).create(data).get();
+		} catch (ExecutionException e) {
+			Throwable cause = e.getCause();
+			if (cause != null && io.grpc.Status.fromThrowable(cause).getCode() == io.grpc.Status.Code.ALREADY_EXISTS)
+				return;
+			throw new FirestoreInteractionException("Could not create validation evidence", e);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Interrupted creating validation evidence", e);
+		}
+	}
+
+	public boolean claimQueuedJob(String collection, String document) {
+		try {
+			DocumentReference ref = getFirestore().collection(collection).document(document);
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot snapshot = transaction.get(ref).get();
+				if (!snapshot.exists() || !"PROCESSING_QUEUED".equals(snapshot.getString("status")))
+					return false;
+				transaction.update(ref, Map.of("status", "PROCESSING", "processingStartedAt", Timestamp.now(),
+						"updatedAt", Timestamp.now()));
+				return true;
+			}).get();
+		} catch (Exception e) {
+			throw new FirestoreInteractionException("Could not claim queued job", e);
+		}
+	}
+
 	@SuppressWarnings("null")
 	public String deleteData(String collection, String document) {
 		try {

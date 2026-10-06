@@ -180,7 +180,9 @@ public class AudioTranscriptionListenerService {
 
 					try {
 						try {
-							var qualityReport = qualityReportService.analyzeAndSave(metadataId, tempFilePath);
+							var qualityReport = qualityReportService.analyzeAndSave(metadataId, tempFilePath,
+									metadataId, "SINGLE_SOURCE", metadata.getClientSource(),
+									firebaseService.getAudioMetadataCollectionName());
 							Map<String, Object> qualityUpdates = new HashMap<>();
 							qualityUpdates.put("qualityReport", qualityReport.toMap());
 							qualityUpdates.put("lastUpdated", Timestamp.now());
@@ -191,6 +193,8 @@ public class AudioTranscriptionListenerService {
 						} catch (Exception e) {
 							log.warn("[{}] Quality report generation failed without blocking transcription: {}",
 									metadataId, e.getMessage());
+							firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(),
+									metadataId, Map.of("measurementIncomplete", true));
 						}
 
 						metadata = requireMetadata(metadataId, message);

@@ -36,6 +36,8 @@ class WarningIndicatorServiceTest {
 		flashcard.setCardId("card-1");
 		flashcard.setSourceStartTime("00:10");
 		flashcard.setSourceEndTime("00:20");
+		flashcard.setSourceFileId("source-1");
+		flashcard.setSourceSegmentId("segment-1");
 
 		QualityIssue issue = new QualityIssue("00:15", "00:18", "UNCLEAR_AUDIO", "MODERATE", "Review this card.");
 		issue.setIssueId("issue-1");

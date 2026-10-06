@@ -38,26 +38,57 @@ public class QualityReportService {
 
 	private final QualityReportRepository qualityReportRepository;
 	private final QualityIssueDetector qualityIssueDetector;
+	private final ValidationEventService validationEvents;
 
 	public QualityReportService(FirebaseService firebaseService, QualityIssueDetector qualityIssueDetector) {
-		this(new QualityReportRepository(firebaseService), qualityIssueDetector);
+		this(new QualityReportRepository(firebaseService), qualityIssueDetector, null);
 	}
 
 	@Autowired
 	public QualityReportService(QualityReportRepository qualityReportRepository,
-			QualityIssueDetector qualityIssueDetector) {
+			QualityIssueDetector qualityIssueDetector, ValidationEventService validationEvents) {
 		this.qualityReportRepository = qualityReportRepository;
 		this.qualityIssueDetector = qualityIssueDetector;
+		this.validationEvents = validationEvents;
+	}
+	public QualityReportService(QualityReportRepository repository, QualityIssueDetector detector) {
+		this(repository, detector, null);
 	}
 
 	public QualityReport analyzeAndSave(String recordingId, Path mediaPath) {
+		return analyzeAndSave(recordingId, mediaPath, recordingId, "SINGLE_SOURCE", "UNKNOWN", "audio_metadata");
+	}
+
+	public QualityReport analyzeAndSave(String recordingId, Path mediaPath, String workflowId, String workflowType,
+			String clientSource, String workflowCollection) {
 		QualityReport report = analyze(recordingId, mediaPath);
+		emit(workflowId, workflowType, clientSource, "QUALITY_ANALYSIS_COMPLETED", List.of(3, 4, 5, 6),
+				report.getReportId(), Map.of("recordingId", recordingId, "reportId", report.getReportId(), "status",
+						report.getStatus(), "issueCount", report.getIssues().size()),
+				workflowCollection);
 		try {
 			save(report);
 		} catch (Exception e) {
-			log.warn("[{}] Quality report could not be saved: {}", recordingId, e.getMessage());
+			throw new IllegalStateException("Quality report could not be persisted for " + recordingId, e);
 		}
+		emit(workflowId, workflowType, clientSource, "QUALITY_REPORT_PERSISTED", List.of(6), report.getReportId(),
+				Map.of("recordingId", recordingId, "reportId", report.getReportId(), "status", report.getStatus()),
+				workflowCollection);
+		for (QualityIssue issue : report.getIssues())
+			emit(workflowId, workflowType, clientSource, "QUALITY_ISSUE_PERSISTED", List.of(3, 4, 5),
+					issue.getIssueId(),
+					Map.of("recordingId", recordingId, "reportId", report.getReportId(), "issueId", issue.getIssueId(),
+							"issueType", issue.getIssueType(), "startMs", issue.getStartMs(), "endMs", issue.getEndMs(),
+							"detectorVersion", issue.getDetectorVersion(), "thresholdVersion",
+							issue.getThresholdVersion()),
+					workflowCollection);
 		return report;
+	}
+
+	private void emit(String workflowId, String workflowType, String clientSource, String type,
+			List<Integer> objectives, String key, Map<String, ?> payload, String collection) {
+		if (validationEvents != null)
+			validationEvents.emit(workflowId, workflowType, clientSource, type, objectives, key, payload, collection);
 	}
 
 	public QualityReport getReport(String recordingId) throws ExecutionException, InterruptedException {

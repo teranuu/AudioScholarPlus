@@ -45,6 +45,8 @@ import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.ProcessingStatus;
 import edu.cit.audioscholar.model.Recording;
 import edu.cit.audioscholar.model.Summary;
+import edu.cit.audioscholar.model.SummaryKeyPoint;
+import edu.cit.audioscholar.model.TranscriptSegment;
 import edu.cit.audioscholar.util.RobustTaskExecutor;
 
 @Service
@@ -658,6 +660,47 @@ public class SummarizationListenerService {
 		if (flashcards != null) {
 			summary.setFlashcards(flashcards);
 		}
+		List<Map<String, Object>> evidenceSegments = new ArrayList<>();
+		int segmentIndex = 0;
+		for (TranscriptSegment segment : transcriptSegments) {
+			String segmentId = ValidationEventService
+					.digest(metadataId + ":" + segmentIndex++ + ":" + segment.getText());
+			Map<String, Object> row = new HashMap<>();
+			row.put("segmentId", segmentId);
+			row.put("sourceFileId", metadataId);
+			row.put("recordingId", metadataId);
+			row.put("startMs", timestampMs(segment.getStartTime()));
+			row.put("endMs", timestampMs(segment.getEndTime()));
+			row.put("contentHash", ValidationEventService.digest(segment.getText() == null ? "" : segment.getText()));
+			row.put("textArtifactRef", "transcriptSegments/" + segmentId);
+			row.put("text", segment.getText());
+			firebaseService.saveData("transcriptSegments", segmentId, row);
+			evidenceSegments.add(row);
+		}
+		List<SummaryKeyPoint> structured = new ArrayList<>();
+		for (String text : summary.getKeyPoints()) {
+			SummaryKeyPoint point = new SummaryKeyPoint();
+			point.setSummaryId(summary.getSummaryId());
+			point.setText(text);
+			Map<String, Object> segment = bestEvidence(text, evidenceSegments);
+			if (segment != null) {
+				point.setSourceFileId(metadataId);
+				point.setSourceSegmentId((String) segment.get("segmentId"));
+				point.setSourceStartTime(formatMs(((Number) segment.get("startMs")).longValue()));
+				point.setSourceEndTime(formatMs(((Number) segment.get("endMs")).longValue()));
+			}
+			structured.add(point);
+		}
+		summary.setSummaryKeyPoints(structured);
+		for (Flashcard card : summary.getFlashcards()) {
+			Map<String, Object> segment = bestEvidence(card.getBack(), evidenceSegments);
+			if (segment != null) {
+				card.setSourceFileId(metadataId);
+				card.setSourceSegmentId((String) segment.get("segmentId"));
+				card.setSourceStartTime(formatMs(((Number) segment.get("startMs")).longValue()));
+				card.setSourceEndTime(formatMs(((Number) segment.get("endMs")).longValue()));
+			}
+		}
 		summary.setCreatedAt(new Date());
 		summary.setUpdatedAt(new Date());
 
@@ -674,6 +717,47 @@ public class SummarizationListenerService {
 		}
 
 		return summary;
+	}
+
+	private Map<String, Object> bestEvidence(String text, List<Map<String, Object>> segments) {
+		java.util.Set<String> wanted = words(text);
+		double best = 0;
+		Map<String, Object> result = null;
+		for (Map<String, Object> segment : segments) {
+			java.util.Set<String> common = new java.util.HashSet<>(wanted);
+			common.retainAll(words(String.valueOf(segment.get("text"))));
+			double score = wanted.isEmpty() ? 0 : (double) common.size() / wanted.size();
+			if (score > best) {
+				best = score;
+				result = segment;
+			}
+		}
+		return best > 0 ? result : null;
+	}
+	private java.util.Set<String> words(String text) {
+		java.util.Set<String> result = new java.util.HashSet<>();
+		if (text != null)
+			for (String word : text.toLowerCase().split("[^a-z0-9]+"))
+				if (word.length() > 2)
+					result.add(word);
+		return result;
+	}
+	private long timestampMs(String value) {
+		if (value == null)
+			return 0;
+		String[] p = value.split(":");
+		try {
+			long s = p.length == 2
+					? Long.parseLong(p[0]) * 60 + Long.parseLong(p[1])
+					: Long.parseLong(p[0]) * 3600 + Long.parseLong(p[1]) * 60 + Long.parseLong(p[2]);
+			return s * 1000;
+		} catch (Exception e) {
+			return 0;
+		}
+	}
+	private String formatMs(long value) {
+		long seconds = value / 1000;
+		return String.format("%02d:%02d", seconds / 60, seconds % 60);
 	}
 
 	private List<Flashcard> parseFlashcards(JsonNode root) {

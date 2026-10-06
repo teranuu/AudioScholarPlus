@@ -28,6 +28,8 @@ public class AudioMetadata {
 	private String recordingId;
 	private String summaryId;
 	private String outputType;
+	private String clientSource = "UNKNOWN";
+	private boolean measurementIncomplete;
 	private QualityReport qualityReport;
 	private String transcriptText;
 	private List<TranscriptSegment> transcriptSegments = new ArrayList<>();
@@ -208,6 +210,18 @@ public class AudioMetadata {
 
 	public void setOutputType(String outputType) {
 		this.outputType = outputType;
+	}
+	public String getClientSource() {
+		return clientSource;
+	}
+	public void setClientSource(String value) {
+		clientSource = value;
+	}
+	public boolean isMeasurementIncomplete() {
+		return measurementIncomplete;
+	}
+	public void setMeasurementIncomplete(boolean value) {
+		measurementIncomplete = value;
 	}
 
 	public QualityReport getQualityReport() {
@@ -521,6 +535,8 @@ public class AudioMetadata {
 			map.put("summaryId", summaryId);
 		if (outputType != null)
 			map.put("outputType", outputType);
+		map.put("clientSource", clientSource);
+		map.put("measurementIncomplete", measurementIncomplete);
 		if (qualityReport != null)
 			map.put("qualityReport", qualityReport.toMap());
 		if (transcriptText != null)
@@ -619,6 +635,8 @@ public class AudioMetadata {
 		meta.setRecordingId((String) map.get("recordingId"));
 		meta.setSummaryId((String) map.get("summaryId"));
 		meta.setOutputType((String) map.get("outputType"));
+		meta.setClientSource((String) map.getOrDefault("clientSource", "UNKNOWN"));
+		meta.setMeasurementIncomplete(Boolean.TRUE.equals(map.get("measurementIncomplete")));
 		Object qualityReportObj = map.get("qualityReport");
 		if (qualityReportObj instanceof Map) {
 			@SuppressWarnings("unchecked")

@@ -1,5 +1,8 @@
 package edu.cit.audioscholar.service;
 
+import java.util.List;
+import java.util.Map;
+
 import org.springframework.stereotype.Service;
 
 import edu.cit.audioscholar.model.SourceFile;
@@ -17,5 +20,8 @@ public class SourceFileRepository {
 	public SourceFile save(SourceFile sourceFile) {
 		firebaseService.saveData(COLLECTION_NAME, sourceFile.getSourceFileId(), sourceFile.toMap());
 		return sourceFile;
+	}
+	public List<Map<String, Object>> findByJobId(String jobId) {
+		return firebaseService.queryCollection(COLLECTION_NAME, "jobId", jobId);
 	}
 }

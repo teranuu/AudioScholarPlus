@@ -11,6 +11,11 @@ public class QualityIssue {
 	private String issueType;
 	private String severity;
 	private String recommendedAction;
+	private Long startMs;
+	private Long endMs;
+	private String detectorVersion = "pcm-window-v1";
+	private Integer analysisWindowSeconds = 15;
+	private String thresholdVersion = "quality-thresholds-v1";
 
 	public QualityIssue() {
 		this.issueId = UUID.randomUUID().toString();
@@ -23,6 +28,8 @@ public class QualityIssue {
 		this.issueType = issueType;
 		this.severity = severity;
 		this.recommendedAction = recommendedAction;
+		this.startMs = parseMillis(startTime);
+		this.endMs = parseMillis(endTime);
 	}
 
 	public String getIssueId() {
@@ -61,6 +68,36 @@ public class QualityIssue {
 	public void setRecommendedAction(String recommendedAction) {
 		this.recommendedAction = recommendedAction;
 	}
+	public Long getStartMs() {
+		return startMs;
+	}
+	public void setStartMs(Long startMs) {
+		this.startMs = startMs;
+	}
+	public Long getEndMs() {
+		return endMs;
+	}
+	public void setEndMs(Long endMs) {
+		this.endMs = endMs;
+	}
+	public String getDetectorVersion() {
+		return detectorVersion;
+	}
+	public void setDetectorVersion(String detectorVersion) {
+		this.detectorVersion = detectorVersion;
+	}
+	public Integer getAnalysisWindowSeconds() {
+		return analysisWindowSeconds;
+	}
+	public void setAnalysisWindowSeconds(Integer value) {
+		this.analysisWindowSeconds = value;
+	}
+	public String getThresholdVersion() {
+		return thresholdVersion;
+	}
+	public void setThresholdVersion(String thresholdVersion) {
+		this.thresholdVersion = thresholdVersion;
+	}
 
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
@@ -70,6 +107,11 @@ public class QualityIssue {
 		map.put("issueType", issueType);
 		map.put("severity", severity);
 		map.put("recommendedAction", recommendedAction);
+		map.put("startMs", startMs);
+		map.put("endMs", endMs);
+		map.put("detectorVersion", detectorVersion);
+		map.put("analysisWindowSeconds", analysisWindowSeconds);
+		map.put("thresholdVersion", thresholdVersion);
 		return map;
 	}
 
@@ -83,6 +125,28 @@ public class QualityIssue {
 		issue.issueType = (String) map.get("issueType");
 		issue.severity = (String) map.get("severity");
 		issue.recommendedAction = (String) map.get("recommendedAction");
+		issue.startMs = number(map.get("startMs"), parseMillis(issue.startTime));
+		issue.endMs = number(map.get("endMs"), parseMillis(issue.endTime));
+		issue.detectorVersion = (String) map.getOrDefault("detectorVersion", "pcm-window-v1");
+		issue.analysisWindowSeconds = number(map.get("analysisWindowSeconds"), 15L).intValue();
+		issue.thresholdVersion = (String) map.getOrDefault("thresholdVersion", "quality-thresholds-v1");
 		return issue;
+	}
+
+	private static Long parseMillis(String value) {
+		if (value == null || value.isBlank())
+			return null;
+		String[] parts = value.split(":");
+		try {
+			long seconds = parts.length == 2
+					? Long.parseLong(parts[0]) * 60 + Long.parseLong(parts[1])
+					: Long.parseLong(parts[0]) * 3600 + Long.parseLong(parts[1]) * 60 + Long.parseLong(parts[2]);
+			return seconds * 1000;
+		} catch (Exception e) {
+			return null;
+		}
+	}
+	private static Long number(Object value, Long fallback) {
+		return value instanceof Number n ? n.longValue() : fallback;
 	}
 }
