@@ -13,7 +13,7 @@ public class MultiSourceJob {
 	private String title;
 	private String description;
 	private String outputType;
-	private String status = ProcessingStatus.PROCESSING_QUEUED.name();
+	private String status = ProcessingStatus.ACCEPTED.name();
 	private String failureReason;
 	private String failureStage;
 	private String failureCode;

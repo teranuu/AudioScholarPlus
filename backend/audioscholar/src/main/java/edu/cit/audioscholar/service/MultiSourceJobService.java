@@ -122,7 +122,7 @@ public class MultiSourceJobService {
 		job.setTitle(StringUtils.hasText(title) ? title : "Merged Lecture Summary");
 		job.setDescription(description);
 		job.setOutputType(outputType.name());
-		job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
+		job.setStatus(ProcessingStatus.ACCEPTED.name());
 		job.setSourceCount(normalizedMediaFiles.size() + normalizedDocumentFiles.size());
 		job.setClientSource(ValidationEventService.clientSource(clientHeader));
 		job.setAcceptedAt(new Date());
@@ -163,6 +163,7 @@ public class MultiSourceJobService {
 			}
 			guardrailService.validateMultiSourceAggregate(mediaGuardrails);
 			event(job, "ALL_SOURCES_UPLOADED", List.of(9), "initial", Map.of("sourceCount", job.getSourceCount()));
+			job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
 			job.setQueuedAt(new Date());
 			save(job);
 			publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY,

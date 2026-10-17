@@ -98,6 +98,7 @@ class GeminiServiceTest {
 			ResponseEntity<String> uploadResponse = new ResponseEntity<>(uploadResponseBody, HttpStatus.OK);
 			when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
 					.thenReturn(uploadResponse);
+			mockGeminiFileReady("http://file-uri");
 
 			// Mock Transcription Call
 			String transcriptionResponse = "{\"candidates\": [{\"content\": {\"parts\": [{\"text\": \"{\\\"transcript\\\": \\\"Hello world\\\"}\"}]}}]}";
@@ -302,6 +303,12 @@ class GeminiServiceTest {
 		ResponseEntity<String> uploadResponse = new ResponseEntity<>(uploadResponseBody, HttpStatus.OK);
 		when(restTemplate.exchange(eq("http://upload-url"), eq(HttpMethod.POST), any(), eq(String.class)))
 				.thenReturn(uploadResponse);
+		mockGeminiFileReady(fileUri);
+	}
+
+	private void mockGeminiFileReady(String fileUri) {
+		when(restTemplate.exchange(eq(fileUri + "?key=" + API_KEY), eq(HttpMethod.GET), eq(HttpEntity.EMPTY),
+				eq(String.class))).thenReturn(new ResponseEntity<>("{\"state\":\"ACTIVE\"}", HttpStatus.OK));
 	}
 
 	private HttpServerErrorException serviceUnavailable() {
