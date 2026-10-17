@@ -340,7 +340,6 @@ public class AuthController {
 
 			String customToken = firebaseService.createCustomToken(firebaseUid);
 
-			log.info("Authorization Bearer Token: {}", jwt);
 			log.info("Generated API JWT for user UID {} (Google)", firebaseUid);
 
 			AuthResponse response = new AuthResponse(true, "Google token verified successfully.");
@@ -386,8 +385,7 @@ public class AuthController {
 				}).map(tokenResponse -> {
 					String accessToken = (String) tokenResponse.get("access_token");
 					if (accessToken == null || accessToken.isBlank()) {
-						log.error("GitHub token exchange failed. Response does not contain access_token. Response: {}",
-								tokenResponse);
+						log.error("GitHub token exchange failed because the response did not contain an access token.");
 						throw new RuntimeException(
 								"Failed to obtain GitHub access token. The provided code might be invalid or expired.");
 					}
@@ -457,7 +455,6 @@ public class AuthController {
 								Instant jwtEnd = Instant.now();
 								String customToken = firebaseService.createCustomToken(firebaseUid);
 
-								log.info("Authorization Bearer Token: {}", jwt);
 								log.info("Generated API JWT for user UID {} (GitHub). Duration: {}ms", firebaseUid,
 										Duration.between(jwtStart, jwtEnd).toMillis());
 

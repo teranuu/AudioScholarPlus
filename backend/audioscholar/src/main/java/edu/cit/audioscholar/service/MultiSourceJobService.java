@@ -2,7 +2,6 @@ package edu.cit.audioscholar.service;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -13,6 +12,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -25,6 +26,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.dto.MultiSourceJobMessage;
+import edu.cit.audioscholar.exception.MultiSourceProcessingException;
+import edu.cit.audioscholar.exception.StorageRetrievalException;
 import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.KeyPoint;
 import edu.cit.audioscholar.model.MergedSummary;
@@ -38,6 +41,7 @@ import edu.cit.audioscholar.model.Summary;
 
 @Service
 public class MultiSourceJobService {
+	private static final Logger log = LoggerFactory.getLogger(MultiSourceJobService.class);
 	private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 	private static final Set<String> ALLOWED_MEDIA_TYPES = Set.of("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
 			"audio/aac", "audio/x-aac", "audio/ogg", "application/ogg", "audio/flac", "audio/x-flac", "audio/aiff",
@@ -167,10 +171,15 @@ public class MultiSourceJobService {
 			return job;
 		} catch (Exception e) {
 			job.setStatus(ProcessingStatus.FAILED.name());
-			job.setFailureReason(e.getMessage());
+			job.setFailureReason(sanitizeFailure(e.getMessage()));
+			job.setFailureStage("SUBMISSION");
+			job.setFailureCode(failureCode(e));
+			job.setFailureDetail(sanitizeFailure(e.getMessage()));
+			job.setFailedAt(new Date());
+			job.setFinalAttemptCount(job.getProcessingAttempts());
 			job.setUpdatedAt(new Date());
-			save(job);
-			event(job, "JOB_FAILED", List.of(9), "submission", Map.of("jobId", job.getJobId(), "outcome", "FAILED"));
+			terminalEvent(job, "JOB_FAILED", List.of(9), "initial", Map.of("jobId", job.getJobId(), "outcome", "FAILED",
+					"failureStage", "SUBMISSION", "failureCode", job.getFailureCode()));
 			throw e;
 		} finally {
 			for (Path tempFile : tempFiles) {
@@ -189,15 +198,43 @@ public class MultiSourceJobService {
 		job.setStatus("PROCESSING");
 		job.setProcessingStartedAt(new Date());
 		job.setProcessingAttempts(job.getProcessingAttempts() + 1);
-		save(job);
+		if (!saveWorkerProgress(job))
+			return;
 		event(job, "PROCESSING_STARTED", List.of(2, 9), "initial", Map.of("jobId", jobId));
 		List<Path> localFiles = new ArrayList<>();
+		String stage = "SOURCE_RETRIEVAL";
 		try {
 			List<SourceFile> sources = new ArrayList<>();
-			for (Map<String, Object> row : sourceFileService.findByJobId(jobId)) {
+			List<Map<String, Object>> sourceRows = sourceFileService.findByJobId(jobId);
+			validatePersistedSources(job, sourceRows);
+			for (Map<String, Object> row : sourceRows) {
+				stage = "SOURCE_RETRIEVAL";
 				SourceFile source = hydrateSource(row);
+				if (source.getTranscriptionCompletedAt() != null && StringUtils.hasText(source.getTranscriptText())) {
+					sourceTranscriptService.saveTranscript(jobId, source);
+					timedSegments.persist(source);
+					sources.add(source);
+					event(job, "SOURCE_RETRIEVED", List.of(9), source.getSourceFileId(),
+							Map.of("jobId", jobId, "sourceFileId", source.getSourceFileId(), "storageObjectId",
+									source.getStorageObjectId(), "attempt", job.getProcessingAttempts()));
+					event(job, "SOURCE_TRANSCRIPTION_COMPLETED", List.of(12), source.getSourceFileId(),
+							Map.of("jobId", jobId, "sourceFileId", source.getSourceFileId()));
+					job.setUpdatedAt(new Date());
+					if (!saveWorkerProgress(job))
+						return;
+					continue;
+				}
 				Path local = downloadSource(source);
 				localFiles.add(local);
+				source.setRetrievedAt(new Date());
+				sourceFileService.save(source);
+				job.setUpdatedAt(new Date());
+				if (!saveWorkerProgress(job))
+					return;
+				event(job, "SOURCE_RETRIEVED", List.of(9), source.getSourceFileId(),
+						Map.of("jobId", jobId, "sourceFileId", source.getSourceFileId(), "storageObjectId",
+								source.getStorageObjectId(), "attempt", job.getProcessingAttempts()));
+				stage = "SOURCE_TRANSCRIPTION";
 				SourceKind kind = SourceKind.valueOf(source.getSourceKind());
 				if (kind == SourceKind.MEDIA)
 					source.setQualityReport(qualityReportService.analyzeAndSave(source.getSourceFileId(), local, jobId,
@@ -213,43 +250,72 @@ public class MultiSourceJobService {
 				sourceTranscriptService.saveTranscript(jobId, source);
 				timedSegments.persist(source);
 				sources.add(source);
+				job.setUpdatedAt(new Date());
+				if (!saveWorkerProgress(job))
+					return;
 				event(job, "SOURCE_TRANSCRIPTION_COMPLETED", List.of(12), source.getSourceFileId(),
 						Map.of("jobId", jobId, "sourceFileId", source.getSourceFileId()));
 			}
 			job.setSourceFiles(sources);
 			job.setFinalTranscriptionCompletedAt(new Date());
+			event(job, "ALL_TRANSCRIPTIONS_COMPLETED", List.of(9, 12), "initial",
+					Map.of("jobId", jobId, "sourceCount", sources.size()));
 			job.setStatus(ProcessingStatus.SUMMARIZING.name());
-			save(job);
+			job.setUpdatedAt(new Date());
+			if (!saveWorkerProgress(job))
+				return;
+			stage = "MERGE";
+			job.setMergeStartedAt(new Date());
+			job.setUpdatedAt(new Date());
+			if (!saveWorkerProgress(job))
+				return;
 			Summary summary = parseMergedSummary(job, geminiService
 					.generateTranscriptOnlySummary(buildMergedTranscript(sources), jobId, job.getOutputType()));
+			stage = "DEDUPLICATION";
 			List<SourceAttribution> attributions = semanticEvidence.evaluate(job, summary);
+			event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial", Map.of("jobId", jobId, "outputCount",
+					summary.getKeyPoints().size(), "algorithmVersion", "semantic-clustering-v1"));
 			summaryService.createSummary(summary);
 			MergedSummary merged = buildMergedSummaryRecord(job, summary, attributions);
 			mergedSummaryRepository.save(merged);
 			job.setMergedSummary(summary);
 			job.setMergedSummaryAvailableAt(new Date());
+			job.setMergeLatencyMs(
+					job.getMergedSummaryAvailableAt().getTime() - job.getFinalTranscriptionCompletedAt().getTime());
 			event(job, "MERGED_SUMMARY_AVAILABLE", List.of(12), summary.getSummaryId(),
 					Map.of("jobId", jobId, "summaryId", summary.getSummaryId()));
 			job.setStatus(ProcessingStatus.COMPLETE.name());
+			job.setFinalAttemptCount(job.getProcessingAttempts());
 			job.setUpdatedAt(new Date());
-			save(job);
-			event(job, "JOB_COMPLETED", List.of(9), "initial", Map.of("jobId", jobId));
+			terminalEvent(job, "JOB_COMPLETED", List.of(9), "initial", Map.of("jobId", jobId, "outcome", "COMPLETE"));
 		} catch (Exception e) {
-			job.setFailureReason(e.getMessage());
+			job.setFailureReason(sanitizeFailure(e.getMessage()));
+			job.setFailureStage(stage);
+			job.setFailureCode(failureCode(e));
+			job.setFailureDetail(sanitizeFailure(e.getMessage()));
 			job.setUpdatedAt(new Date());
-			if (job.getProcessingAttempts() < 3) {
+			try {
+				semanticEvidence.persistFailedRun(job, stage, job.getFailureCode(), job.getProcessingAttempts());
+			} catch (RuntimeException evidenceFailure) {
+				job.setMeasurementIncomplete(true);
+			}
+			boolean permanent = isPermanent(e);
+			if (!permanent && job.getProcessingAttempts() < 3) {
 				job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
-				save(job);
-				publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY,
-						new MultiSourceJobMessage(jobId),
-						java.time.Duration.ofSeconds(job.getProcessingAttempts() * 5L));
-				event(job, "JOB_RETRY_QUEUED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(),
-						Map.of("jobId", jobId, "outcome", "RETRY_QUEUED", "attempt", job.getProcessingAttempts()));
+				if (saveWorkerProgress(job)) {
+					publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY,
+							new MultiSourceJobMessage(jobId),
+							java.time.Duration.ofSeconds(job.getProcessingAttempts() * 5L));
+					event(job, "JOB_RETRY_QUEUED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(),
+							Map.of("jobId", jobId, "outcome", "RETRY_QUEUED", "attempt", job.getProcessingAttempts()));
+				}
 			} else {
 				job.setStatus(ProcessingStatus.FAILED.name());
-				save(job);
-				event(job, "JOB_FAILED", List.of(9, 12), "initial",
-						Map.of("jobId", jobId, "outcome", "FAILED", "attempts", job.getProcessingAttempts()));
+				job.setFailedAt(new Date());
+				job.setFinalAttemptCount(job.getProcessingAttempts());
+				terminalEvent(job, "JOB_FAILED", List.of(9, 12), "initial",
+						Map.of("jobId", jobId, "outcome", "FAILED", "attempts", job.getProcessingAttempts(),
+								"failureStage", stage, "failureCode", job.getFailureCode()));
 			}
 		} finally {
 			for (Path file : localFiles)
@@ -289,7 +355,7 @@ public class MultiSourceJobService {
 			throw new IOException("Gemini summarization response did not contain summaryText");
 		}
 		Summary summary = new Summary();
-		summary.setSummaryId(UUID.randomUUID().toString());
+		summary.setSummaryId(ValidationEventService.digest(job.getJobId() + ":merged-summary"));
 		summary.setRecordingId(job.getJobId());
 		summary.setUserId(job.getUserId());
 		summary.setOutputType(job.getOutputType());
@@ -395,6 +461,7 @@ public class MultiSourceJobService {
 	private MergedSummary buildMergedSummaryRecord(MultiSourceJob job, Summary summary,
 			List<SourceAttribution> attributions) {
 		MergedSummary merged = new MergedSummary();
+		merged.setMergedSummaryId(ValidationEventService.digest(job.getJobId() + ":merged-summary-record"));
 		merged.setJobId(job.getJobId());
 		merged.setUserId(job.getUserId());
 		merged.setContent(summary.getFormattedSummaryText());
@@ -412,6 +479,25 @@ public class MultiSourceJobService {
 			job.setMeasurementIncomplete(true);
 	}
 
+	private boolean saveWorkerProgress(MultiSourceJob job) {
+		return multiSourceJobRepository.saveIfNonterminal(job);
+	}
+
+	private void terminalEvent(MultiSourceJob job, String type, List<Integer> objectives, String key,
+			Map<String, Object> payload) {
+		if (!multiSourceJobRepository.transitionTerminal(job, type, key, objectives, payload))
+			return;
+		if (events.emit(job.getJobId(), "MULTI_SOURCE", job.getClientSource(), type, objectives, key, payload,
+				"multiSourceJobs")) {
+			try {
+				multiSourceJobRepository.markTerminalEventPublished(job.getJobId());
+			} catch (RuntimeException ignored) {
+				// The pending marker intentionally remains true for scheduled redelivery.
+			}
+		} else
+			job.setMeasurementIncomplete(true);
+	}
+
 	private MultiSourceJob hydrateJob(Map<String, Object> row) {
 		if (row == null)
 			throw new IllegalArgumentException("Multi-source job not found");
@@ -426,6 +512,11 @@ public class MultiSourceJobService {
 		job.setSourceCount(row.get("sourceCount") instanceof Number n ? n.intValue() : 0);
 		job.setMeasurementIncomplete(Boolean.TRUE.equals(row.get("measurementIncomplete")));
 		job.setProcessingAttempts(row.get("processingAttempts") instanceof Number n ? n.intValue() : 0);
+		if (row.get("finalAttemptCount") instanceof Number n)
+			job.setFinalAttemptCount(n.intValue());
+		job.setFailureStage((String) row.get("failureStage"));
+		job.setFailureCode((String) row.get("failureCode"));
+		job.setFailureDetail((String) row.get("failureDetail"));
 		if (row.get("sourceFiles") instanceof List<?> rawSources) {
 			List<SourceFile> sources = new ArrayList<>();
 			for (Object raw : rawSources)
@@ -439,6 +530,12 @@ public class MultiSourceJobService {
 		job.setAcceptedAt(date(row.get("acceptedAt")));
 		job.setQueuedAt(date(row.get("queuedAt")));
 		job.setProcessingStartedAt(date(row.get("processingStartedAt")));
+		job.setFinalTranscriptionCompletedAt(date(row.get("finalTranscriptionCompletedAt")));
+		job.setMergeStartedAt(date(row.get("mergeStartedAt")));
+		job.setMergedSummaryAvailableAt(date(row.get("mergedSummaryAvailableAt")));
+		job.setFailedAt(date(row.get("failedAt")));
+		if (row.get("mergeLatencyMs") instanceof Number n)
+			job.setMergeLatencyMs(n.longValue());
 		return job;
 	}
 
@@ -449,13 +546,17 @@ public class MultiSourceJobService {
 		source.setSourceLabel((String) row.get("sourceLabel"));
 		source.setSourceKind((String) row.get("sourceKind"));
 		source.setFileUrl((String) row.get("fileUrl"));
+		source.setStorageObjectId((String) row.get("storageObjectId"));
 		source.setFileName((String) row.get("fileName"));
 		source.setContentType((String) row.get("contentType"));
 		source.setFileType((String) row.get("fileType"));
 		source.setUploadStatus((String) row.get("uploadStatus"));
+		source.setTranscriptText((String) row.get("transcriptText"));
 		if (row.get("durationSeconds") instanceof Number n)
 			source.setDurationSeconds(n.longValue());
 		source.setUploadCompletedAt(date(row.get("uploadCompletedAt")));
+		source.setRetrievedAt(date(row.get("retrievedAt")));
+		source.setTranscriptionCompletedAt(date(row.get("transcriptionCompletedAt")));
 		return source;
 	}
 
@@ -470,10 +571,50 @@ public class MultiSourceJobService {
 	private Path downloadSource(SourceFile source) throws Exception {
 		String extension = StringUtils.getFilenameExtension(source.getFileName());
 		Path target = tempDir.resolve("multi-worker-" + UUID.randomUUID() + (extension == null ? "" : "." + extension));
-		try (InputStream input = URI.create(source.getFileUrl()).toURL().openStream()) {
-			Files.copy(input, target);
-		}
+		if (!StringUtils.hasText(source.getStorageObjectId()))
+			throw new StorageRetrievalException("Source has no storage object ID.", "STORAGE_INVALID_IDENTIFIER", 0,
+					false, null);
+		log.info("Multi-source retrieval jobId={} sourceFileId={} objectId={} processingStage=SOURCE_RETRIEVAL",
+				jobIdFor(source), source.getSourceFileId(), source.getStorageObjectId());
+		sourceFileService.retrieveToPath(source.getStorageObjectId(), target);
 		return target;
+	}
+
+	private String jobIdFor(SourceFile source) {
+		return StringUtils.hasText(source.getJobId()) ? source.getJobId() : "unknown";
+	}
+
+	private String failureCode(Exception failure) {
+		if (failure instanceof StorageRetrievalException storage)
+			return storage.getFailureCode();
+		if (failure instanceof MultiSourceProcessingException processing)
+			return processing.getFailureCode();
+		return "MULTI_SOURCE_PROCESSING_FAILED";
+	}
+
+	private boolean isPermanent(Exception failure) {
+		if (failure instanceof StorageRetrievalException storage)
+			return !storage.isRetryable();
+		if (failure instanceof MultiSourceProcessingException processing)
+			return !processing.isRetryable();
+		return false;
+	}
+
+	private void validatePersistedSources(MultiSourceJob job, List<Map<String, Object>> sourceRows) {
+		int expected = job.getSourceCount() == null ? -1 : job.getSourceCount();
+		long mediaSources = sourceRows.stream().filter(row -> SourceKind.MEDIA.name().equals(row.get("sourceKind")))
+				.count();
+		if (expected < 2 || expected > 5 || sourceRows.size() != expected || mediaSources < 2)
+			throw new MultiSourceProcessingException(
+					"Persisted sources do not match the accepted two-to-five-file batch.", "SOURCE_COUNT_MISMATCH",
+					false);
+	}
+
+	private String sanitizeFailure(String detail) {
+		if (!StringUtils.hasText(detail))
+			return "Processing failed without provider detail.";
+		return detail.replaceAll("(?i)(https?://[^?\\s]+)\\?[^\\s]+", "$1?[REDACTED]")
+				.replaceAll("(?i)(x-hasura-admin-secret|authorization)[:=]\\s*[^,\\s]+", "$1=[REDACTED]");
 	}
 
 	private String detectSourceLabel(String text, List<SourceFile> sourceFiles) {

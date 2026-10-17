@@ -431,6 +431,89 @@ public class FirebaseService {
 		}
 	}
 
+	public boolean saveJobIfNonterminal(String collection, String document, Map<String, Object> data) {
+		try {
+			DocumentReference ref = getFirestore().collection(collection).document(document);
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot snapshot = transaction.get(ref).get();
+				if (!snapshot.exists() || isTerminalStatus(snapshot.getString("status")))
+					return false;
+				transaction.set(ref, data, SetOptions.merge());
+				return true;
+			}).get();
+		} catch (Exception e) {
+			throw new FirestoreInteractionException("Could not save nonterminal multi-source job", e);
+		}
+	}
+
+	public boolean transitionJobToTerminal(String collection, String document, Map<String, Object> terminalData,
+			String eventType, String occurrenceKey, List<Integer> objectives, Map<String, Object> payload) {
+		try {
+			DocumentReference ref = getFirestore().collection(collection).document(document);
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot snapshot = transaction.get(ref).get();
+				if (!snapshot.exists() || isTerminalStatus(snapshot.getString("status")))
+					return false;
+				Map<String, Object> update = new HashMap<>(terminalData);
+				update.put("terminalEventPending", true);
+				update.put("terminalEventType", eventType);
+				update.put("terminalEventOccurrenceKey", occurrenceKey);
+				update.put("terminalEventObjectives", objectives);
+				update.put("terminalEventPayload", payload);
+				transaction.set(ref, update, SetOptions.merge());
+				return true;
+			}).get();
+		} catch (Exception e) {
+			throw new FirestoreInteractionException("Could not transition multi-source job to terminal state", e);
+		}
+	}
+
+	private boolean isTerminalStatus(String status) {
+		return "COMPLETE".equals(status) || "FAILED".equals(status);
+	}
+
+	public boolean failJobIfNonterminalAndStale(String collection, String document, Date cutoff) {
+		try {
+			DocumentReference ref = getFirestore().collection(collection).document(document);
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot snapshot = transaction.get(ref).get();
+				if (!snapshot.exists())
+					return false;
+				String status = snapshot.getString("status");
+				if ("COMPLETE".equals(status) || "FAILED".equals(status))
+					return false;
+				Timestamp updatedAt = snapshot.getTimestamp("updatedAt");
+				if (updatedAt == null || !updatedAt.toDate().before(cutoff))
+					return false;
+				Timestamp now = Timestamp.now();
+				Map<String, Object> payload = Map.of("jobId", document, "outcome", "FAILED", "failureStage",
+						"RECONCILIATION", "failureCode", "PROCESSING_TIMEOUT");
+				Map<String, Object> updates = new HashMap<>();
+				updates.put("status", "FAILED");
+				updates.put("failureStage", "RECONCILIATION");
+				updates.put("failureCode", "PROCESSING_TIMEOUT");
+				updates.put("failureDetail", "Job exceeded the configured processing timeout.");
+				updates.put("failureReason", "Job exceeded the configured processing timeout.");
+				updates.put("failedAt", now);
+				updates.put("updatedAt", now);
+				updates.put("finalAttemptCount",
+						snapshot.getLong("processingAttempts") == null ? 0 : snapshot.getLong("processingAttempts"));
+				updates.put("terminalEventPending", true);
+				updates.put("terminalEventType", "JOB_FAILED");
+				updates.put("terminalEventOccurrenceKey", "initial");
+				updates.put("terminalEventObjectives", List.of(9, 12));
+				updates.put("terminalEventPayload", payload);
+				transaction.update(ref, updates);
+				return true;
+			}).get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Could not reconcile stale multi-source job", e);
+		} catch (ExecutionException e) {
+			throw new FirestoreInteractionException("Could not reconcile stale multi-source job", e);
+		}
+	}
+
 	@SuppressWarnings("null")
 	public String deleteData(String collection, String document) {
 		try {

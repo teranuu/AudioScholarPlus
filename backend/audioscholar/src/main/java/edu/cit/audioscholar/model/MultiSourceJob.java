@@ -15,6 +15,10 @@ public class MultiSourceJob {
 	private String outputType;
 	private String status = ProcessingStatus.PROCESSING_QUEUED.name();
 	private String failureReason;
+	private String failureStage;
+	private String failureCode;
+	private String failureDetail;
+	private Date failedAt;
 	private Integer sourceCount;
 	private List<SourceFile> sourceFiles = new ArrayList<>();
 	private Summary mergedSummary;
@@ -24,10 +28,13 @@ public class MultiSourceJob {
 	private Date queuedAt;
 	private Date processingStartedAt;
 	private Date finalTranscriptionCompletedAt;
+	private Date mergeStartedAt;
 	private Date mergedSummaryAvailableAt;
+	private Long mergeLatencyMs;
 	private boolean measurementIncomplete;
 	private String clientSource = "UNKNOWN";
 	private int processingAttempts;
+	private Integer finalAttemptCount;
 
 	public String getJobId() {
 		return jobId;
@@ -70,6 +77,30 @@ public class MultiSourceJob {
 	}
 	public void setFailureReason(String failureReason) {
 		this.failureReason = failureReason;
+	}
+	public String getFailureStage() {
+		return failureStage;
+	}
+	public void setFailureStage(String value) {
+		failureStage = value;
+	}
+	public String getFailureCode() {
+		return failureCode;
+	}
+	public void setFailureCode(String value) {
+		failureCode = value;
+	}
+	public String getFailureDetail() {
+		return failureDetail;
+	}
+	public void setFailureDetail(String value) {
+		failureDetail = value;
+	}
+	public Date getFailedAt() {
+		return failedAt;
+	}
+	public void setFailedAt(Date value) {
+		failedAt = value;
 	}
 
 	public Integer getSourceCount() {
@@ -127,11 +158,23 @@ public class MultiSourceJob {
 	public void setFinalTranscriptionCompletedAt(Date value) {
 		finalTranscriptionCompletedAt = value;
 	}
+	public Date getMergeStartedAt() {
+		return mergeStartedAt;
+	}
+	public void setMergeStartedAt(Date value) {
+		mergeStartedAt = value;
+	}
 	public Date getMergedSummaryAvailableAt() {
 		return mergedSummaryAvailableAt;
 	}
 	public void setMergedSummaryAvailableAt(Date value) {
 		mergedSummaryAvailableAt = value;
+	}
+	public Long getMergeLatencyMs() {
+		return mergeLatencyMs;
+	}
+	public void setMergeLatencyMs(Long value) {
+		mergeLatencyMs = value;
 	}
 	public boolean isMeasurementIncomplete() {
 		return measurementIncomplete;
@@ -151,6 +194,12 @@ public class MultiSourceJob {
 	public void setProcessingAttempts(int value) {
 		processingAttempts = value;
 	}
+	public Integer getFinalAttemptCount() {
+		return finalAttemptCount;
+	}
+	public void setFinalAttemptCount(Integer value) {
+		finalAttemptCount = value;
+	}
 
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
@@ -161,6 +210,10 @@ public class MultiSourceJob {
 		map.put("outputType", outputType);
 		map.put("status", status);
 		map.put("failureReason", failureReason);
+		map.put("failureStage", failureStage);
+		map.put("failureCode", failureCode);
+		map.put("failureDetail", failureDetail);
+		map.put("failedAt", failedAt);
 		map.put("sourceCount", sourceCount != null ? sourceCount : sourceFiles.size());
 		map.put("sourceFiles", sourceFiles.stream().map(SourceFile::toMap).toList());
 		map.put("mergedSummary", mergedSummary != null ? mergedSummary.toMap() : null);
@@ -170,10 +223,13 @@ public class MultiSourceJob {
 		map.put("queuedAt", queuedAt);
 		map.put("processingStartedAt", processingStartedAt);
 		map.put("finalTranscriptionCompletedAt", finalTranscriptionCompletedAt);
+		map.put("mergeStartedAt", mergeStartedAt);
 		map.put("mergedSummaryAvailableAt", mergedSummaryAvailableAt);
+		map.put("mergeLatencyMs", mergeLatencyMs);
 		map.put("measurementIncomplete", measurementIncomplete);
 		map.put("clientSource", clientSource);
 		map.put("processingAttempts", processingAttempts);
+		map.put("finalAttemptCount", finalAttemptCount);
 		return map;
 	}
 }

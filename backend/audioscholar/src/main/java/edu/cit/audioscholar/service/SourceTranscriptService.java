@@ -24,6 +24,7 @@ public class SourceTranscriptService {
 
 	public SourceTranscript saveTranscript(String jobId, SourceFile sourceFile) {
 		SourceTranscript transcript = getTranscript(sourceFile);
+		transcript.setTranscriptId(ValidationEventService.digest(jobId + ":" + sourceFile.getSourceFileId()));
 		transcript.setJobId(jobId);
 		transcript.setStatus("COMPLETE");
 		firebaseService.saveData(COLLECTION_NAME, transcript.getTranscriptId(), transcript.toMap());

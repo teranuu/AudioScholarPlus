@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.http.*;
@@ -32,7 +33,9 @@ import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import edu.cit.audioscholar.exception.StorageRetrievalException;
 import edu.cit.audioscholar.exception.StorageUploadException;
+import io.micrometer.core.instrument.MeterRegistry;
 
 @Service
 public class NhostStorageService {
@@ -43,6 +46,8 @@ public class NhostStorageService {
 	private final String nhostAdminSecret;
 	private final String nhostBucketId;
 	private final ObjectMapper objectMapper;
+	@Autowired(required = false)
+	private MeterRegistry meterRegistry;
 
 	@Value("${nhost.storage.max-file-size:100MB}")
 	private String maxFileSizeValue = "100MB";
@@ -52,6 +57,15 @@ public class NhostStorageService {
 
 	@Value("${nhost.storage.upload-retry-delay-ms:2000}")
 	private long uploadRetryDelayMs = 2000;
+
+	@Value("${nhost.storage.download-max-attempts:3}")
+	private int downloadMaxAttempts = 3;
+
+	@Value("${nhost.storage.download-retry-delay-ms:1000}")
+	private long downloadRetryDelayMs = 1000;
+
+	@Value("${multi-source.worker-identity:multi-source-worker}")
+	private String workerIdentity = "multi-source-worker";
 
 	public NhostStorageService(RestTemplate restTemplate, @Value("${nhost.storage.url}") String nhostStorageUrl,
 			@Value("${nhost.storage.admin-secret}") String nhostAdminSecret,
@@ -162,7 +176,7 @@ public class NhostStorageService {
 	private String handleNhostResponse(ResponseEntity<String> rawResponse) throws IOException {
 		if (rawResponse.getStatusCode() == HttpStatus.CREATED && rawResponse.getBody() != null) {
 			String responseBody = rawResponse.getBody();
-			LOGGER.log(Level.INFO, "Received 201 CREATED response body from Nhost: {0}", responseBody);
+			LOGGER.log(Level.INFO, "Received successful Nhost upload response (status 201).");
 			try {
 				NhostFileUploadResponse parsedResponse = objectMapper.readValue(responseBody,
 						NhostFileUploadResponse.class);
@@ -234,71 +248,105 @@ public class NhostStorageService {
 	}
 
 	public void downloadFileToPath(String fileId, Path targetPath) throws IOException {
-		if (fileId == null || fileId.isEmpty()) {
-			LOGGER.log(Level.SEVERE, "Cannot download file with null or empty fileId.");
-			throw new IllegalArgumentException("File ID cannot be null or empty.");
-		}
-		if (targetPath == null) {
-			LOGGER.log(Level.SEVERE, "Cannot download file to a null target path.");
+		if (!isValidObjectId(fileId))
+			throw new StorageRetrievalException("Storage object ID is missing or invalid.",
+					"STORAGE_INVALID_IDENTIFIER", 0, false, null);
+		if (targetPath == null)
 			throw new IllegalArgumentException("Target path cannot be null.");
-		}
-
 		String downloadUrl = getPublicUrl(fileId);
-		LOGGER.log(Level.INFO, "Attempting to stream download file from Nhost URL: {0} to path: {1}",
-				new Object[]{downloadUrl, targetPath.toAbsolutePath()});
-
-		try {
-			restTemplate.execute(new URI(downloadUrl), HttpMethod.GET,
-					clientHttpRequest -> clientHttpRequest.getHeaders().set("x-hasura-admin-secret", nhostAdminSecret),
-					clientHttpResponse -> {
-						HttpStatusCode statusCode = clientHttpResponse.getStatusCode();
-						if (statusCode == HttpStatus.OK) {
-							try (InputStream inputStream = clientHttpResponse.getBody()) {
-								if (inputStream == null) {
-									throw new IOException(
-											"Received null input stream from Nhost response for file ID: " + fileId);
-								}
-								long bytesCopied = Files.copy(inputStream, targetPath,
-										StandardCopyOption.REPLACE_EXISTING);
-								LOGGER.log(Level.INFO,
-										"Successfully downloaded and saved {0} bytes to {1} for file ID: {2}",
-										new Object[]{bytesCopied, targetPath.toAbsolutePath(), fileId});
-								return bytesCopied;
-							} catch (IOException e) {
-								LOGGER.log(Level.SEVERE,
-										"Failed to save downloaded stream to path " + targetPath.toAbsolutePath(), e);
-								throw new IOException(
-										"Failed to save downloaded file to " + targetPath.toAbsolutePath(), e);
+		String host = URI.create(downloadUrl).getHost();
+		StorageRetrievalException lastFailure = null;
+		int unauthorizedRequests = 0;
+		for (int attempt = 1; attempt <= Math.max(1, downloadMaxAttempts); attempt++) {
+			try {
+				LOGGER.log(Level.INFO,
+						"Storage retrieval objectId={0}, host={1}, workerIdentity={2}, attempt={3}, credentialMode=DIRECT_SERVICE_IDENTITY, urlExpiration=not-applicable",
+						new Object[]{fileId, host, workerIdentity, attempt});
+				restTemplate.execute(URI.create(downloadUrl), HttpMethod.GET,
+						request -> request.getHeaders().set("x-hasura-admin-secret", nhostAdminSecret), response -> {
+							if (!response.getStatusCode().is2xxSuccessful())
+								throw retrievalFailure(response.getStatusCode(), fileId, null);
+							try (InputStream input = response.getBody()) {
+								if (input == null)
+									throw new IOException("Storage returned an empty body.");
+								return Files.copy(input, targetPath, StandardCopyOption.REPLACE_EXISTING);
 							}
-						} else {
-							handleDownloadErrorResponse(statusCode, fileId);
-							return null;
-						}
-					});
-		} catch (URISyntaxException e) {
-			LOGGER.log(Level.SEVERE, "Invalid URI syntax for download URL: " + downloadUrl, e);
-			throw new RuntimeException("Failed to create download URI.", e);
-		} catch (HttpClientErrorException | HttpServerErrorException e) {
-			handleDownloadErrorResponse(e.getStatusCode(), fileId);
-		} catch (RuntimeException e) {
-			LOGGER.log(Level.SEVERE, "Runtime exception during Nhost file download/saving for file ID: " + fileId
-					+ " to path: " + targetPath.toAbsolutePath(), e);
-			throw e;
-		} catch (Exception e) {
-			LOGGER.log(Level.SEVERE, "An unexpected error occurred during Nhost file download/saving for file ID: "
-					+ fileId + " to path: " + targetPath.toAbsolutePath(), e);
-			throw new RuntimeException("An unexpected error occurred during Nhost file download/saving.", e);
+						});
+				incrementRetrievalMetric("success", 200);
+				return;
+			} catch (HttpStatusCodeException e) {
+				lastFailure = retrievalFailure(e.getStatusCode(), fileId, e);
+				incrementRetrievalMetric("http_error", e.getStatusCode().value());
+			} catch (ResourceAccessException e) {
+				lastFailure = new StorageRetrievalException("Storage request timed out.", "STORAGE_TIMEOUT", 0, true,
+						e);
+			} catch (StorageRetrievalException e) {
+				lastFailure = e;
+			} catch (Exception e) {
+				lastFailure = new StorageRetrievalException("Unexpected storage retrieval failure.",
+						"STORAGE_RETRIEVAL_FAILED", 0, false, e);
+			}
+			LOGGER.log(Level.WARNING,
+					"Storage retrieval failed objectId={0}, host={1}, status={2}, attempt={3}, failureCode={4}",
+					new Object[]{fileId, host, lastFailure.getStatusCode(), attempt, lastFailure.getFailureCode()});
+			if (lastFailure.getStatusCode() == 401 || lastFailure.getStatusCode() == 403) {
+				unauthorizedRequests++;
+				if (unauthorizedRequests >= 2)
+					throw new StorageRetrievalException("Storage denied the worker service identity.",
+							"STORAGE_ACCESS_DENIED", lastFailure.getStatusCode(), false, lastFailure);
+				LOGGER.log(Level.WARNING,
+						"Storage authorization rejected objectId={0}, host={1}, status={2}; refreshing request once",
+						new Object[]{fileId, host, lastFailure.getStatusCode()});
+				continue;
+			}
+			if (!lastFailure.isRetryable() || attempt == downloadMaxAttempts)
+				throw lastFailure;
+			sleepBeforeDownloadRetry(attempt);
+		}
+		throw lastFailure;
+	}
+
+	private boolean isValidObjectId(String fileId) {
+		return StringUtils.hasText(fileId) && fileId.length() <= 256 && fileId.matches("[A-Za-z0-9][A-Za-z0-9._-]*");
+	}
+
+	private void incrementRetrievalMetric(String outcome, int status) {
+		if (meterRegistry != null)
+			meterRegistry
+					.counter("audioscholar.storage.retrieval", "outcome", outcome, "status", Integer.toString(status))
+					.increment();
+	}
+
+	private StorageRetrievalException retrievalFailure(HttpStatusCode status, String fileId, Throwable cause) {
+		int code = status.value();
+		String failureCode = code == 404
+				? "STORAGE_OBJECT_NOT_FOUND"
+				: code == 401 || code == 403 ? "STORAGE_ACCESS_DENIED" : "STORAGE_RETRIEVAL_FAILED";
+		boolean retryable = code == 408 || code == 429 || code >= 500;
+		return new StorageRetrievalException(
+				"Storage retrieval failed for object " + fileId + " with HTTP status " + code + ".", failureCode, code,
+				retryable, cause);
+	}
+
+	private void sleepBeforeDownloadRetry(int attempt) {
+		long delayMs = Math.min(downloadRetryDelayMs * (1L << Math.min(attempt - 1, 5)), 30000L);
+		try {
+			Thread.sleep(delayMs);
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new StorageRetrievalException("Storage retry interrupted.", "STORAGE_RETRY_INTERRUPTED", 0, false, e);
 		}
 	}
 
 	public byte[] downloadFileBytes(String fileId) {
-		if (fileId == null || fileId.isEmpty()) {
-			LOGGER.log(Level.SEVERE, "Cannot download file with null or empty fileId.");
-			throw new IllegalArgumentException("File ID cannot be null or empty.");
+		if (!isValidObjectId(fileId)) {
+			LOGGER.log(Level.SEVERE, "Cannot download file with missing or invalid fileId.");
+			throw new IllegalArgumentException("File ID is missing or invalid.");
 		}
 
 		String downloadUrl = getPublicUrl(fileId);
-		LOGGER.log(Level.INFO, "Attempting to download file bytes from Nhost URL: {0}", downloadUrl);
+		LOGGER.log(Level.INFO, "Attempting to download file bytes from Nhost host={0}, objectId={1}",
+				new Object[]{URI.create(downloadUrl).getHost(), fileId});
 
 		HttpHeaders headers = new HttpHeaders();
 		headers.setAccept(List.of(MediaType.APPLICATION_OCTET_STREAM));
@@ -315,7 +363,7 @@ public class NhostStorageService {
 			handleDownloadErrorResponse(response.getStatusCode(), fileId);
 			return new byte[0];
 		} catch (URISyntaxException e) {
-			LOGGER.log(Level.SEVERE, "Invalid URI syntax for download URL: " + downloadUrl, e);
+			LOGGER.log(Level.SEVERE, "Invalid Nhost download URI for object ID: " + fileId, e);
 			throw new RuntimeException("Failed to create download URI.", e);
 		} catch (HttpClientErrorException | HttpServerErrorException e) {
 			handleDownloadErrorResponse(e.getStatusCode(), fileId);
@@ -329,12 +377,13 @@ public class NhostStorageService {
 
 	@Deprecated
 	public String downloadFileAsBase64(String fileId) throws IOException {
-		if (fileId == null || fileId.isEmpty()) {
-			LOGGER.log(Level.SEVERE, "Cannot download file with null or empty fileId.");
-			throw new IllegalArgumentException("File ID cannot be null or empty.");
+		if (!isValidObjectId(fileId)) {
+			LOGGER.log(Level.SEVERE, "Cannot download file with missing or invalid fileId.");
+			throw new IllegalArgumentException("File ID is missing or invalid.");
 		}
 		String downloadUrl = getPublicUrl(fileId);
-		LOGGER.log(Level.INFO, "[Deprecated Method] Attempting to download file from Nhost URL: {0}", downloadUrl);
+		LOGGER.log(Level.INFO, "[Deprecated Method] Attempting Nhost download host={0}, objectId={1}",
+				new Object[]{URI.create(downloadUrl).getHost(), fileId});
 		HttpHeaders headers = new HttpHeaders();
 		headers.setAccept(List.of(MediaType.APPLICATION_OCTET_STREAM));
 		headers.set("x-hasura-admin-secret", nhostAdminSecret);
@@ -342,7 +391,7 @@ public class NhostStorageService {
 		try {
 			requestEntity = RequestEntity.get(new URI(downloadUrl)).headers(headers).build();
 		} catch (URISyntaxException e) {
-			LOGGER.log(Level.SEVERE, "Invalid URI syntax for download URL: " + downloadUrl, e);
+			LOGGER.log(Level.SEVERE, "Invalid Nhost download URI for object ID: " + fileId, e);
 			throw new RuntimeException("Failed to create download URI.", e);
 		}
 		try {

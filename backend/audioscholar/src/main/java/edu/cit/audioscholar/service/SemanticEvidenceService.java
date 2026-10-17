@@ -1,5 +1,6 @@
 package edu.cit.audioscholar.service;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -29,14 +30,23 @@ public class SemanticEvidenceService {
 	private final ObjectMapper json;
 	private final ValidationEventService events;
 	private final double threshold;
+	private final String applicationVersion;
+	private final String summarizationModelVersion;
+	private final String semanticModelVersion;
 	public SemanticEvidenceService(GeminiService gemini, FirebaseService firebase,
 			@Qualifier("objectMapper") ObjectMapper json, ValidationEventService events,
-			@Value("${validation.semantic-duplicate-threshold:0.80}") double threshold) {
+			@Value("${validation.semantic-duplicate-threshold:0.80}") double threshold,
+			@Value("${spring.application.version:unknown}") String applicationVersion,
+			@Value("${gemini.api.model.summarization:gemini-2.5-flash}") String summarizationModelVersion,
+			@Value("${gemini.api.model.transcription:gemini-2.5-flash}") String semanticModelVersion) {
 		this.gemini = gemini;
 		this.firebase = firebase;
 		this.json = json;
 		this.events = events;
 		this.threshold = threshold;
+		this.applicationVersion = applicationVersion;
+		this.summarizationModelVersion = summarizationModelVersion;
+		this.semanticModelVersion = semanticModelVersion;
 	}
 
 	public List<SourceAttribution> evaluate(MultiSourceJob job, Summary summary) throws Exception {
@@ -58,7 +68,7 @@ public class SemanticEvidenceService {
 				if (text.isBlank())
 					continue;
 				String id = ValidationEventService
-						.digest(job.getJobId() + ":" + source.getSourceFileId() + ":" + index++ + ":" + text);
+						.digest(job.getJobId() + ":" + source.getSourceFileId() + ":" + index++);
 				Point point = new Point(id, source.getSourceFileId(), source.getSourceLabel(), text);
 				points.add(point);
 				Map<String, Object> best = bestSegment(text, segments);
@@ -70,7 +80,13 @@ public class SemanticEvidenceService {
 				artifact.put("text", text);
 				artifact.put("contentHash", ValidationEventService.digest(text));
 				artifact.put("segmentId", best == null ? null : best.get("segmentId"));
-				firebase.saveData("sourceKeyPoints", id, artifact);
+				artifact.put("sourceStartMs", best == null ? null : best.get("startMs"));
+				artifact.put("sourceEndMs", best == null ? null : best.get("endMs"));
+				artifact.put("algorithmVersion", "source-key-point-extraction-v1");
+				artifact.put("modelVersion", summarizationModelVersion);
+				artifact.put("promptVersion", "source-key-point-v1");
+				artifact.put("applicationVersion", applicationVersion);
+				firebase.createEvidence("sourceKeyPoints", id, artifact);
 				if (best == null)
 					incomplete = true;
 				else
@@ -105,17 +121,19 @@ public class SemanticEvidenceService {
 							.add(new Anchor(links.get(a.id), links.get(b.id), confidence));
 				decisions.add(new Decision(i, a, b, confidence, duplicate, method));
 			}
-		for (Decision d : decisions)
-			persistDecision(job, d, points.get(find(parent, d.leftIndex)).id);
-		persistAlignments(job, anchors);
+		int alignmentCount = persistAlignments(job, anchors);
 		Map<Integer, List<Point>> clusters = new LinkedHashMap<>();
 		for (int i = 0; i < points.size(); i++)
 			clusters.computeIfAbsent(find(parent, i), ignored -> new ArrayList<>()).add(points.get(i));
 		List<SummaryKeyPoint> structured = new ArrayList<>();
 		List<SourceAttribution> attributions = new ArrayList<>();
-		for (List<Point> cluster : clusters.values()) {
+		Map<Integer, String> canonicalPointIds = new HashMap<>();
+		for (var clusterEntry : clusters.entrySet()) {
+			List<Point> cluster = clusterEntry.getValue();
+			Set<String> clusterPointIds = cluster.stream().map(Point::id).collect(java.util.stream.Collectors.toSet());
 			Point representative = cluster.stream().filter(p -> links.containsKey(p.id)).findFirst()
 					.orElse(cluster.get(0));
+			canonicalPointIds.put(clusterEntry.getKey(), representative.id);
 			SummaryKeyPoint kp = new SummaryKeyPoint();
 			kp.setKeyPointId(representative.id);
 			kp.setSummaryId(summary.getSummaryId());
@@ -128,19 +146,39 @@ public class SemanticEvidenceService {
 				kp.setSourceEndTime(time(ms(segment, "endMs")));
 			}
 			structured.add(kp);
-			Set<String> sourceIds = new HashSet<>();
-			cluster.forEach(p -> sourceIds.add(p.sourceId));
-			SourceAttribution attribution = new SourceAttribution();
-			attribution.setKeyPointId(representative.id);
-			if (segment == null) {
-				attribution.setAttributionType("UNRESOLVED");
-				incomplete = true;
-			} else {
-				attribution.setAttributionType(sourceIds.size() == 1 ? "SINGLE_SOURCE" : "MULTI_SOURCE_CONSENSUS");
-				attribution.setSourceLabel(sourceIds.size() == 1 ? representative.sourceLabel : "Multiple Sources");
+			Map<String, Point> contributingSources = new LinkedHashMap<>();
+			cluster.forEach(p -> contributingSources.putIfAbsent(p.sourceId, p));
+			String lineageId = ValidationEventService.digest(job.getJobId() + ":" + representative.id);
+			firebase.createEvidence("mergedKeyPointLineage", lineageId,
+					Map.of("lineageId", lineageId, "jobId", job.getJobId(), "mergedKeyPointId", representative.id,
+							"sourceKeyPointIds", cluster.stream().map(Point::id).toList(), "semanticDecisionIds",
+							decisions.stream().filter(Decision::duplicate)
+									.filter(d -> clusterPointIds.contains(d.a.id) && clusterPointIds.contains(d.b.id))
+									.map(d -> decisionId(job, d)).toList(),
+							"algorithmVersion", "semantic-clustering-v1", "applicationVersion", applicationVersion));
+			for (Point contributor : contributingSources.values()) {
+				Map<String, Object> contributorSegment = links.get(contributor.id);
+				SourceAttribution attribution = new SourceAttribution();
+				attribution.setAttributionId(ValidationEventService
+						.digest(job.getJobId() + ":" + representative.id + ":" + contributor.sourceId));
+				attribution.setJobId(job.getJobId());
+				attribution.setKeyPointId(representative.id);
+				attribution.setSourceFileId(contributor.sourceId);
+				attribution.setSourceLabel(contributor.sourceLabel);
+				attribution.setAttributionStatus(contributorSegment == null
+						? "UNRESOLVED"
+						: contributingSources.size() == 1 ? "RESOLVED" : "MULTI_SOURCE");
+				attribution.setAttributionType(
+						contributingSources.size() == 1 ? "SINGLE_SOURCE" : "MULTI_SOURCE_CONSENSUS");
+				attribution.setAlgorithmVersion("source-attribution-v1");
+				attribution.setApplicationVersion(applicationVersion);
+				attributions.add(attribution);
+				if (contributorSegment == null)
+					incomplete = true;
 			}
-			attributions.add(attribution);
 		}
+		for (Decision decision : decisions)
+			persistDecision(job, decision, canonicalPointIds.get(find(parent, decision.leftIndex)));
 		summary.setSummaryKeyPoints(structured);
 		summary.setKeyPoints(structured.stream().map(SummaryKeyPoint::getText).toList());
 		for (Flashcard card : summary.getFlashcards()) {
@@ -155,11 +193,17 @@ public class SemanticEvidenceService {
 		}
 		if (incomplete)
 			job.setMeasurementIncomplete(true);
+		persistStageRun(job, "SOURCE_KEY_POINT_EXTRACTION", points.size(), points.size(),
+				"source-key-point-extraction-v1");
+		persistStageRun(job, "DEDUPLICATION", decisions.size(), clusters.size(), "semantic-clustering-v1");
+		persistStageRun(job, "ATTRIBUTION", clusters.size(), attributions.size(), "source-attribution-v1");
+		persistStageRun(job, "ALIGNMENT", anchors.values().stream().mapToInt(List::size).sum(), alignmentCount,
+				"ordered-semantic-anchors-v1");
 		return attributions;
 	}
 
 	private void persistDecision(MultiSourceJob job, Decision d, String clusterId) {
-		String id = ValidationEventService.digest(job.getJobId() + ":" + d.a.id + ":" + d.b.id);
+		String id = decisionId(job, d);
 		Map<String, Object> row = new LinkedHashMap<>();
 		row.put("decisionId", id);
 		row.put("jobId", job.getJobId());
@@ -169,18 +213,27 @@ public class SemanticEvidenceService {
 		row.put("rightSourceFileId", d.b.sourceId);
 		row.put("confidence", d.confidence);
 		row.put("duplicate", d.duplicate);
+		row.put("decision", d.duplicate ? "DUPLICATE" : "DISTINCT");
 		row.put("threshold", threshold);
 		row.put("decisionMethod", d.method);
-		row.put("modelVersion", "gemini-simple-text");
+		row.put("modelVersion", semanticModelVersion);
 		row.put("promptVersion", "semantic-pair-v1");
 		row.put("clusterId", d.duplicate ? clusterId : null);
-		firebase.saveData("semanticDecisions", id, row);
+		row.put("canonicalKeyPointId", clusterId);
+		row.put("algorithmVersion", "semantic-clustering-v1");
+		row.put("applicationVersion", applicationVersion);
+		firebase.createEvidence("semanticDecisions", id, row);
 		events.emit(job.getJobId(), "MULTI_SOURCE", job.getClientSource(), "SEMANTIC_PAIR_DECIDED", List.of(11), id,
 				Map.of("decisionId", id, "duplicate", d.duplicate, "confidence", d.confidence, "modelVersion",
-						"gemini-simple-text", "promptVersion", "semantic-pair-v1"),
+						semanticModelVersion, "promptVersion", "semantic-pair-v1"),
 				"multiSourceJobs");
 	}
-	private void persistAlignments(MultiSourceJob job, Map<String, List<Anchor>> anchors) {
+
+	private String decisionId(MultiSourceJob job, Decision decision) {
+		return ValidationEventService.digest(job.getJobId() + ":" + decision.a.id + ":" + decision.b.id);
+	}
+	private int persistAlignments(MultiSourceJob job, Map<String, List<Anchor>> anchors) {
+		int count = 0;
 		for (var entry : anchors.entrySet()) {
 			List<Anchor> list = entry.getValue();
 			if (list.size() < 2)
@@ -194,6 +247,9 @@ public class SemanticEvidenceService {
 			row.put("alignmentId", id);
 			row.put("jobId", job.getJobId());
 			row.put("sourcePairId", entry.getKey());
+			String[] sourcePair = entry.getKey().split(":", 2);
+			row.put("sourceAFileId", sourcePair[0]);
+			row.put("sourceBFileId", sourcePair.length > 1 ? sourcePair[1] : null);
 			row.put("sourceAStartMs", as);
 			row.put("sourceAEndMs", ae);
 			row.put("sourceBStartMs", bs);
@@ -202,8 +258,44 @@ public class SemanticEvidenceService {
 			row.put("anchorCount", list.size());
 			row.put("confidence", list.stream().mapToDouble(Anchor::confidence).average().orElse(0));
 			row.put("algorithmVersion", "ordered-semantic-anchors-v1");
-			firebase.saveData("crossSourceAlignments", id, row);
+			row.put("applicationVersion", applicationVersion);
+			firebase.createEvidence("crossSourceAlignments", id, row);
+			count++;
 		}
+		return count;
+	}
+
+	private void persistStageRun(MultiSourceJob job, String stage, int candidateCount, int outputCount,
+			String algorithmVersion) {
+		String id = ValidationEventService.digest(job.getJobId() + ":" + stage);
+		Map<String, Object> row = new LinkedHashMap<>();
+		row.put("stageRunId", id);
+		row.put("jobId", job.getJobId());
+		row.put("stage", stage);
+		row.put("status", "COMPLETED");
+		row.put("candidateCount", candidateCount);
+		row.put("outputCount", outputCount);
+		row.put("algorithmVersion", algorithmVersion);
+		row.put("applicationVersion", applicationVersion);
+		row.put("completedAt", Instant.now().toString());
+		firebase.createEvidence("multiSourceStageRuns", id, row);
+	}
+
+	public void persistFailedRun(MultiSourceJob job, String stage, String failureCode, int attempt) {
+		String id = ValidationEventService.digest(job.getJobId() + ":" + stage + ":FAILED:" + attempt);
+		Map<String, Object> row = new LinkedHashMap<>();
+		row.put("stageRunId", id);
+		row.put("jobId", job.getJobId());
+		row.put("stage", stage);
+		row.put("status", "FAILED");
+		row.put("candidateCount", 0);
+		row.put("outputCount", 0);
+		row.put("failureCode", failureCode);
+		row.put("attempt", attempt);
+		row.put("algorithmVersion", "not-applicable");
+		row.put("applicationVersion", applicationVersion);
+		row.put("completedAt", Instant.now().toString());
+		firebase.createEvidence("multiSourceStageRuns", id, row);
 	}
 	private Map<String, Object> bestSegment(String text, List<Map<String, Object>> segments) {
 		Set<String> tokens = tokens(text);

@@ -29,11 +29,13 @@ import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RequestCallback;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.ResponseExtractor;
 import org.springframework.web.client.RestTemplate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import edu.cit.audioscholar.exception.StorageRetrievalException;
 import edu.cit.audioscholar.exception.StorageUploadException;
 
 @ExtendWith(MockitoExtension.class)
@@ -53,6 +55,7 @@ class NhostStorageServiceTest {
 		nhostStorageService = new NhostStorageService(restTemplate, STORAGE_URL, ADMIN_SECRET, BUCKET_ID,
 				new ObjectMapper());
 		ReflectionTestUtils.setField(nhostStorageService, "uploadRetryDelayMs", 0L);
+		ReflectionTestUtils.setField(nhostStorageService, "downloadRetryDelayMs", 0L);
 	}
 
 	@Test
@@ -182,6 +185,87 @@ class NhostStorageServiceTest {
 
 			assertEquals(ADMIN_SECRET, requestHeaders.getFirst("x-hasura-admin-secret"));
 			assertEquals("downloaded audio", Files.readString(targetPath));
+		} finally {
+			Files.deleteIfExists(targetPath);
+		}
+	}
+
+	@Test
+	void downloadFileToPath_refreshesUnauthorizedRequestOnceThenFailsPermanently() throws Exception {
+		String fileId = "private-object";
+		Path targetPath = Files.createTempFile("nhost-denied", ".mp3");
+		HttpClientErrorException forbidden = HttpClientErrorException.create(HttpStatus.FORBIDDEN, "Forbidden",
+				HttpHeaders.EMPTY, new byte[0], StandardCharsets.UTF_8);
+		when(restTemplate.execute(eq(URI.create(STORAGE_URL + "/" + fileId)), eq(HttpMethod.GET),
+				any(RequestCallback.class), any(ResponseExtractor.class))).thenThrow(forbidden);
+
+		try {
+			StorageRetrievalException failure = assertThrows(StorageRetrievalException.class,
+					() -> nhostStorageService.downloadFileToPath(fileId, targetPath));
+			assertEquals("STORAGE_ACCESS_DENIED", failure.getFailureCode());
+			assertFalse(failure.isRetryable());
+			verify(restTemplate, times(2)).execute(eq(URI.create(STORAGE_URL + "/" + fileId)), eq(HttpMethod.GET),
+					any(RequestCallback.class), any(ResponseExtractor.class));
+		} finally {
+			Files.deleteIfExists(targetPath);
+		}
+	}
+
+	@Test
+	void downloadFileToPath_doesNotRetryMissingObject() throws Exception {
+		String fileId = "missing-object";
+		Path targetPath = Files.createTempFile("nhost-missing", ".mp3");
+		HttpClientErrorException notFound = HttpClientErrorException.create(HttpStatus.NOT_FOUND, "Not Found",
+				HttpHeaders.EMPTY, new byte[0], StandardCharsets.UTF_8);
+		when(restTemplate.execute(eq(URI.create(STORAGE_URL + "/" + fileId)), eq(HttpMethod.GET),
+				any(RequestCallback.class), any(ResponseExtractor.class))).thenThrow(notFound);
+
+		try {
+			StorageRetrievalException failure = assertThrows(StorageRetrievalException.class,
+					() -> nhostStorageService.downloadFileToPath(fileId, targetPath));
+			assertEquals("STORAGE_OBJECT_NOT_FOUND", failure.getFailureCode());
+			verify(restTemplate).execute(eq(URI.create(STORAGE_URL + "/" + fileId)), eq(HttpMethod.GET),
+					any(RequestCallback.class), any(ResponseExtractor.class));
+		} finally {
+			Files.deleteIfExists(targetPath);
+		}
+	}
+
+	@Test
+	void downloadFileToPath_rejectsInvalidObjectIdentifierWithoutRequest() throws Exception {
+		Path targetPath = Files.createTempFile("nhost-invalid-id", ".mp3");
+		try {
+			StorageRetrievalException failure = assertThrows(StorageRetrievalException.class,
+					() -> nhostStorageService.downloadFileToPath("../object?token=secret", targetPath));
+			assertEquals("STORAGE_INVALID_IDENTIFIER", failure.getFailureCode());
+			assertFalse(failure.isRetryable());
+			verifyNoInteractions(restTemplate);
+		} finally {
+			Files.deleteIfExists(targetPath);
+		}
+	}
+
+	@Test
+	void downloadFileToPath_capsRetriesFor429TimeoutAndServerErrors() throws Exception {
+		assertTransientFailureRetried(HttpClientErrorException.create(HttpStatus.TOO_MANY_REQUESTS, "Rate limited",
+				HttpHeaders.EMPTY, new byte[0], StandardCharsets.UTF_8), "STORAGE_RETRIEVAL_FAILED");
+		assertTransientFailureRetried(new ResourceAccessException("timed out"), "STORAGE_TIMEOUT");
+		assertTransientFailureRetried(HttpServerErrorException.create(HttpStatus.SERVICE_UNAVAILABLE, "Unavailable",
+				HttpHeaders.EMPTY, new byte[0], StandardCharsets.UTF_8), "STORAGE_RETRIEVAL_FAILED");
+	}
+
+	private void assertTransientFailureRetried(RuntimeException providerFailure, String expectedCode) throws Exception {
+		reset(restTemplate);
+		String fileId = "transient-object";
+		Path targetPath = Files.createTempFile("nhost-transient", ".mp3");
+		when(restTemplate.execute(eq(URI.create(STORAGE_URL + "/" + fileId)), eq(HttpMethod.GET),
+				any(RequestCallback.class), any(ResponseExtractor.class))).thenThrow(providerFailure);
+		try {
+			StorageRetrievalException failure = assertThrows(StorageRetrievalException.class,
+					() -> nhostStorageService.downloadFileToPath(fileId, targetPath));
+			assertEquals(expectedCode, failure.getFailureCode());
+			verify(restTemplate, times(3)).execute(eq(URI.create(STORAGE_URL + "/" + fileId)), eq(HttpMethod.GET),
+					any(RequestCallback.class), any(ResponseExtractor.class));
 		} finally {
 			Files.deleteIfExists(targetPath);
 		}

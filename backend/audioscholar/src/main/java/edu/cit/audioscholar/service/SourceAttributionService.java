@@ -23,12 +23,13 @@ public class SourceAttributionService {
 				StringUtils.hasText(keyPoint.getSourceLabel()) ? keyPoint.getSourceLabel() : "Multiple Sources");
 		attribution.setAttributionType(
 				StringUtils.hasText(keyPoint.getSourceLabel()) ? "SINGLE_SOURCE" : "MULTI_SOURCE_CONSENSUS");
+		attribution.setAttributionStatus(StringUtils.hasText(keyPoint.getSourceLabel()) ? "RESOLVED" : "MULTI_SOURCE");
 		return attribution;
 	}
 
 	public SourceAttribution save(String mergedSummaryId, SourceAttribution attribution) {
 		attribution.setMergedSummaryId(mergedSummaryId);
-		firebaseService.saveData(COLLECTION_NAME, attribution.getAttributionId(), attribution.toMap());
+		firebaseService.createEvidence(COLLECTION_NAME, attribution.getAttributionId(), attribution.toMap());
 		return attribution;
 	}
 }

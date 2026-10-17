@@ -11,6 +11,7 @@ public class SourceFile {
 	private String sourceLabel;
 	private String sourceKind;
 	private String fileUrl;
+	private String storageObjectId;
 	private String fileType;
 	private String uploadStatus;
 	private String fileName;
@@ -24,6 +25,7 @@ public class SourceFile {
 	private Date createdAt = new Date();
 	private Date uploadCompletedAt;
 	private Date transcriptionCompletedAt;
+	private Date retrievedAt;
 
 	public String getSourceFileId() {
 		return sourceFileId;
@@ -54,6 +56,12 @@ public class SourceFile {
 	}
 	public void setFileUrl(String fileUrl) {
 		this.fileUrl = fileUrl;
+	}
+	public String getStorageObjectId() {
+		return storageObjectId;
+	}
+	public void setStorageObjectId(String storageObjectId) {
+		this.storageObjectId = storageObjectId;
 	}
 	public String getFileType() {
 		return fileType;
@@ -133,6 +141,12 @@ public class SourceFile {
 	public void setTranscriptionCompletedAt(Date value) {
 		transcriptionCompletedAt = value;
 	}
+	public Date getRetrievedAt() {
+		return retrievedAt;
+	}
+	public void setRetrievedAt(Date retrievedAt) {
+		this.retrievedAt = retrievedAt;
+	}
 
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
@@ -141,6 +155,7 @@ public class SourceFile {
 		map.put("sourceLabel", sourceLabel);
 		map.put("sourceKind", sourceKind);
 		map.put("fileUrl", fileUrl);
+		map.put("storageObjectId", storageObjectId);
 		map.put("fileType", fileType);
 		map.put("uploadStatus", uploadStatus);
 		map.put("fileName", fileName);
@@ -154,6 +169,7 @@ public class SourceFile {
 		map.put("createdAt", createdAt);
 		map.put("uploadCompletedAt", uploadCompletedAt);
 		map.put("transcriptionCompletedAt", transcriptionCompletedAt);
+		map.put("retrievedAt", retrievedAt);
 		return map;
 	}
 }

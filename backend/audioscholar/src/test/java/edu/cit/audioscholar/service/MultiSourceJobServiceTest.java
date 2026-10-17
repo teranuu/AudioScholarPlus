@@ -7,7 +7,9 @@ import static org.mockito.Mockito.*;
 
 import java.lang.reflect.Method;
 import java.nio.file.Path;
+import java.util.Date;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -124,6 +126,90 @@ class MultiSourceJobServiceTest {
 		java.io.IOException exception = (java.io.IOException) wrapped.getCause();
 
 		assertTrue(exception.getMessage().contains("Gemini transcription failed"));
+	}
+
+	@Test
+	void terminalRaceDoesNotPublishCompletionAfterReconciliationWon() throws Exception {
+		ProcessingHarness harness = processingHarness(false);
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository).transitionTerminal(any(MultiSourceJob.class), eq("JOB_COMPLETED"), eq("initial"),
+				anyList(), anyMap());
+		verify(harness.events, never()).emit(eq("job-1"), eq("MULTI_SOURCE"), anyString(), eq("JOB_COMPLETED"),
+				anyList(), anyString(), anyMap(), anyString());
+		verify(harness.repository, never()).markTerminalEventPublished("job-1");
+	}
+
+	@Test
+	void terminalStateAndPendingEventArePersistedBeforePublishingCompletion() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+
+		harness.service.processQueuedJob("job-1");
+
+		var order = inOrder(harness.repository, harness.events);
+		order.verify(harness.repository).transitionTerminal(any(MultiSourceJob.class), eq("JOB_COMPLETED"),
+				eq("initial"), anyList(), anyMap());
+		order.verify(harness.events).emit(eq("job-1"), eq("MULTI_SOURCE"), eq("WEB"), eq("JOB_COMPLETED"), anyList(),
+				eq("initial"), anyMap(), eq("multiSourceJobs"));
+		order.verify(harness.repository).markTerminalEventPublished("job-1");
+	}
+
+	@Test
+	void persistedSourceCountMismatchFailsPermanentlyInsteadOfCompletingPartialBatch() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.sourceFiles.findByJobId("job-1")).thenReturn(List.of(completedSource("source-a", "Source A")));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository).transitionTerminal(
+				argThat(job -> "SOURCE_COUNT_MISMATCH".equals(job.getFailureCode())
+						&& Integer.valueOf(1).equals(job.getFinalAttemptCount())),
+				eq("JOB_FAILED"), eq("initial"), anyList(), anyMap());
+		verify(harness.repository, never()).transitionTerminal(any(), eq("JOB_COMPLETED"), anyString(), anyList(),
+				anyMap());
+	}
+
+	private ProcessingHarness processingHarness(boolean terminalTransitionWins) throws Exception {
+		GeminiService gemini = mock(GeminiService.class);
+		DeduplicationService deduplication = mock(DeduplicationService.class);
+		SourceFileService sourceFiles = mock(SourceFileService.class);
+		MultiSourceJobRepository repository = mock(MultiSourceJobRepository.class);
+		ValidationEventService events = mock(ValidationEventService.class);
+		SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
+		when(repository.claim("job-1")).thenReturn(true);
+		when(repository.findById("job-1"))
+				.thenReturn(Map.of("jobId", "job-1", "userId", "user-1", "title", "Title", "outputType", "NOTES",
+						"status", "PROCESSING", "clientSource", "WEB", "sourceCount", 2, "processingAttempts", 0));
+		when(repository.saveIfNonterminal(any())).thenReturn(true);
+		when(repository.transitionTerminal(any(), eq("JOB_COMPLETED"), anyString(), anyList(), anyMap()))
+				.thenReturn(terminalTransitionWins);
+		when(sourceFiles.findByJobId("job-1"))
+				.thenReturn(List.of(completedSource("source-a", "Source A"), completedSource("source-b", "Source B")));
+		when(gemini.generateTranscriptOnlySummary(anyString(), eq("job-1"), eq("NOTES"))).thenReturn(
+				"{\"summaryText\":\"Merged\",\"keyPoints\":[],\"topics\":[],\"glossary\":[],\"flashcards\":[]}");
+		when(deduplication.removeDuplicateText(anyList())).thenAnswer(invocation -> invocation.getArgument(0));
+		when(deduplication.removeDuplicateFlashcards(anyList())).thenAnswer(invocation -> invocation.getArgument(0));
+		when(semantic.evaluate(any(), any())).thenReturn(List.of());
+		when(events.emit(anyString(), anyString(), anyString(), anyString(), anyList(), anyString(), anyMap(),
+				anyString())).thenReturn(true);
+		MultiSourceJobService service = new MultiSourceJobService(gemini, mock(QualityReportService.class),
+				mock(SummaryService.class), deduplication, mock(SourceAttributionService.class), sourceFiles,
+				mock(SourceTranscriptService.class), mock(DocumentTextExtractionService.class),
+				mock(MergedSummaryRepository.class), repository, mock(AudioProcessingGuardrailService.class),
+				tempDir.toString(), "500MB", mock(ConfirmedRabbitPublisher.class), events,
+				mock(TimedTranscriptSegmentService.class), semantic);
+		return new ProcessingHarness(service, repository, events, sourceFiles);
+	}
+
+	private record ProcessingHarness(MultiSourceJobService service, MultiSourceJobRepository repository,
+			ValidationEventService events, SourceFileService sourceFiles) {
+	}
+
+	private Map<String, Object> completedSource(String sourceFileId, String label) {
+		return Map.of("sourceFileId", sourceFileId, "jobId", "job-1", "sourceLabel", label, "sourceKind", "MEDIA",
+				"fileName", sourceFileId + ".mp3", "storageObjectId", "object-" + sourceFileId, "transcriptText",
+				"Shared lecture point.", "transcriptionCompletedAt", new Date());
 	}
 
 	private MultiSourceJobService service() throws Exception {
