@@ -10,6 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +20,10 @@ import org.springframework.stereotype.Service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.cloud.Timestamp;
+
+import edu.cit.audioscholar.model.AudioMetadata;
+import edu.cit.audioscholar.model.ProcessingStatus;
+import edu.cit.audioscholar.model.QualityReport;
 
 @Service
 public class ValidationEventService {
@@ -46,6 +51,19 @@ public class ValidationEventService {
 
 	public static String clientSource(String header) {
 		return "WEB".equals(header) ? "WEB" : "UNKNOWN";
+	}
+
+	public boolean isEnabled() {
+		return enabled;
+	}
+
+	public boolean recordRejectedRequest(String clientHeader, String reasonCode) {
+		String source = clientSource(clientHeader);
+		if (!enabled || !"WEB".equals(source))
+			return true;
+		String rejectionId = "rejected-" + UUID.randomUUID();
+		return emit(rejectionId, "SINGLE_SOURCE", source, "REQUEST_REJECTED", List.of(6), "initial",
+				Map.of("reasonCode", blank(reasonCode) ? "UNSPECIFIED" : reasonCode), null);
 	}
 
 	public boolean emit(String workflowId, String workflowType, String clientSource, String eventType,
@@ -76,7 +94,7 @@ public class ValidationEventService {
 		event.put("outcome", payload.getOrDefault("outcome", eventType));
 		for (String key : List.of("recordingId", "jobId", "summaryId", "sourceFileId", "segmentId", "decisionId",
 				"reportId", "issueId", "modelVersion", "promptVersion", "detectorVersion", "algorithmVersion",
-				"thresholdVersion"))
+				"thresholdVersion", "attemptId", "templateId", "templateVersion", "summaryEvidenceVersion"))
 			if (payload.containsKey(key))
 				event.put(key, payload.get(key));
 		event.put("payload", payload);
@@ -87,6 +105,76 @@ public class ValidationEventService {
 		} catch (Exception e) {
 			failure(workflowCollection, workflowId, eventType, eventId);
 			return false;
+		}
+	}
+
+	public boolean emitAttemptTerminal(String metadataId, ProcessingStatus status) {
+		if (!Set.of(ProcessingStatus.COMPLETE, ProcessingStatus.COMPLETED_WITH_WARNINGS, ProcessingStatus.FAILED,
+				ProcessingStatus.SUMMARY_FAILED, ProcessingStatus.PROCESSING_HALTED_NO_SPEECH,
+				ProcessingStatus.PROCESSING_HALTED_UNSUITABLE_CONTENT).contains(status))
+			return false;
+		AudioMetadata metadata = firebase.getAudioMetadataById(metadataId);
+		if (metadata == null)
+			return false;
+		String attemptId = blank(metadata.getAttemptId())
+				? metadataId + ":" + metadata.getProcessingAttempt()
+				: metadata.getAttemptId();
+		if (!enabled || !"WEB".equals(metadata.getClientSource()))
+			return true;
+		ensureQualityResult(metadataId, attemptId, status);
+		Map<String, Object> payload = sanitize(
+				Map.of("recordingId", metadataId, "attemptId", attemptId, "outcome", status.name()));
+		String eventId = digest("SINGLE_SOURCE:" + metadataId + ":" + status.name() + ":terminal:" + attemptId);
+		Instant now = Instant.now();
+		Map<String, Object> event = new LinkedHashMap<>();
+		event.put("eventId", eventId);
+		event.put("schemaVersion", 1);
+		event.put("eventType", status.name());
+		event.put("objectiveCodes", List.of(6));
+		event.put("occurredAt", Timestamp.ofTimeSecondsAndNanos(now.getEpochSecond(), now.getNano()));
+		event.put("expiresAt",
+				Timestamp.ofTimeSecondsAndNanos(now.plus(retentionDays, ChronoUnit.DAYS).getEpochSecond(), 0));
+		event.put("clientSource", metadata.getClientSource());
+		event.put("workflowType", "SINGLE_SOURCE");
+		event.put("workflowId", metadataId);
+		event.put("measurementRunId", metadataId);
+		event.put("applicationVersion", applicationVersion);
+		event.put("outcome", status.name());
+		event.put("recordingId", metadataId);
+		event.put("attemptId", attemptId);
+		event.put("payload", payload);
+		try {
+			boolean stored = firebase.createAttemptTerminalEvidence(firebase.getAudioMetadataCollectionName(),
+					metadataId, attemptId, status.name(), COLLECTION, eventId, event);
+			if (stored)
+				log.info("VALIDATION_EVENT {}", json.writeValueAsString(event));
+			return stored;
+		} catch (Exception failure) {
+			failure(firebase.getAudioMetadataCollectionName(), metadataId, status.name(), eventId);
+			return false;
+		}
+	}
+
+	private void ensureQualityResult(String recordingId, String attemptId, ProcessingStatus terminalStatus) {
+		try {
+			if (!firebase.queryCollection("qualityReports", "attemptId", attemptId).isEmpty())
+				return;
+			QualityReport report = QualityReport.unavailable(recordingId);
+			report.setAttemptId(attemptId);
+			report.setAudioFingerprint("unavailable");
+			report.setDetectorVersion(QualityIssueDetector.DETECTOR_VERSION);
+			report.setThresholdVersion(QualityIssueDetector.THRESHOLD_VERSION);
+			report.setAnalysisWindowMs(15_000L);
+			report.setAnalyzedDurationMs(0L);
+			report.setTotalDurationMs(0L);
+			report.setCoverageRatio(0.0);
+			report.setFailureCode("PROCESSING_TERMINATED_BEFORE_ANALYSIS");
+			report.setFailureDetail("Attempt terminated with " + terminalStatus.name() + " before full PCM analysis.");
+			report.setReportId(digest(attemptId + report.getAudioFingerprint() + report.getDetectorVersion()
+					+ report.getThresholdVersion()));
+			firebase.saveData("qualityReports", report.getReportId(), report.toMap());
+		} catch (Exception failure) {
+			failure(firebase.getAudioMetadataCollectionName(), recordingId, "QUALITY_REPORT_PERSISTED", attemptId);
 		}
 	}
 

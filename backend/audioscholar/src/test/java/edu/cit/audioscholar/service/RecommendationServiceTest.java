@@ -25,6 +25,7 @@ class RecommendationServiceTest {
 	private FirebaseService firebaseService;
 	private LearningMaterialRecommenderService recommenderService;
 	private ProcessingStageClaimService stageClaimService;
+	private ValidationEventService validationEvents;
 	private RecommendationService service;
 
 	@BeforeEach
@@ -32,11 +33,13 @@ class RecommendationServiceTest {
 		firebaseService = mock(FirebaseService.class);
 		recommenderService = mock(LearningMaterialRecommenderService.class);
 		stageClaimService = mock(ProcessingStageClaimService.class);
+		validationEvents = mock(ValidationEventService.class);
 		service = new RecommendationService();
 		ReflectionTestUtils.setField(service, "firebaseService", firebaseService);
 		ReflectionTestUtils.setField(service, "learningMaterialRecommenderService", recommenderService);
 		ReflectionTestUtils.setField(service, "objectMapper", new ObjectMapper());
 		ReflectionTestUtils.setField(service, "stageClaimService", stageClaimService);
+		ReflectionTestUtils.setField(service, "validationEvents", validationEvents);
 		when(firebaseService.getAudioMetadataCollectionName()).thenReturn("audio_metadata");
 	}
 
@@ -57,6 +60,26 @@ class RecommendationServiceTest {
 		assertFalse(result.success());
 		assertEquals(0, result.count());
 		verify(firebaseService).updateData(eq("audio_metadata"), eq("metadata-1"), any(Map.class));
+		verify(validationEvents).emitAttemptTerminal("metadata-1", ProcessingStatus.COMPLETED_WITH_WARNINGS);
+	}
+
+	@Test
+	void recommenderFallbackStatusStillReceivesTerminalEvidence() {
+		AudioMetadata initial = metadata(ProcessingStatus.RECOMMENDATIONS_QUEUED);
+		AudioMetadata claimed = metadata(ProcessingStatus.GENERATING_RECOMMENDATIONS);
+		AudioMetadata fallback = metadata(ProcessingStatus.COMPLETED_WITH_WARNINGS);
+		when(firebaseService.getAudioMetadataById("metadata-1")).thenReturn(initial, fallback);
+		when(stageClaimService.claim(eq("metadata-1"), eq(ProcessingStatus.GENERATING_RECOMMENDATIONS), any(), any(),
+				any())).thenReturn(ProcessingStageClaimService.ClaimResult.acquired(claimed));
+		when(firebaseService.getData("summaries", "summary-1")).thenReturn(Map.of("formattedSummaryText", "Summary"));
+		when(recommenderService.getRecommendationsByRecordingId("recording-1")).thenReturn(List.of());
+		when(recommenderService.generateAndSaveRecommendations("user-1", "recording-1", "summary-1"))
+				.thenReturn(List.of());
+
+		RecommendationService.RecommendationResult result = service.recommendAndSaveResult("metadata-1", "user-1");
+
+		assertFalse(result.success());
+		verify(validationEvents).emitAttemptTerminal("metadata-1", ProcessingStatus.COMPLETED_WITH_WARNINGS);
 	}
 
 	private AudioMetadata metadata(ProcessingStatus status) {

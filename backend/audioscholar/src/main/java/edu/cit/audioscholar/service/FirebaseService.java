@@ -415,6 +415,33 @@ public class FirebaseService {
 		}
 	}
 
+	/** Atomically chooses and stores exactly one terminal event for an attempt. */
+	public boolean createAttemptTerminalEvidence(String metadataCollection, String metadataId, String attemptId,
+			String terminalType, String evidenceCollection, String eventId, Map<String, Object> event) {
+		try {
+			DocumentReference metadataRef = getFirestore().collection(metadataCollection).document(metadataId);
+			DocumentReference eventRef = getFirestore().collection(evidenceCollection).document(eventId);
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot metadata = transaction.get(metadataRef).get();
+				DocumentSnapshot existingEvent = transaction.get(eventRef).get();
+				if (!metadata.exists())
+					return false;
+				if (attemptId.equals(metadata.getString("terminalAttemptId")))
+					return true;
+				if (!existingEvent.exists())
+					transaction.create(eventRef, event);
+				transaction.set(metadataRef, Map.of("terminalAttemptId", attemptId, "terminalEventType", terminalType),
+						SetOptions.merge());
+				return true;
+			}).get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Interrupted storing attempt terminal evidence", e);
+		} catch (ExecutionException e) {
+			throw new FirestoreInteractionException("Could not store attempt terminal evidence", e);
+		}
+	}
+
 	public boolean claimQueuedJob(String collection, String document) {
 		try {
 			DocumentReference ref = getFirestore().collection(collection).document(document);
@@ -928,7 +955,7 @@ public class FirebaseService {
 		}
 	}
 
-	private AudioMetadata fromDocumentSnapshot(DocumentSnapshot document) {
+	AudioMetadata fromDocumentSnapshot(DocumentSnapshot document) {
 		if (document == null || !document.exists()) {
 			log.warn("Attempted to map null or non-existent document snapshot.");
 			return null;
@@ -958,6 +985,13 @@ public class FirebaseService {
 			metadata.setDurationSeconds(getInteger(data, "durationSeconds", document.getId()));
 			metadata.setLastUpdated(getTimestamp(data, "lastUpdated", document.getId()));
 			metadata.setFailureReason(getString(data, "failureReason", document.getId()));
+			metadata.setClientSource(getString(data, "clientSource", document.getId()));
+			metadata.setMeasurementIncomplete(getBoolean(data, "measurementIncomplete", document.getId(), false));
+			metadata.setAudioFingerprint(getString(data, "audioFingerprint", document.getId()));
+			Integer processingAttempt = getInteger(data, "processingAttempt", document.getId());
+			metadata.setProcessingAttempt(processingAttempt == null ? 1 : processingAttempt);
+			metadata.setAttemptId(getString(data, "attemptId", document.getId()));
+			metadata.setStudySessionId(getString(data, "studySessionId", document.getId()));
 
 			String statusStr = getString(data, "status", document.getId());
 			if (StringUtils.hasText(statusStr)) {

@@ -24,14 +24,24 @@ public class TranscriptionRetryService {
 	private final Firestore firestore;
 	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	private final String metadataCollection;
+	private final ValidationEventService validationEvents;
 
 	public TranscriptionRetryService(FirebaseService firebaseService, Firestore firestore,
 			ConfirmedRabbitPublisher confirmedRabbitPublisher,
 			@Value("${firebase.firestore.collection.audiometadata}") String metadataCollection) {
+		this(firebaseService, firestore, confirmedRabbitPublisher, metadataCollection, null);
+	}
+
+	@org.springframework.beans.factory.annotation.Autowired
+	public TranscriptionRetryService(FirebaseService firebaseService, Firestore firestore,
+			ConfirmedRabbitPublisher confirmedRabbitPublisher,
+			@Value("${firebase.firestore.collection.audiometadata}") String metadataCollection,
+			ValidationEventService validationEvents) {
 		this.firebaseService = firebaseService;
 		this.firestore = firestore;
 		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.metadataCollection = metadataCollection;
+		this.validationEvents = validationEvents;
 	}
 
 	public String retry(String recordingId, String userId) {
@@ -57,14 +67,19 @@ public class TranscriptionRetryService {
 					throw new IllegalArgumentException("Recording metadata was not found");
 				}
 				validateRetryable(current, userId);
+				int processingAttempt = current.getProcessingAttempt() + 1;
+				String attemptId = current.getRecordingId() + ":" + processingAttempt;
 				Map<String, Object> updates = new HashMap<>();
 				updates.put("status", ProcessingStatus.PROCESSING_QUEUED.name());
 				updates.put("processingStage", "PROCESSING_QUEUED");
 				updates.put("failureReason", null);
 				updates.put("quotaRetryAt", null);
 				updates.put("lastUpdated", Timestamp.now());
+				updates.put("processingAttempt", processingAttempt);
+				updates.put("attemptId", attemptId);
 				transaction.update(reference, updates);
-				return new RetryJob(metadataId, current.getUserId(), current.getNhostFileId());
+				return new RetryJob(metadataId, current.getUserId(), current.getNhostFileId(), attemptId,
+						current.getClientSource());
 			}).get();
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -77,6 +92,7 @@ public class TranscriptionRetryService {
 			throw new IllegalStateException("Could not reopen transcription", cause);
 		}
 
+		emitStarted(job);
 		try {
 			AudioProcessingMessage message = new AudioProcessingMessage();
 			message.setMetadataId(job.metadataId());
@@ -93,6 +109,8 @@ public class TranscriptionRetryService {
 			rollback.put("failureReason", "TRANSCRIPTION_RETRY_QUEUE_FAILED: " + e.getMessage());
 			rollback.put("lastUpdated", Timestamp.now());
 			firebaseService.updateDataWithMap(metadataCollection, job.metadataId(), rollback);
+			if (validationEvents != null)
+				validationEvents.emitAttemptTerminal(job.metadataId(), ProcessingStatus.FAILED);
 			throw new IllegalStateException("Could not queue transcription retry", e);
 		}
 	}
@@ -117,6 +135,14 @@ public class TranscriptionRetryService {
 		}
 	}
 
-	private record RetryJob(String metadataId, String userId, String nhostFileId) {
+	private void emitStarted(RetryJob job) {
+		if (validationEvents != null)
+			validationEvents.emit(job.metadataId(), "SINGLE_SOURCE", job.clientSource(), "PROCESSING_STARTED",
+					java.util.List.of(6), job.attemptId(),
+					Map.of("recordingId", job.metadataId(), "attemptId", job.attemptId()), metadataCollection);
+	}
+
+	private record RetryJob(String metadataId, String userId, String nhostFileId, String attemptId,
+			String clientSource) {
 	}
 }

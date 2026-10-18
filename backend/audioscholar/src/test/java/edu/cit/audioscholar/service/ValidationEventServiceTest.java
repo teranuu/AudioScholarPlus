@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Map;
@@ -15,6 +16,9 @@ import org.mockito.ArgumentCaptor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.cloud.Timestamp;
+
+import edu.cit.audioscholar.model.AudioMetadata;
+import edu.cit.audioscholar.model.ProcessingStatus;
 
 class ValidationEventServiceTest {
 	@Test
@@ -50,5 +54,43 @@ class ValidationEventServiceTest {
 		assertThat(service.emit("j1", "MULTI_SOURCE", "UNKNOWN", "JOB_ACCEPTED", List.of(9), "initial", Map.of(),
 				"multiSourceJobs")).isTrue();
 		org.mockito.Mockito.verifyNoInteractions(firebase);
+	}
+
+	@Test
+	void rejectedWebRequestIsReportedAnonymouslyWithoutEnteringAnAttempt() {
+		FirebaseService firebase = mock(FirebaseService.class);
+		ValidationEventService service = new ValidationEventService(firebase, new ObjectMapper(), true, 180, "test");
+
+		assertThat(service.recordRejectedRequest("WEB", "UNSUPPORTED_AUDIO_TYPE")).isTrue();
+
+		ArgumentCaptor<Map<String, Object>> event = ArgumentCaptor.forClass(Map.class);
+		verify(firebase).createEvidence(eq("validationEvents"), any(), event.capture());
+		assertThat(event.getValue()).containsEntry("eventType", "REQUEST_REJECTED").containsEntry("workflowType",
+				"SINGLE_SOURCE");
+		assertThat(event.getValue().toString()).contains("UNSUPPORTED_AUDIO_TYPE").doesNotContain("userId", "email",
+				"attemptId");
+	}
+
+	@Test
+	void terminalEventUsesAtomicAttemptStoreAndBackfillsMissingQualityResult() {
+		FirebaseService firebase = mock(FirebaseService.class);
+		AudioMetadata metadata = new AudioMetadata();
+		metadata.setId("r1");
+		metadata.setRecordingId("r1");
+		metadata.setAttemptId("r1:2");
+		metadata.setProcessingAttempt(2);
+		metadata.setClientSource("WEB");
+		when(firebase.getAudioMetadataById("r1")).thenReturn(metadata);
+		when(firebase.getAudioMetadataCollectionName()).thenReturn("audio_metadata");
+		when(firebase.queryCollection("qualityReports", "attemptId", "r1:2")).thenReturn(List.of());
+		when(firebase.createAttemptTerminalEvidence(eq("audio_metadata"), eq("r1"), eq("r1:2"), eq("FAILED"),
+				eq("validationEvents"), any(), any())).thenReturn(true);
+		ValidationEventService service = new ValidationEventService(firebase, new ObjectMapper(), true, 180, "test");
+
+		assertThat(service.emitAttemptTerminal("r1", ProcessingStatus.FAILED)).isTrue();
+
+		verify(firebase).saveData(eq("qualityReports"), any(), any());
+		verify(firebase).createAttemptTerminalEvidence(eq("audio_metadata"), eq("r1"), eq("r1:2"), eq("FAILED"),
+				eq("validationEvents"), any(), any());
 	}
 }

@@ -19,6 +19,27 @@ import edu.cit.audioscholar.service.FirebaseService;
 
 class ValidationExportControllerTest {
 	@Test
+	void manifestAggregatesObjectiveCodesAndPublishesEveryModule2EvidenceStatus() throws Exception {
+		FirebaseService firebase = mock(FirebaseService.class);
+		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
+		when(firebase.getAllData("validationEvents")).thenReturn(List.of(
+				Map.of("eventId", "e1", "workflowId", "r1", "clientSource", "WEB", "eventType", "PROCESSING_STARTED",
+						"occurredAt", occurredAt, "objectiveCodes", List.of(3, 6)),
+				Map.of("eventId", "e2", "workflowId", "r1", "clientSource", "WEB", "eventType",
+						"WARNING_GENERATION_COMPLETED", "occurredAt", occurredAt, "objectiveCodes", List.of(7, 8))));
+		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
+
+		String body = new String(controller
+				.export("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", null, "WEB", "jsonl", false).getBody(),
+				StandardCharsets.UTF_8);
+		var manifest = new ObjectMapper().readTree(body.lines().findFirst().orElseThrow()).path("data");
+
+		assertThat(manifest.path("objectiveCodes").toString()).isEqualTo("[3,6,7,8]");
+		for (int objective = 3; objective <= 8; objective++)
+			assertThat(manifest.path("objectiveEvidenceStatus").has(String.valueOf(objective))).isTrue();
+	}
+
+	@Test
 	void defaultExportRedactsNestedContentAndRequiresAdmin() throws Exception {
 		FirebaseService firebase = mock(FirebaseService.class);
 		when(firebase.getAllData("validationEvents"))

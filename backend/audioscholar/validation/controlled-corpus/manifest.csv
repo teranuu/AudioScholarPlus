@@ -1,0 +1,9 @@
+caseId,fileName,expectedIssueType,controlType,notes
+clean,clean.wav,,NEGATIVE,Alternating clear speech-like tone
+clipping,clipping.wav,AUDIO_CLIPPING,POSITIVE,Saturated waveform
+inaudible,inaudible.wav,INAUDIBLE_SPEECH,POSITIVE,Very low amplitude
+unclear,unclear.wav,UNCLEAR_AUDIO,POSITIVE,8 kHz 8-bit compressed-quality speech-like signal
+background-noise,background-noise.wav,HIGH_BACKGROUND_NOISE,POSITIVE,Speech-like tone mixed with strong high-frequency noise
+missing,missing.wav,MISSING_AUDIO,POSITIVE,Empty WAV payload
+disruptive-sound,disruptive-sound.wav,HIGH_BACKGROUND_NOISE,CHALLENGE,Canonical taxonomy mapping
+overlapping-speech,overlapping-speech.wav,UNCLEAR_AUDIO,CHALLENGE,Canonical taxonomy mapping

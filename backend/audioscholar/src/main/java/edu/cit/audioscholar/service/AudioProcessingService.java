@@ -161,6 +161,10 @@ public class AudioProcessingService {
 			initialMetadata.setTranscriptionComplete(false);
 			initialMetadata.setPdfConversionComplete(false);
 			initialMetadata.setRecordingId(metadataId);
+			initialMetadata.setProcessingAttempt(1);
+			initialMetadata.setAttemptId(metadataId + ":1");
+			if ("WEB".equals(initialMetadata.getClientSource()) && validationEvents.isEnabled())
+				initialMetadata.setStudySessionId(UUID.randomUUID().toString());
 
 			String originalAudioFilename = StringUtils.cleanPath(
 					Objects.requireNonNull(audioFile.getOriginalFilename(), "Audio filename cannot be null"));
@@ -231,7 +235,8 @@ public class AudioProcessingService {
 
 			try {
 				validationEvents.emit(metadataId, "SINGLE_SOURCE", initialMetadata.getClientSource(),
-						"PROCESSING_STARTED", List.of(2), "initial", Map.of("recordingId", metadataId),
+						"PROCESSING_STARTED", List.of(2, 6), initialMetadata.getAttemptId(), Map.of("recordingId",
+								metadataId, "attemptId", initialMetadata.getAttemptId(), "processingAttempt", 1),
 						firebaseService.getAudioMetadataCollectionName());
 				initialMetadata = updateMetadataStatus(metadataId, userId, ProcessingStatus.UPLOAD_IN_PROGRESS, null,
 						false);
@@ -257,6 +262,7 @@ public class AudioProcessingService {
 						failureUpdates.put("lastUpdated", Timestamp.of(new Date()));
 						firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(),
 								initialMetadata.getId(), failureUpdates);
+						validationEvents.emitAttemptTerminal(initialMetadata.getId(), ProcessingStatus.FAILED);
 					} catch (Exception updateEx) {
 						log.error("Failed to update metadata {} status to FAILED after async startup error: {}",
 								initialMetadata.getId(), updateEx.getMessage(), updateEx);

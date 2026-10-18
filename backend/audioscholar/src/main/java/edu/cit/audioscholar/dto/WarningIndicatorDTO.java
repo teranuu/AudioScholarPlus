@@ -10,6 +10,8 @@ public class WarningIndicatorDTO {
 	private String issueType;
 	private String severity;
 	private String recommendedAction;
+	private String generationStatus;
+	private String summaryEvidenceVersion;
 
 	public static WarningIndicatorDTO fromModel(WarningIndicator warningIndicator) {
 		WarningIndicatorDTO dto = new WarningIndicatorDTO();
@@ -20,6 +22,8 @@ public class WarningIndicatorDTO {
 		dto.issueType = warningIndicator.getIssueType();
 		dto.severity = warningIndicator.getSeverity();
 		dto.recommendedAction = warningIndicator.getRecommendedAction();
+		dto.generationStatus = warningIndicator.getGenerationStatus();
+		dto.summaryEvidenceVersion = warningIndicator.getSummaryEvidenceVersion();
 		return dto;
 	}
 
@@ -49,5 +53,11 @@ public class WarningIndicatorDTO {
 
 	public String getRecommendedAction() {
 		return recommendedAction;
+	}
+	public String getGenerationStatus() {
+		return generationStatus;
+	}
+	public String getSummaryEvidenceVersion() {
+		return summaryEvidenceVersion;
 	}
 }

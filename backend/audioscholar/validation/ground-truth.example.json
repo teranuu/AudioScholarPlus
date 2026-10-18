@@ -1,6 +1,10 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
+  "exportManifestHash": "copy-from-export-or-use-the-csv-converter",
+  "corpusVersion": "module2-controlled-corpus-v1",
+  "reviewedRecordings": [],
   "problemSegments": [],
+  "warningTemplateReviews": [],
   "duplicatePairs": [],
   "sourceLabels": [],
   "overlapBoundaries": []

@@ -16,6 +16,12 @@ public class QualityIssue {
 	private String detectorVersion = "pcm-window-v1";
 	private Integer analysisWindowSeconds = 15;
 	private String thresholdVersion = "quality-thresholds-v1";
+	private String detectorRuleId;
+	private Map<String, Object> observedMetrics = new HashMap<>();
+	private Map<String, Object> thresholdSnapshot = new HashMap<>();
+	private String detectionSource;
+	private Double confidence;
+	private String confidenceCalibrationVersion;
 
 	public QualityIssue() {
 		this.issueId = UUID.randomUUID().toString();
@@ -98,6 +104,42 @@ public class QualityIssue {
 	public void setThresholdVersion(String thresholdVersion) {
 		this.thresholdVersion = thresholdVersion;
 	}
+	public String getDetectorRuleId() {
+		return detectorRuleId;
+	}
+	public void setDetectorRuleId(String value) {
+		detectorRuleId = value;
+	}
+	public Map<String, Object> getObservedMetrics() {
+		return observedMetrics;
+	}
+	public void setObservedMetrics(Map<String, Object> value) {
+		observedMetrics = value == null ? new HashMap<>() : new HashMap<>(value);
+	}
+	public Map<String, Object> getThresholdSnapshot() {
+		return thresholdSnapshot;
+	}
+	public void setThresholdSnapshot(Map<String, Object> value) {
+		thresholdSnapshot = value == null ? new HashMap<>() : new HashMap<>(value);
+	}
+	public String getDetectionSource() {
+		return detectionSource;
+	}
+	public void setDetectionSource(String value) {
+		detectionSource = value;
+	}
+	public Double getConfidence() {
+		return confidence;
+	}
+	public void setConfidence(Double value) {
+		confidence = value;
+	}
+	public String getConfidenceCalibrationVersion() {
+		return confidenceCalibrationVersion;
+	}
+	public void setConfidenceCalibrationVersion(String value) {
+		confidenceCalibrationVersion = value;
+	}
 
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
@@ -112,6 +154,12 @@ public class QualityIssue {
 		map.put("detectorVersion", detectorVersion);
 		map.put("analysisWindowSeconds", analysisWindowSeconds);
 		map.put("thresholdVersion", thresholdVersion);
+		map.put("detectorRuleId", detectorRuleId);
+		map.put("observedMetrics", observedMetrics);
+		map.put("thresholdSnapshot", thresholdSnapshot);
+		map.put("detectionSource", detectionSource);
+		map.put("confidence", confidence);
+		map.put("confidenceCalibrationVersion", confidenceCalibrationVersion);
 		return map;
 	}
 
@@ -130,7 +178,20 @@ public class QualityIssue {
 		issue.detectorVersion = (String) map.getOrDefault("detectorVersion", "pcm-window-v1");
 		issue.analysisWindowSeconds = number(map.get("analysisWindowSeconds"), 15L).intValue();
 		issue.thresholdVersion = (String) map.getOrDefault("thresholdVersion", "quality-thresholds-v1");
+		issue.detectorRuleId = (String) map.get("detectorRuleId");
+		if (map.get("observedMetrics") instanceof Map<?, ?> m)
+			issue.observedMetrics = copy(m);
+		if (map.get("thresholdSnapshot") instanceof Map<?, ?> m)
+			issue.thresholdSnapshot = copy(m);
+		issue.detectionSource = (String) map.get("detectionSource");
+		issue.confidence = map.get("confidence") instanceof Number n ? n.doubleValue() : null;
+		issue.confidenceCalibrationVersion = (String) map.get("confidenceCalibrationVersion");
 		return issue;
+	}
+	private static Map<String, Object> copy(Map<?, ?> source) {
+		Map<String, Object> result = new HashMap<>();
+		source.forEach((key, value) -> result.put(String.valueOf(key), value));
+		return result;
 	}
 
 	private static Long parseMillis(String value) {

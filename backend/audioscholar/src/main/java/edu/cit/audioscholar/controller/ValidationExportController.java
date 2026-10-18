@@ -42,8 +42,9 @@ public class ValidationExportController {
 			"front", "back", "title", "description");
 	private static final List<String> COLLECTIONS = List.of("audio_metadata", "multiSourceJobs", "sourceFiles",
 			"sourceKeyPoints", "summaries", "mergedSummaries", "transcriptSegments", "summaryKeyPoints",
-			"qualityReports", "warningMappings", "warningIndicators", "semanticDecisions", "sourceAttributions",
-			"crossSourceAlignments", "mergedKeyPointLineage", "multiSourceStageRuns");
+			"qualityReports", "warningMappings", "warningCandidates", "warningIndicators", "warningDisplayReceipts",
+			"semanticDecisions", "sourceAttributions", "crossSourceAlignments", "mergedKeyPointLineage",
+			"multiSourceStageRuns");
 	private final FirebaseService firebase;
 	private final ObjectMapper json;
 	public ValidationExportController(FirebaseService firebase, @Qualifier("objectMapper") ObjectMapper json) {
@@ -103,6 +104,8 @@ public class ValidationExportController {
 						Map<String, Object> row = new LinkedHashMap<>();
 						map.forEach((k, v) -> row.put(String.valueOf(k), v));
 						row.put("recordingId", report.get("recordingId"));
+						row.put("attemptId", report.get("attemptId"));
+						row.put("reportId", report.get("reportId"));
 						issues.add(sanitize(row, includeText));
 					}
 		datasets.put("qualityIssues", issues);
@@ -112,13 +115,23 @@ public class ValidationExportController {
 		manifest.put("to", to);
 		manifest.put("clientSource", clientSource);
 		manifest.put("includesReviewerText", includeText);
-		manifest.put("objectiveCodes", objectiveCodes == null ? List.of() : objectiveCodes);
+		Set<Integer> exportedObjectives = new java.util.TreeSet<>();
+		for (Map<String, Object> event : events)
+			if (event.get("objectiveCodes") instanceof List<?> codes)
+				for (Object code : codes)
+					if (code instanceof Number n)
+						exportedObjectives.add(n.intValue());
+		manifest.put("objectiveCodes", exportedObjectives);
 		manifest.put("module3ObjectiveCodes", List.of(9, 10, 11, 12, 13, 14));
-		manifest.put("schemaVersions", Map.of("validationEvents", 1, "groundTruth", 1, "metrics", 1));
+		manifest.put("schemaVersions", Map.of("validationEvents", 1, "groundTruth", 2, "metrics", 2));
 		manifest.put("applicationVersions", distinct(datasets, "applicationVersion"));
 		manifest.put("modelVersions", distinct(datasets, "modelVersion"));
 		manifest.put("promptVersions", distinct(datasets, "promptVersion"));
 		manifest.put("detectorVersions", distinct(datasets, "detectorVersion"));
+		manifest.put("thresholdVersions", distinct(datasets, "thresholdVersion"));
+		manifest.put("warningTemplateVersions", distinct(datasets, "templateVersion"));
+		manifest.put("conformanceRuleVersions", distinct(datasets, "conformanceRuleVersion"));
+		manifest.put("evaluatorVersions", List.of("module2-evaluator-v2"));
 		manifest.put("algorithmVersions", distinct(datasets, "algorithmVersion"));
 		manifest.put("counts", datasets.entrySet().stream().collect(
 				Collectors.toMap(Map.Entry::getKey, e -> e.getValue().size(), (a, b) -> a, LinkedHashMap::new)));
@@ -130,6 +143,7 @@ public class ValidationExportController {
 		for (var d : datasets.entrySet())
 			hashes.put(d.getKey(), ValidationEventService.digest(json.writeValueAsString(normalize(d.getValue()))));
 		manifest.put("sha256", hashes);
+		manifest.put("exportBindingHash", ValidationEventService.digest(json.writeValueAsString(hashes)));
 		List<Object> incomplete = new ArrayList<>();
 		incomplete.addAll(datasets.get("multiSourceJobs").stream()
 				.filter(r -> Boolean.TRUE.equals(r.get("measurementIncomplete"))).map(r -> r.get("jobId")).toList());
@@ -142,7 +156,10 @@ public class ValidationExportController {
 				"unresolvedAttributions",
 				datasets.get("sourceAttributions").stream().filter(r -> "UNRESOLVED".equals(r.get("attributionStatus"))
 						|| "UNRESOLVED".equals(r.get("attributionType"))).count()));
-		manifest.put("objectiveEvidenceStatus", module3Statuses(datasets));
+		Map<Integer, String> statuses = module2Statuses(datasets);
+		statuses.putAll(module3Statuses(datasets));
+		manifest.put("objectiveEvidenceStatus", statuses);
+		manifest.put("objectiveIncompleteReasons", objectiveIncompleteReasons(datasets));
 		manifest.put("integrityIssues", integrityIssues(datasets));
 		if ("jsonl".equals(format)) {
 			StringBuilder out = new StringBuilder(
@@ -183,7 +200,8 @@ public class ValidationExportController {
 			return result;
 		}
 		boolean processingFailed = jobs.stream().anyMatch(j -> "FAILED".equals(j.get("status")));
-		boolean incomplete = !integrityIssues(datasets).isEmpty();
+		boolean incomplete = integrityIssues(datasets).stream().anyMatch(issue -> !issue.startsWith("qualityReport:")
+				&& !issue.startsWith("warningMapping:") && !issue.startsWith("warningCandidate:"));
 		result.put(9, processingFailed ? "PROCESSING_FAILED" : incomplete ? "EXPORT_INCOMPLETE" : "COMPLETE");
 		result.put(12, processingFailed ? "PROCESSING_FAILED" : incomplete ? "EXPORT_INCOMPLETE" : "COMPLETE");
 		result.put(10,
@@ -198,6 +216,94 @@ public class ValidationExportController {
 		result.put(14, reviewerStatus(processingFailed, incomplete, datasets.get("crossSourceAlignments").isEmpty()
 				&& completedRunWithCount(datasets, "ALIGNMENT", "outputCount", 0)));
 		return result;
+	}
+
+	private Map<Integer, String> module2Statuses(Map<String, List<Map<String, Object>>> datasets) {
+		Map<Integer, String> result = new LinkedHashMap<>();
+		List<Map<String, Object>> reports = datasets.get("qualityReports");
+		boolean hasReviewedEligibleReport = reports.stream()
+				.anyMatch(r -> r.get("reportId") != null && r.get("attemptId") != null
+						&& "COMPLETED".equals(r.get("analysisStatus")) && "FULL_PCM".equals(r.get("analysisMode")));
+		for (int code = 3; code <= 5; code++)
+			result.put(code, hasReviewedEligibleReport ? "REVIEWER_EVIDENCE_REQUIRED" : "NOT_EVALUABLE");
+		Set<String> startedAttempts = datasets.get("events").stream()
+				.filter(e -> "PROCESSING_STARTED".equals(e.get("eventType"))
+						&& "SINGLE_SOURCE".equals(e.get("workflowType")))
+				.map(this::attemptId).filter(value -> !value.isBlank()).collect(Collectors.toSet());
+		Set<String> deliveredAttempts = reports.stream().filter(this::validDeliveredReport)
+				.map(r -> String.valueOf(r.getOrDefault("attemptId", ""))).filter(value -> !value.isBlank())
+				.collect(Collectors.toSet());
+		result.put(6,
+				startedAttempts.isEmpty()
+						? "NO_APPLICABLE_RECORDS"
+						: deliveredAttempts.containsAll(startedAttempts) ? "COMPLETE" : "NOT_EVALUABLE");
+		boolean stale = datasets.get("summaries").stream()
+				.anyMatch(s -> Boolean.TRUE.equals(s.get("warningEvidenceStale")));
+		boolean mappings = datasets.get("warningMappings").stream().anyMatch(m -> !Boolean.TRUE.equals(m.get("stale"))
+				&& !"LEGACY_READ_BACKFILL".equals(m.get("evidenceSource")) && "OVERLAP".equals(m.get("decision")));
+		Set<String> visibleWarnings = datasets.get("warningDisplayReceipts").stream()
+				.filter(r -> !Boolean.TRUE.equals(r.get("stale")) && "INDICATOR_VISIBLE".equals(r.get("displayState")))
+				.map(r -> String.valueOf(r.get("warningId")) + ":" + r.get("summaryEvidenceVersion"))
+				.collect(Collectors.toSet());
+		boolean receipts = datasets.get("warningIndicators").stream()
+				.anyMatch(w -> !Boolean.TRUE.equals(w.get("stale")) && "DISPLAYABLE".equals(w.get("generationStatus"))
+						&& !"LEGACY_READ_BACKFILL".equals(w.get("evidenceSource")) && visibleWarnings
+								.contains(String.valueOf(w.get("warningId")) + ":" + w.get("summaryEvidenceVersion")));
+		result.put(7, stale || !mappings || !receipts ? "NOT_EVALUABLE" : "COMPLETE");
+		boolean candidates = datasets.get("warningCandidates").stream().anyMatch(
+				c -> !Boolean.TRUE.equals(c.get("stale")) && !"LEGACY_READ_BACKFILL".equals(c.get("evidenceSource")));
+		result.put(8, candidates ? "EXPERT_REVIEW_REQUIRED" : "NOT_EVALUABLE");
+		return result;
+	}
+
+	private Map<Integer, List<Map<String, Object>>> objectiveIncompleteReasons(
+			Map<String, List<Map<String, Object>>> datasets) {
+		Map<Integer, List<Map<String, Object>>> result = new LinkedHashMap<>();
+		for (int code = 3; code <= 8; code++)
+			result.put(code, new ArrayList<>());
+		for (Map<String, Object> report : datasets.get("qualityReports")) {
+			if (!"COMPLETED".equals(report.get("analysisStatus")) || !"FULL_PCM".equals(report.get("analysisMode")))
+				for (int code = 3; code <= 5; code++)
+					result.get(code).add(Map.of("attemptId", String.valueOf(report.get("attemptId")), "reason",
+							"QUALITY_ANALYSIS_NOT_FULL_PCM"));
+		}
+		Set<String> validReportAttempts = datasets.get("qualityReports").stream().filter(this::validDeliveredReport)
+				.map(r -> String.valueOf(r.getOrDefault("attemptId", ""))).collect(Collectors.toSet());
+		for (Map<String, Object> event : datasets.get("events"))
+			if ("PROCESSING_STARTED".equals(event.get("eventType"))
+					&& "SINGLE_SOURCE".equals(event.get("workflowType"))) {
+				String attemptId = attemptId(event);
+				if (!validReportAttempts.contains(attemptId))
+					result.get(6).add(Map.of("attemptId", attemptId, "reason", "VALID_QUALITY_REPORT_MISSING"));
+			}
+		for (Map<String, Object> summary : datasets.get("summaries"))
+			if (Boolean.TRUE.equals(summary.get("warningEvidenceStale")))
+				for (int code : List.of(7, 8))
+					result.get(code).add(Map.of("recordingId", String.valueOf(summary.get("recordingId")), "reason",
+							"WARNING_EVIDENCE_STALE"));
+		for (Map<String, Object> mapping : datasets.get("warningMappings"))
+			if (!Boolean.TRUE.equals(mapping.get("stale")) && "UNMAPPABLE".equals(mapping.get("decision")))
+				result.get(7).add(Map.of("recordingId", String.valueOf(mapping.get("recordingId")), "reason",
+						"WARNING_ITEM_UNMAPPABLE", "itemId", String.valueOf(mapping.get("itemId"))));
+		return result;
+	}
+
+	private String attemptId(Map<String, Object> event) {
+		Object direct = event.get("attemptId");
+		if (direct != null)
+			return String.valueOf(direct);
+		if (event.get("payload") instanceof Map<?, ?> payload && payload.get("attemptId") != null)
+			return String.valueOf(payload.get("attemptId"));
+		return "";
+	}
+
+	private boolean validDeliveredReport(Map<String, Object> report) {
+		String status = String.valueOf(report.getOrDefault("status", ""));
+		if (report.get("reportId") == null || report.get("attemptId") == null
+				|| !Set.of("ALL_CLEAR", "ISSUES_DETECTED").contains(status))
+			return false;
+		return !"ALL_CLEAR".equals(status)
+				|| "COMPLETED".equals(report.get("analysisStatus")) && "FULL_PCM".equals(report.get("analysisMode"));
 	}
 
 	private String reviewerStatus(boolean processingFailed, boolean incomplete, boolean noApplicableRecords) {
@@ -217,6 +323,20 @@ public class ValidationExportController {
 
 	private List<String> integrityIssues(Map<String, List<Map<String, Object>>> datasets) {
 		List<String> issues = new ArrayList<>();
+		Set<Object> qualityReportIds = datasets.get("qualityReports").stream().map(r -> r.get("reportId"))
+				.collect(Collectors.toSet());
+		Set<Object> qualityIssueIds = datasets.get("qualityIssues").stream().map(r -> r.get("issueId"))
+				.collect(Collectors.toSet());
+		for (Map<String, Object> report : datasets.get("qualityReports"))
+			if (report.get("reportId") == null || report.get("attemptId") == null)
+				issues.add("qualityReport:" + report.get("id") + ":missing-report-or-attempt-id");
+		for (Map<String, Object> mapping : datasets.get("warningMappings"))
+			if (!qualityIssueIds.contains(mapping.get("issueId")))
+				issues.add("warningMapping:" + mapping.get("mappingId") + ":missing-quality-issue");
+		for (Map<String, Object> candidate : datasets.get("warningCandidates"))
+			if (!qualityReportIds.contains(candidate.get("reportId"))
+					|| !qualityIssueIds.contains(candidate.get("issueId")))
+				issues.add("warningCandidate:" + candidate.get("warningId") + ":invalid-quality-reference");
 		Set<Object> sourceIds = datasets.get("sourceFiles").stream().map(r -> r.get("sourceFileId"))
 				.collect(Collectors.toSet());
 		Set<Object> pointIds = datasets.get("sourceKeyPoints").stream().map(r -> r.get("keyPointId"))

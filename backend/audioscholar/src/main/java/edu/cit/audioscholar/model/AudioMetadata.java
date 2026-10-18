@@ -39,6 +39,9 @@ public class AudioMetadata {
 	private Long estimatedGeminiAudioTokens;
 	private Long estimatedSummaryInputTokens;
 	private String audioFingerprint;
+	private Integer processingAttempt = 1;
+	private String attemptId;
+	private String studySessionId;
 	private String contextFingerprint;
 	private Integer favoriteCount;
 	private Timestamp lastUpdated;
@@ -294,6 +297,24 @@ public class AudioMetadata {
 
 	public void setAudioFingerprint(String audioFingerprint) {
 		this.audioFingerprint = audioFingerprint;
+	}
+	public Integer getProcessingAttempt() {
+		return processingAttempt == null ? 1 : processingAttempt;
+	}
+	public void setProcessingAttempt(Integer value) {
+		processingAttempt = value;
+	}
+	public String getAttemptId() {
+		return attemptId;
+	}
+	public void setAttemptId(String value) {
+		attemptId = value;
+	}
+	public String getStudySessionId() {
+		return studySessionId;
+	}
+	public void setStudySessionId(String value) {
+		studySessionId = value;
 	}
 
 	public String getContextFingerprint() {
@@ -555,6 +576,11 @@ public class AudioMetadata {
 			map.put("estimatedSummaryInputTokens", estimatedSummaryInputTokens);
 		if (audioFingerprint != null)
 			map.put("audioFingerprint", audioFingerprint);
+		map.put("processingAttempt", getProcessingAttempt());
+		if (attemptId != null)
+			map.put("attemptId", attemptId);
+		if (studySessionId != null)
+			map.put("studySessionId", studySessionId);
 		if (contextFingerprint != null)
 			map.put("contextFingerprint", contextFingerprint);
 		if (favoriteCount != null)
@@ -674,6 +700,10 @@ public class AudioMetadata {
 			meta.setEstimatedSummaryInputTokens(((Number) estimatedSummaryTokensObj).longValue());
 		}
 		meta.setAudioFingerprint((String) map.get("audioFingerprint"));
+		Object attempt = map.get("processingAttempt");
+		meta.setProcessingAttempt(attempt instanceof Number n ? n.intValue() : 1);
+		meta.setAttemptId((String) map.get("attemptId"));
+		meta.setStudySessionId((String) map.get("studySessionId"));
 		meta.setContextFingerprint((String) map.get("contextFingerprint"));
 		Object favoriteCountObj = map.get("favoriteCount");
 		if (favoriteCountObj instanceof Number) {

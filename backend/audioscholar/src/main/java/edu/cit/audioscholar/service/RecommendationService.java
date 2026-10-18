@@ -45,6 +45,9 @@ public class RecommendationService {
 	@Autowired
 	private ProcessingStageClaimService stageClaimService;
 
+	@Autowired(required = false)
+	private ValidationEventService validationEvents;
+
 	public String recommendAndSave(String metadataId, String userId) {
 		RecommendationResult result = recommendAndSaveResult(metadataId, userId);
 		return result.success()
@@ -105,7 +108,10 @@ public class RecommendationService {
 					firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId,
 							completeUpdates);
 					log.info("[{}] Updated metadata status to COMPLETE", metadataId);
-				}
+					if (validationEvents != null)
+						validationEvents.emitAttemptTerminal(metadataId, ProcessingStatus.COMPLETE);
+				} else if (validationEvents != null)
+					validationEvents.emitAttemptTerminal(metadataId, ProcessingStatus.COMPLETED_WITH_WARNINGS);
 
 				return RecommendationResult.success(existingRecommendations.size(), "Used existing recommendations");
 			}
@@ -149,7 +155,8 @@ public class RecommendationService {
 				String reason = "Recommendation generation completed without saved recommendations";
 				if (latest == null || latest.getStatus() != ProcessingStatus.COMPLETED_WITH_WARNINGS) {
 					markCompletedWithWarnings(metadataId, reason);
-				}
+				} else if (validationEvents != null)
+					validationEvents.emitAttemptTerminal(metadataId, ProcessingStatus.COMPLETED_WITH_WARNINGS);
 				return RecommendationResult.warning(reason);
 			}
 			if (latest != null && latest.getStatus() == ProcessingStatus.COMPLETED_WITH_WARNINGS) {
@@ -161,6 +168,8 @@ public class RecommendationService {
 				firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId,
 						completeUpdates);
 				log.info("[{}] Updated metadata status to COMPLETE and set lastUpdated timestamp", metadataId);
+				if (validationEvents != null)
+					validationEvents.emitAttemptTerminal(metadataId, ProcessingStatus.COMPLETE);
 			}
 
 			log.info("[{}] Recommendation process completed successfully", metadataId);
@@ -180,6 +189,8 @@ public class RecommendationService {
 		updates.put("failureReason", reason);
 		updates.put("lastUpdated", Timestamp.now());
 		firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+		if (validationEvents != null)
+			validationEvents.emitAttemptTerminal(metadataId, ProcessingStatus.COMPLETED_WITH_WARNINGS);
 	}
 
 	private String getSummaryText(AudioMetadata metadata) {
