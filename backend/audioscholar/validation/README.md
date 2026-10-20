@@ -29,9 +29,14 @@ The output contains `metrics.json`, `metrics.csv`, `quality-matches.json`, and `
 Automated checks used by the readiness suite:
 
 ```text
+mvnw.cmd -Dtest=Module2ProcessingLoggingSmokeTest test
 mvnw.cmd test
 python -m unittest discover -s validation -p test_convert_ground_truth_v2.py
 cd ../../frontend_web/audioscholar-app
 npm run test:warning-exposure
 npm run build
 ```
+
+`Module2ProcessingLoggingSmokeTest` runs every controlled-corpus case and then exercises the production detector,
+report/event persistence, warning mapping and candidate generation, viewport receipt, terminal event, export, and
+T3–T8 evaluator path using an in-memory Firestore boundary.

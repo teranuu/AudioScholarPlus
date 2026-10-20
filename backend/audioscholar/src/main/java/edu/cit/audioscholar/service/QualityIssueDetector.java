@@ -36,6 +36,10 @@ public class QualityIssueDetector {
 	private static final int MIN_CLEAR_SAMPLE_RATE = 16_000;
 	private static final int LOW_BITRATE_MONO_KBPS = 32;
 	private static final int LOW_BITRATE_STEREO_KBPS = 64;
+	private static final double MAX_CLIPPING_RATIO = 0.02;
+	private static final double MIN_AUDIBLE_RMS = 0.01;
+	private static final double MIN_AUDIBLE_PEAK = 0.03;
+	private static final double MIN_CLEAR_RMS = 0.025;
 	private static final double MIN_CLEAR_SNR_DB = 10.0;
 	private static final Pattern FIRST_NUMBER = Pattern.compile("\\d+(?:\\.\\d+)?");
 
@@ -157,10 +161,34 @@ public class QualityIssueDetector {
 				issue.setDetectionSource("PCM_WINDOW");
 			issue.setDetectorRuleId(
 					"rule-" + issue.getIssueType().toLowerCase(java.util.Locale.ROOT).replace('_', '-'));
-			issue.setThresholdSnapshot(Map.of("windowMs", WINDOW_SECONDS * 1000L, "minClearSampleRate",
-					MIN_CLEAR_SAMPLE_RATE, "maxClippingRatio", 0.02, "minAudibleRms", 0.01, "minClearRms", 0.025,
-					"minClearSnrDb", MIN_CLEAR_SNR_DB));
+			issue.setThresholdSnapshot(thresholdSnapshot(issue));
 		}
+	}
+
+	private Map<String, Object> thresholdSnapshot(QualityIssue issue) {
+		Map<String, Object> threshold = new HashMap<>();
+		threshold.put("windowMs", WINDOW_SECONDS * 1000L);
+		switch (issue.getIssueType()) {
+			case "AUDIO_CLIPPING" -> threshold.put("maxClippingRatioExclusive", MAX_CLIPPING_RATIO);
+			case "INAUDIBLE_SPEECH" -> {
+				threshold.put("maxRmsExclusive", MIN_AUDIBLE_RMS);
+				threshold.put("maxPeakExclusive", MIN_AUDIBLE_PEAK);
+			}
+			case "HIGH_BACKGROUND_NOISE" -> threshold.put("minClearSnrDb", MIN_CLEAR_SNR_DB);
+			case "MISSING_AUDIO" -> threshold.put("minDecodedBytes", 1);
+			case "UNCLEAR_AUDIO" -> {
+				Map<String, Object> observed = issue.getObservedMetrics();
+				if (observed.containsKey("sampleRate"))
+					threshold.put("minClearSampleRateHz", MIN_CLEAR_SAMPLE_RATE);
+				else if (observed.containsKey("bitRateKbps")) {
+					threshold.put("minMonoBitRateKbps", LOW_BITRATE_MONO_KBPS);
+					threshold.put("minStereoBitRateKbps", LOW_BITRATE_STEREO_KBPS);
+				} else
+					threshold.put("minClearRms", MIN_CLEAR_RMS);
+			}
+			default -> threshold.put("rule", "NO_CONFIGURED_THRESHOLD");
+		}
+		return threshold;
 	}
 
 	private void inspectPcmStream(AudioInputStream stream, AudioFormat format, List<QualityIssue> issues)
@@ -170,6 +198,10 @@ public class QualityIssueDetector {
 		if (frameSize <= 0) {
 			issues.add(new QualityIssue("00:00", "00:15", "MISSING_AUDIO", "HIGH",
 					"The audio could not be measured. Review or replace this source if the summary seems incomplete."));
+			QualityIssue issue = issues.get(issues.size() - 1);
+			issue.setObservedMetrics(Map.of("decodedFrameSizeBytes", frameSize, "decodedSampleRateHz", sampleRate,
+					"decodedBytesRead", 0));
+			issue.setDetectionSource("PCM_WINDOW");
 			return;
 		}
 		if (sampleRate < MIN_CLEAR_SAMPLE_RATE && !hasIssueType(issues, "UNCLEAR_AUDIO")) {
@@ -188,6 +220,10 @@ public class QualityIssueDetector {
 		if (totalBytes == 0) {
 			issues.add(new QualityIssue("00:00", "00:15", "MISSING_AUDIO", "HIGH",
 					"The audio could not be measured. Review or replace this source if the summary seems incomplete."));
+			QualityIssue issue = issues.get(issues.size() - 1);
+			issue.setObservedMetrics(Map.of("decodedFrameSizeBytes", frameSize, "decodedSampleRateHz", sampleRate,
+					"decodedBytesRead", totalBytes));
+			issue.setDetectionSource("PCM_WINDOW");
 		}
 	}
 
@@ -219,13 +255,13 @@ public class QualityIssueDetector {
 			int endSecond = Math.max(startSecond + 1, Math.toIntExact(baseSecond + end / (sampleRate * frameSize)));
 
 			int issueCountBeforeWindow = issues.size();
-			if (clippingRatio > 0.02) {
+			if (clippingRatio > MAX_CLIPPING_RATIO) {
 				issues.add(new QualityIssue(formatTime(startSecond), formatTime(endSecond), "AUDIO_CLIPPING", "HIGH",
 						"Audio appears distorted in this section. Cross-check this part with the original recording."));
-			} else if (rms < 0.01 && peak < 0.03) {
+			} else if (rms < MIN_AUDIBLE_RMS && peak < MIN_AUDIBLE_PEAK) {
 				issues.add(new QualityIssue(formatTime(startSecond), formatTime(endSecond), "INAUDIBLE_SPEECH", "HIGH",
 						"Speech may be too quiet or absent. Re-record or verify the generated notes."));
-			} else if (rms < 0.025) {
+			} else if (rms < MIN_CLEAR_RMS) {
 				issues.add(new QualityIssue(formatTime(startSecond), formatTime(endSecond), "UNCLEAR_AUDIO", "MODERATE",
 						"Audio is weak in this section. Review the corresponding summary content."));
 			} else if (snrDb < MIN_CLEAR_SNR_DB) {

@@ -31,4 +31,6 @@ write_compressed_quality("unclear.wav")
 write("background-noise.wav", [v + .12 * math.sin(2 * math.pi * 2400 * i / RATE) for i, v in enumerate(tone(.16))])
 write("missing.wav", [])
 write("disruptive-sound.wav", [v + (.7 if i % 2400 < 100 else 0) for i, v in enumerate(tone(.15))])
-write("overlapping-speech.wav", tone(.2, (320, 510)))
+# Two competing speech-band components at weak amplitude: the published Module 2
+# taxonomy maps this challenge case to UNCLEAR_AUDIO rather than background noise.
+write("overlapping-speech.wav", tone(.03, (320, 510)))
