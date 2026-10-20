@@ -18,6 +18,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 public final class ValidationEvaluator {
 	private static final ObjectMapper JSON = new ObjectMapper();
+	private static final Set<String> VALID_OUTPUT_TYPES = Set.of("NOTES", "STUDY_MATERIAL", "REVIEW_MATERIAL");
 	private final Map<String, List<JsonNode>> rows = new HashMap<>();
 	private final JsonNode truth;
 	private final Map<Integer, Map<String, Object>> metrics = new LinkedHashMap<>();
@@ -77,35 +78,50 @@ public final class ValidationEvaluator {
 	}
 	private void evaluate() {
 		Set<String> multiSourceIncomplete = new HashSet<>();
+		Set<String> configurationIncomplete = new HashSet<>();
 		for (JsonNode j : data("multiSourceJobs"))
-			if (j.path("measurementIncomplete").asBoolean())
+			if (j.path("measurementIncomplete").asBoolean()) {
 				multiSourceIncomplete.add(j.path("jobId").asText());
+				configurationIncomplete.add(j.path("jobId").asText());
+			}
+		for (JsonNode metadata : data("audio_metadata"))
+			if (metadata.path("measurementIncomplete").asBoolean())
+				configurationIncomplete.add(metadata.path("id").asText(metadata.path("recordingId").asText()));
 		for (JsonNode e : data("events"))
-			if ("EVIDENCE_WRITE_FAILED".equals(e.path("eventType").asText())
-					&& "MULTI_SOURCE".equals(e.path("workflowType").asText()))
-				multiSourceIncomplete.add(e.path("workflowId").asText());
-		lifecycle(multiSourceIncomplete);
+			if ("EVIDENCE_WRITE_FAILED".equals(e.path("eventType").asText())) {
+				String workflowId = e.path("workflowId").asText();
+				configurationIncomplete.add(workflowId);
+				if ("MULTI_SOURCE".equals(e.path("workflowType").asText()))
+					multiSourceIncomplete.add(workflowId);
+			}
+		lifecycle(configurationIncomplete, multiSourceIncomplete);
 		quality();
 		warnings();
 		semantic(multiSourceIncomplete);
 		attribution(multiSourceIncomplete);
 		alignment(multiSourceIncomplete);
 	}
-	private void lifecycle(Set<String> incomplete) {
+	private void lifecycle(Set<String> configurationIncomplete, Set<String> multiSourceIncomplete) {
 		Map<String, Map<String, Instant>> events = new HashMap<>();
+		Map<String, List<JsonNode>> workflowEvents = new HashMap<>();
 		for (JsonNode e : data("events")) {
 			if (!"WEB".equals(e.path("clientSource").asText()))
 				continue;
+			String workflowId = e.path("workflowId").asText();
+			workflowEvents.computeIfAbsent(workflowId, ignored -> new ArrayList<>()).add(e);
 			try {
-				events.computeIfAbsent(e.path("workflowId").asText(), ignored -> new HashMap<>())
-						.put(e.path("eventType").asText(), Instant.parse(e.path("occurredAt").asText()));
+				events.computeIfAbsent(workflowId, ignored -> new HashMap<>()).merge(e.path("eventType").asText(),
+						Instant.parse(e.path("occurredAt").asText()), (a, b) -> a.isBefore(b) ? a : b);
 			} catch (Exception x) {
-				incomplete.add(e.path("workflowId").asText());
+				configurationIncomplete.add(workflowId);
+				if ("MULTI_SOURCE".equals(e.path("workflowType").asText()))
+					multiSourceIncomplete.add(workflowId);
 			}
 		}
 		long accepted = 0, configured = 0, valid = 0, complete = 0, acceptedStage = 0, queuedStage = 0,
 				uploadedStage = 0, under = 0, missingLatencyEvidence = 0;
 		Map<String, Object> jobs = new LinkedHashMap<>();
+		Map<String, Object> configurationWorkflows = new LinkedHashMap<>();
 		Map<String, Integer> expected = new HashMap<>(), completed = new HashMap<>();
 		Map<String, Instant> lastSource = new HashMap<>();
 		for (JsonNode j : data("multiSourceJobs"))
@@ -121,11 +137,26 @@ public final class ValidationEvaluator {
 		for (var entry : events.entrySet()) {
 			String id = entry.getKey();
 			Map<String, Instant> e = entry.getValue();
-			if (e.containsKey("JOB_ACCEPTED") || e.containsKey("CONFIG_CONFIRMED")) {
+			if (e.containsKey("JOB_ACCEPTED") || e.containsKey("CONFIG_CONFIRMED")
+					|| e.containsKey("PROCESSING_STARTED")) {
 				accepted++;
-				if (e.containsKey("CONFIG_CONFIRMED") && e.containsKey("PROCESSING_STARTED")
-						&& e.get("CONFIG_CONFIRMED").isBefore(e.get("PROCESSING_STARTED")))
+				JsonNode config = workflowEvents.getOrDefault(id, List.of()).stream()
+						.filter(event -> "CONFIG_CONFIRMED".equals(event.path("eventType").asText()))
+						.filter(event -> VALID_OUTPUT_TYPES.contains(event.path("payload").path("outputType").asText()))
+						.filter(event -> eventTime(event) != null)
+						.filter(event -> !e.containsKey("PROCESSING_STARTED")
+								|| eventTime(event).isBefore(e.get("PROCESSING_STARTED")))
+						.min(Comparator.comparing(ValidationEvaluator::eventTime)).orElse(null);
+				if (config != null)
 					configured++;
+				Map<String, Object> diagnostic = new LinkedHashMap<>();
+				diagnostic.put("configurationValid", config != null);
+				diagnostic.put("processingStarted", e.containsKey("PROCESSING_STARTED"));
+				if (config != null)
+					diagnostic.put("outputType", config.path("payload").path("outputType").asText());
+				else
+					diagnostic.put("reason", configurationFailureReason(workflowEvents.getOrDefault(id, List.of()), e));
+				configurationWorkflows.put(id, diagnostic);
 			}
 			if (e.containsKey("BATCH_VALIDATED")) {
 				valid++;
@@ -154,13 +185,38 @@ public final class ValidationEvaluator {
 				jobs.put(id, d);
 			}
 		}
-		boolean invalid = !incomplete.isEmpty();
-		put(2, configured, accepted, 1, invalid, incomplete.size(), incomplete.size(), Map.of("jobs", jobs));
-		put(9, complete, valid, 1, invalid, incomplete.size(), incomplete.size(),
+		boolean configurationInvalid = !configurationIncomplete.isEmpty();
+		boolean multiSourceInvalid = !multiSourceIncomplete.isEmpty();
+		put(2, configured, accepted, 1, configurationInvalid, configurationIncomplete.size(),
+				configurationIncomplete.size(), Map.of("workflows", configurationWorkflows));
+		put(9, complete, valid, 1, multiSourceInvalid, multiSourceIncomplete.size(), multiSourceIncomplete.size(),
 				Map.of("stageRates", Map.of("accepted", ratio(acceptedStage, valid), "queued",
 						ratio(queuedStage, valid), "allSourcesUploaded", ratio(uploadedStage, valid)), "jobs", jobs));
-		put(12, under, complete, 1, invalid || missingLatencyEvidence > 0, incomplete.size() + missingLatencyEvidence,
-				incomplete.size() + missingLatencyEvidence, Map.of("limitMsExclusive", 120000, "jobs", jobs));
+		put(12, under, complete, 1, multiSourceInvalid || missingLatencyEvidence > 0,
+				multiSourceIncomplete.size() + missingLatencyEvidence,
+				multiSourceIncomplete.size() + missingLatencyEvidence,
+				Map.of("limitMsExclusive", 120000, "jobs", jobs));
+	}
+
+	private static Instant eventTime(JsonNode event) {
+		try {
+			return Instant.parse(event.path("occurredAt").asText());
+		} catch (Exception ignored) {
+			return null;
+		}
+	}
+
+	private static String configurationFailureReason(List<JsonNode> workflowEvents, Map<String, Instant> eventTimes) {
+		List<JsonNode> configurations = workflowEvents.stream()
+				.filter(event -> "CONFIG_CONFIRMED".equals(event.path("eventType").asText())).toList();
+		if (configurations.isEmpty())
+			return "CONFIG_CONFIRMED_MISSING";
+		if (configurations.stream()
+				.noneMatch(event -> VALID_OUTPUT_TYPES.contains(event.path("payload").path("outputType").asText())))
+			return "OUTPUT_TYPE_INVALID_OR_MISSING";
+		if (eventTimes.containsKey("PROCESSING_STARTED"))
+			return "CONFIG_NOT_BEFORE_PROCESSING";
+		return "CONFIG_TIMESTAMP_INVALID";
 	}
 	private void quality() {
 		boolean legacy = truth.path("schemaVersion").asInt() == 1;
@@ -241,13 +297,21 @@ public final class ValidationEvaluator {
 		diag.put("ineligibleReviewedReports", ineligibleReviews);
 		put(5, accurate, usedPred.size(), 1, invalid, ineligibleReviews, ineligibleReviews, diag);
 		Set<String> expected = new HashSet<>(), delivered = new HashSet<>();
+		Set<String> startedMultiSourceWorkflows = new HashSet<>();
 		for (JsonNode e : data("events")) {
 			if (!"WEB".equals(e.path("clientSource").asText()))
 				continue;
 			String type = e.path("eventType").asText();
 			if ("PROCESSING_STARTED".equals(type) && "SINGLE_SOURCE".equals(e.path("workflowType").asText()))
-				expected.add(e.path("payload").path("attemptId").asText(e.path("idempotencyKey").asText()));
+				expected.add("SINGLE_SOURCE:"
+						+ e.path("payload").path("attemptId").asText(e.path("idempotencyKey").asText()));
+			if ("PROCESSING_STARTED".equals(type) && "MULTI_SOURCE".equals(e.path("workflowType").asText()))
+				startedMultiSourceWorkflows.add(e.path("workflowId").asText());
 		}
+		for (JsonNode source : data("sourceFiles"))
+			if (startedMultiSourceWorkflows.contains(source.path("jobId").asText())
+					&& "MEDIA".equals(source.path("sourceKind").asText()))
+				expected.add("MULTI_SOURCE:" + source.path("sourceFileId").asText());
 		for (JsonNode report : data("qualityReports")) {
 			String status = report.path("status").asText();
 			boolean validStatus = Set.of("ALL_CLEAR", "ISSUES_DETECTED").contains(status);
@@ -256,20 +320,22 @@ public final class ValidationEvaluator {
 			boolean validAllClear = !"ALL_CLEAR".equals(status)
 					|| "COMPLETED".equals(report.path("analysisStatus").asText())
 							&& "FULL_PCM".equals(report.path("analysisMode").asText());
-			if (validStatus && validIdentity && validAllClear)
-				delivered.add(report.path("attemptId").asText());
+			if (validStatus && validIdentity && validAllClear) {
+				delivered.add("SINGLE_SOURCE:" + report.path("attemptId").asText());
+				delivered.add("MULTI_SOURCE:" + report.path("recordingId").asText());
+			}
 		}
-		long blankAttempts = expected.stream().filter(String::isBlank).count();
+		long blankAttempts = expected.stream().filter(value -> value.endsWith(":")).count();
 		long rejectedBeforeProcessing = data("events").stream()
 				.filter(e -> "WEB".equals(e.path("clientSource").asText())
 						&& "SINGLE_SOURCE".equals(e.path("workflowType").asText())
 						&& "REQUEST_REJECTED".equals(e.path("eventType").asText()))
 				.count();
-		expected.removeIf(String::isBlank);
-		delivered.removeIf(String::isBlank);
+		expected.removeIf(value -> value.endsWith(":"));
+		delivered.removeIf(value -> value.endsWith(":"));
 		put(6, expected.stream().filter(delivered::contains).count(), expected.size(), 1, blankAttempts > 0, 0,
-				blankAttempts,
-				Map.of("rejectedBeforeProcessing", rejectedBeforeProcessing, "startedAttemptIds", expected));
+				blankAttempts, Map.of("rejectedBeforeProcessing", rejectedBeforeProcessing, "expectedDeliveries",
+						expected, "multiSourceWorkflows", startedMultiSourceWorkflows));
 	}
 	private Map<String, Object> matchRow(String result, JsonNode prediction, JsonNode annotation, double iou,
 			Long startError, Long endError) {

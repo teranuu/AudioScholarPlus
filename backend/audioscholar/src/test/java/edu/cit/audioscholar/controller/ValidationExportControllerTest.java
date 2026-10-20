@@ -35,7 +35,7 @@ class ValidationExportControllerTest {
 		var manifest = new ObjectMapper().readTree(body.lines().findFirst().orElseThrow()).path("data");
 
 		assertThat(manifest.path("objectiveCodes").toString()).isEqualTo("[3,6,7,8]");
-		for (int objective = 3; objective <= 8; objective++)
+		for (int objective = 2; objective <= 8; objective++)
 			assertThat(manifest.path("objectiveEvidenceStatus").has(String.valueOf(objective))).isTrue();
 	}
 
@@ -117,6 +117,50 @@ class ValidationExportControllerTest {
 
 		assertThat(manifest.path("integrityIssues").toString())
 				.contains("mergedKeyPoint:merged-point-1:missing-lineage-or-attribution");
+	}
+
+	@Test
+	void mergeLatencyTargetIsExclusiveAtExactlyTwoMinutes() throws Exception {
+		FirebaseService firebase = mock(FirebaseService.class);
+		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
+		when(firebase.getAllData("validationEvents"))
+				.thenReturn(List.of(Map.of("eventId", "e1", "workflowId", "job-1", "clientSource", "WEB", "eventType",
+						"JOB_COMPLETED", "occurredAt", occurredAt, "objectiveCodes", List.of(12))));
+		when(firebase.getAllData("multiSourceJobs")).thenReturn(List.of(Map.of("jobId", "job-1", "status", "COMPLETE",
+				"sourceCount", 1, "finalTranscriptionCompletedAt", occurredAt, "mergeStartedAt", occurredAt,
+				"mergedSummaryAvailableAt", occurredAt, "mergeLatencyMs", 120_000)));
+		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
+
+		String body = new String(controller
+				.export("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", null, "WEB", "jsonl", false).getBody(),
+				StandardCharsets.UTF_8);
+		var latency = new ObjectMapper().readTree(body.lines().findFirst().orElseThrow()).path("data")
+				.path("module3MergeLatencyMetrics");
+
+		assertThat(latency.path("targetMsExclusive").asLong()).isEqualTo(120_000);
+		assertThat(latency.path("withinTarget").asInt()).isZero();
+	}
+
+	@Test
+	void manifestRequiresQualityReportsForMultiSourceMediaButNotDocuments() throws Exception {
+		FirebaseService firebase = mock(FirebaseService.class);
+		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
+		when(firebase.getAllData("validationEvents")).thenReturn(List.of(
+				Map.of("eventId", "e1", "workflowId", "job-1", "workflowType", "MULTI_SOURCE", "clientSource", "WEB",
+						"eventType", "PROCESSING_STARTED", "occurredAt", occurredAt, "objectiveCodes", List.of(6))));
+		when(firebase.getAllData("sourceFiles"))
+				.thenReturn(List.of(Map.of("jobId", "job-1", "sourceFileId", "media-1", "sourceKind", "MEDIA"),
+						Map.of("jobId", "job-1", "sourceFileId", "doc-1", "sourceKind", "DOCUMENT")));
+		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
+
+		String body = new String(controller
+				.export("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", null, "WEB", "jsonl", false).getBody(),
+				StandardCharsets.UTF_8);
+		var manifest = new ObjectMapper().readTree(body.lines().findFirst().orElseThrow()).path("data");
+
+		assertThat(manifest.path("objectiveEvidenceStatus").path("6").asText()).isEqualTo("NOT_EVALUABLE");
+		assertThat(manifest.path("objectiveIncompleteReasons").path("6").toString()).contains("MULTI_SOURCE:media-1")
+				.doesNotContain("doc-1");
 	}
 
 	private Map<String, Object> zeroRun(String stage) {

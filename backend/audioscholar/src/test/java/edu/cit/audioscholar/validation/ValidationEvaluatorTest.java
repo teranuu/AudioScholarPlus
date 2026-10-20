@@ -91,7 +91,7 @@ class ValidationEvaluatorTest {
 	}
 
 	@Test
-	void t6DenominatorContainsOnlyStartedSingleSourceAttempts() throws Exception {
+	void t6ExcludesSingleSourceRequestsRejectedBeforeProcessing() throws Exception {
 		String export = manifest("delivery") + row("events",
 				"{\"eventType\":\"PROCESSING_STARTED\",\"workflowType\":\"SINGLE_SOURCE\",\"clientSource\":\"WEB\",\"payload\":{\"attemptId\":\"r1:1\"}}")
 				+ row("events",
@@ -119,6 +119,78 @@ class ValidationEvaluatorTest {
 		assertThat(metrics.path("6").path("numerator").asInt()).isZero();
 		assertThat(metrics.path("6").path("denominator").asInt()).isEqualTo(1);
 		assertThat(metrics.path("6").path("status").asText()).isEqualTo("FAIL");
+	}
+
+	@Test
+	void t2CountsStartedSingleSourceWorkflowWhenConfigurationEvidenceIsMissing() throws Exception {
+		String export = manifest("missing-config") + row("events",
+				"{\"workflowId\":\"r1\",\"occurredAt\":\"2026-01-01T00:00:01Z\",\"eventType\":\"PROCESSING_STARTED\",\"workflowType\":\"SINGLE_SOURCE\",\"clientSource\":\"WEB\",\"payload\":{\"attemptId\":\"r1:1\"}}");
+
+		JsonNode metrics = evaluate(export, "{\"schemaVersion\":2,\"exportManifestHash\":\"missing-config\"}");
+
+		assertThat(metrics.path("2").path("numerator").asInt()).isZero();
+		assertThat(metrics.path("2").path("denominator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("2").path("status").asText()).isEqualTo("FAIL");
+		assertThat(metrics.path("2").path("diagnostics").path("workflows").path("r1").path("reason").asText())
+				.isEqualTo("CONFIG_CONFIRMED_MISSING");
+	}
+
+	@Test
+	void t2RequiresValidOutputTypeAndRejectsIncompleteMeasurement() throws Exception {
+		String events = row("events",
+				"{\"workflowId\":\"r1\",\"occurredAt\":\"2026-01-01T00:00:00Z\",\"eventType\":\"CONFIG_CONFIRMED\",\"workflowType\":\"SINGLE_SOURCE\",\"clientSource\":\"WEB\",\"payload\":{\"outputType\":\"INVALID\"}}")
+				+ row("events",
+						"{\"workflowId\":\"r1\",\"occurredAt\":\"2026-01-01T00:00:01Z\",\"eventType\":\"PROCESSING_STARTED\",\"workflowType\":\"SINGLE_SOURCE\",\"clientSource\":\"WEB\",\"payload\":{\"attemptId\":\"r1:1\"}}")
+				+ row("audio_metadata", "{\"id\":\"r1\",\"measurementIncomplete\":true}");
+
+		JsonNode metrics = evaluate(manifest("bad-config") + events,
+				"{\"schemaVersion\":2,\"exportManifestHash\":\"bad-config\"}");
+
+		assertThat(metrics.path("2").path("numerator").asInt()).isZero();
+		assertThat(metrics.path("2").path("denominator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("2").path("status").asText()).isEqualTo("NOT_EVALUABLE");
+		assertThat(metrics.path("2").path("missingEvidence").asInt()).isEqualTo(1);
+	}
+
+	@Test
+	void t6IncludesEveryMediaSourceFromStartedMultiSourceJobs() throws Exception {
+		String export = manifest("multi-delivery") + row("events",
+				"{\"workflowId\":\"job-1\",\"occurredAt\":\"2026-01-01T00:00:00Z\",\"eventType\":\"PROCESSING_STARTED\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}")
+				+ row("sourceFiles", "{\"jobId\":\"job-1\",\"sourceFileId\":\"media-1\",\"sourceKind\":\"MEDIA\"}")
+				+ row("sourceFiles", "{\"jobId\":\"job-1\",\"sourceFileId\":\"media-2\",\"sourceKind\":\"MEDIA\"}")
+				+ row("sourceFiles", "{\"jobId\":\"job-1\",\"sourceFileId\":\"doc-1\",\"sourceKind\":\"DOCUMENT\"}")
+				+ row("qualityReports",
+						"{\"recordingId\":\"media-1\",\"reportId\":\"report-1\",\"attemptId\":\"media-1:1\",\"status\":\"ALL_CLEAR\",\"analysisStatus\":\"COMPLETED\",\"analysisMode\":\"FULL_PCM\"}");
+
+		JsonNode metrics = evaluate(export, "{\"schemaVersion\":2,\"exportManifestHash\":\"multi-delivery\"}");
+
+		assertThat(metrics.path("6").path("numerator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("6").path("denominator").asInt()).isEqualTo(2);
+		assertThat(metrics.path("6").path("status").asText()).isEqualTo("FAIL");
+	}
+
+	@Test
+	void t12TreatsExactlyTwoMinutesAsOutsideTheExclusiveTarget() throws Exception {
+		StringBuilder export = new StringBuilder(manifest("latency-boundary"));
+		for (String eventType : new String[]{"BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED",
+				"PROCESSING_STARTED"})
+			export.append(row("events",
+					"{\"workflowId\":\"job-1\",\"occurredAt\":\"2026-01-01T00:00:00Z\"," + "\"eventType\":\""
+							+ eventType + "\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
+		export.append(row("events",
+				"{\"workflowId\":\"job-1\",\"occurredAt\":\"2026-01-01T00:02:00Z\",\"eventType\":\"MERGED_SUMMARY_AVAILABLE\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
+		export.append(row("events",
+				"{\"workflowId\":\"job-1\",\"occurredAt\":\"2026-01-01T00:02:00Z\",\"eventType\":\"JOB_COMPLETED\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
+		export.append(row("multiSourceJobs", "{\"jobId\":\"job-1\",\"sourceCount\":1}"));
+		export.append(row("sourceFiles",
+				"{\"jobId\":\"job-1\",\"sourceFileId\":\"doc-1\",\"sourceKind\":\"DOCUMENT\",\"transcriptionCompletedAt\":\"2026-01-01T00:00:00Z\"}"));
+
+		JsonNode metrics = evaluate(export.toString(),
+				"{\"schemaVersion\":2,\"exportManifestHash\":\"latency-boundary\"}");
+
+		assertThat(metrics.path("12").path("numerator").asInt()).isZero();
+		assertThat(metrics.path("12").path("denominator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("12").path("status").asText()).isEqualTo("FAIL");
 	}
 
 	@Test
