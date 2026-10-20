@@ -31,7 +31,8 @@ public class MultiSourceController {
 
 	@PostMapping
 	@PreAuthorize("isAuthenticated()")
-	public ResponseEntity<?> createJob(@RequestParam("mediaFiles") List<MultipartFile> mediaFiles,
+	public ResponseEntity<?> createJob(
+			@RequestParam(value = "mediaFiles", required = false) List<MultipartFile> mediaFiles,
 			@RequestParam(value = "documentFiles", required = false) List<MultipartFile> documentFiles,
 			@RequestParam(value = "title", required = false) String title,
 			@RequestParam(value = "description", required = false) String description,

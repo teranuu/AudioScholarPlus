@@ -603,9 +603,7 @@ public class MultiSourceJobService {
 
 	private void validatePersistedSources(MultiSourceJob job, List<Map<String, Object>> sourceRows) {
 		int expected = job.getSourceCount() == null ? -1 : job.getSourceCount();
-		long mediaSources = sourceRows.stream().filter(row -> SourceKind.MEDIA.name().equals(row.get("sourceKind")))
-				.count();
-		if (expected < 2 || expected > 5 || sourceRows.size() != expected || mediaSources < 2)
+		if (expected < 2 || expected > 5 || sourceRows.size() != expected)
 			throw new MultiSourceProcessingException(
 					"Persisted sources do not match the accepted two-to-five-file batch.", "SOURCE_COUNT_MISMATCH",
 					false);
@@ -638,8 +636,8 @@ public class MultiSourceJobService {
 	}
 
 	private void validateFiles(List<MultipartFile> mediaFiles, List<MultipartFile> documentFiles) {
-		if (mediaFiles.size() < 2) {
-			throw new IllegalArgumentException("Select at least two audio or video sources.");
+		if (mediaFiles.size() + documentFiles.size() < 2) {
+			throw new IllegalArgumentException("Select at least two sources.");
 		}
 		if (mediaFiles.size() + documentFiles.size() > 5) {
 			throw new IllegalArgumentException("Select no more than five sources.");

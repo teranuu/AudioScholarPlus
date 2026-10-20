@@ -204,8 +204,8 @@ const MultiSourceUploadScreen = () => {
     setFormError('');
     setJob(null);
 
-    if (mediaFiles.length < 2) {
-      setMediaError('Select at least two audio or video sources.');
+    if (sourceCount < 2) {
+      setFormError('Select at least two sources.');
       return;
     }
     if (!title.trim()) {
@@ -289,7 +289,7 @@ const MultiSourceUploadScreen = () => {
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6">
               <div>
                 <h1 className="text-3xl font-bold text-gray-800 dark:text-white">Multi-Source Upload</h1>
-                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Upload at least two audio or video sources, with optional document context.</p>
+                <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">Upload 2–5 audio, video, or document sources in any combination.</p>
               </div>
               <Link to="/upload" className="text-sm font-medium text-teal-700 dark:text-teal-300 hover:underline">
                 Single upload
@@ -316,7 +316,7 @@ const MultiSourceUploadScreen = () => {
             />
 
             <div className="mb-4">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 font-semibold">Audio/Video Sources (Required)</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 font-semibold">Audio/Video Sources</label>
               <MultiSourceFilePicker
                 label="Click to select audio or video files"
                 supportedLabel={MEDIA_LABEL}
@@ -328,7 +328,7 @@ const MultiSourceUploadScreen = () => {
             </div>
 
             <div className="mb-6">
-              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 font-semibold">Document Sources (Optional)</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1 font-semibold">Document Sources</label>
               <MultiSourceFilePicker
                 label="Click to select document files"
                 supportedLabel={DOCUMENT_LABEL}
@@ -371,7 +371,7 @@ const MultiSourceUploadScreen = () => {
                 <MergeStatusIndicator job={job} />
               </div>
 
-              <button type="submit" disabled={loading || mediaFiles.length < 2 || !title.trim() || !outputType} className="w-full bg-[#2D8A8A] text-white py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 disabled:opacity-50">
+              <button type="submit" disabled={loading || sourceCount < 2 || !title.trim() || !outputType} className="w-full bg-[#2D8A8A] text-white py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 disabled:opacity-50">
                 {loading ? <><FiLoader className="animate-spin" /> Processing sources...</> : <><FiUpload /> Upload and Merge</>}
               </button>
             </form>

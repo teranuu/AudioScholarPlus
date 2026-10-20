@@ -3,6 +3,7 @@ package edu.cit.audioscholar.controller;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -38,6 +39,28 @@ class MultiSourceControllerTest {
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
 		assertThat(((java.util.Map<?, ?>) response.getBody()).get("status")).isEqualTo("PROCESSING_QUEUED");
 		verify(service).createAndProcess(eq("user-1"), anyList(), eq(null), eq("Title"), eq(null), eq("NOTES"),
+				eq("WEB"));
+	}
+
+	@Test
+	void documentOnlySubmissionDoesNotRequireMediaMultipartField() throws Exception {
+		MultiSourceJobService service = mock(MultiSourceJobService.class);
+		Authentication authentication = mock(Authentication.class);
+		when(authentication.getName()).thenReturn("user-1");
+		MultiSourceJob queued = new MultiSourceJob();
+		queued.setJobId("job-2");
+		queued.setStatus("PROCESSING_QUEUED");
+		when(service.createAndProcess(eq("user-1"), isNull(), anyList(), eq("Documents"), eq(null), eq("NOTES"),
+				eq("WEB"))).thenReturn(queued);
+		MockMultipartFile first = new MockMultipartFile("documentFiles", "a.pdf", "application/pdf", new byte[]{1});
+		MockMultipartFile second = new MockMultipartFile("documentFiles", "b.pptx",
+				"application/vnd.openxmlformats-officedocument.presentationml.presentation", new byte[]{2});
+
+		ResponseEntity<?> response = new MultiSourceController(service).createJob(null, List.of(first, second),
+				"Documents", null, "NOTES", "WEB", authentication);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+		verify(service).createAndProcess(eq("user-1"), isNull(), anyList(), eq("Documents"), eq(null), eq("NOTES"),
 				eq("WEB"));
 	}
 }

@@ -14,8 +14,11 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
+import org.springframework.web.multipart.MultipartFile;
 
 import edu.cit.audioscholar.model.MultiSourceJob;
+import edu.cit.audioscholar.model.SourceFile;
+import edu.cit.audioscholar.model.SourceKind;
 import edu.cit.audioscholar.model.Summary;
 
 class MultiSourceJobServiceTest {
@@ -24,14 +27,32 @@ class MultiSourceJobServiceTest {
 	Path tempDir;
 
 	@Test
-	void rejectsFewerThanTwoMediaFilesEvenWithDocuments() throws Exception {
+	void acceptsOneMediaAndOneDocumentAsTwoSources() throws Exception {
+		MultiSourceJob job = submissionService().createAndProcess("user-1", List.of(media("a.mp3")),
+				List.of(document("slides.pdf")), "Title", null, "NOTES");
+
+		assertEquals(2, job.getSourceCount());
+		assertEquals(List.of("MEDIA", "DOCUMENT"),
+				job.getSourceFiles().stream().map(SourceFile::getSourceKind).toList());
+	}
+
+	@Test
+	void acceptsTwoDocumentsAsTwoSources() throws Exception {
+		MultiSourceJob job = submissionService().createAndProcess("user-1", List.of(),
+				List.of(document("slides.pdf"), document("lecture.pptx")), "Title", null, "NOTES");
+
+		assertEquals(2, job.getSourceCount());
+		assertTrue(job.getSourceFiles().stream().allMatch(source -> "DOCUMENT".equals(source.getSourceKind())));
+	}
+
+	@Test
+	void rejectsFewerThanTwoTotalSources() throws Exception {
 		MultiSourceJobService service = service();
 
 		IllegalArgumentException exception = assertThrows(IllegalArgumentException.class,
-				() -> service.createAndProcess("user-1", List.of(media("a.mp3")), List.of(document("slides.pdf")),
-						"Title", null, "NOTES"));
+				() -> service.createAndProcess("user-1", List.of(media("a.mp3")), List.of(), "Title", null, "NOTES"));
 
-		assertTrue(exception.getMessage().contains("at least two audio or video sources"));
+		assertTrue(exception.getMessage().contains("at least two sources"));
 	}
 
 	@Test
@@ -170,6 +191,21 @@ class MultiSourceJobServiceTest {
 				anyMap());
 	}
 
+	@Test
+	void persistedDocumentOnlyBatchCanComplete() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.sourceFiles.findByJobId("job-1"))
+				.thenReturn(List.of(completedSource("source-a", "Source A", "DOCUMENT"),
+						completedSource("source-b", "Source B", "DOCUMENT")));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository).transitionTerminal(any(MultiSourceJob.class), eq("JOB_COMPLETED"), eq("initial"),
+				anyList(), anyMap());
+		verify(harness.repository, never()).transitionTerminal(any(), eq("JOB_FAILED"), anyString(), anyList(),
+				anyMap());
+	}
+
 	private ProcessingHarness processingHarness(boolean terminalTransitionWins) throws Exception {
 		GeminiService gemini = mock(GeminiService.class);
 		DeduplicationService deduplication = mock(DeduplicationService.class);
@@ -207,9 +243,35 @@ class MultiSourceJobServiceTest {
 	}
 
 	private Map<String, Object> completedSource(String sourceFileId, String label) {
-		return Map.of("sourceFileId", sourceFileId, "jobId", "job-1", "sourceLabel", label, "sourceKind", "MEDIA",
+		return completedSource(sourceFileId, label, "MEDIA");
+	}
+
+	private Map<String, Object> completedSource(String sourceFileId, String label, String sourceKind) {
+		return Map.of("sourceFileId", sourceFileId, "jobId", "job-1", "sourceLabel", label, "sourceKind", sourceKind,
 				"fileName", sourceFileId + ".mp3", "storageObjectId", "object-" + sourceFileId, "transcriptText",
 				"Shared lecture point.", "transcriptionCompletedAt", new Date());
+	}
+
+	private MultiSourceJobService submissionService() throws Exception {
+		SourceFileService sourceFiles = mock(SourceFileService.class);
+		when(sourceFiles.createSourceFile(anyString(), anyString(), any(SourceKind.class), any(MultipartFile.class),
+				any(Path.class))).thenAnswer(invocation -> {
+					SourceFile source = new SourceFile();
+					source.setJobId(invocation.getArgument(0));
+					source.setSourceLabel(invocation.getArgument(1));
+					source.setSourceKind(invocation.getArgument(2, SourceKind.class).name());
+					source.setFileName(invocation.getArgument(3, MultipartFile.class).getOriginalFilename());
+					return source;
+				});
+		AudioProcessingGuardrailService guardrails = mock(AudioProcessingGuardrailService.class);
+		when(guardrails.validateAudioFile(any(Path.class), anyString()))
+				.thenReturn(new AudioProcessingGuardrailService.GuardrailResult(1, 32, "fingerprint", "audio"));
+		return new MultiSourceJobService(mock(GeminiService.class), mock(QualityReportService.class),
+				mock(SummaryService.class), mock(DeduplicationService.class), mock(SourceAttributionService.class),
+				sourceFiles, mock(SourceTranscriptService.class), mock(DocumentTextExtractionService.class),
+				mock(MergedSummaryRepository.class), mock(MultiSourceJobRepository.class), guardrails,
+				tempDir.toString(), "500MB", mock(ConfirmedRabbitPublisher.class), mock(ValidationEventService.class),
+				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class));
 	}
 
 	private MultiSourceJobService service() throws Exception {
