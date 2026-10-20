@@ -68,6 +68,8 @@ public class AudioTranscriptionListenerService {
 	private final int recordingLookupMaxAttempts;
 	private final long recordingLookupDelayMs;
 	private final Map<String, ReentrantLock> metadataLocks = new ConcurrentHashMap<>();
+	@org.springframework.beans.factory.annotation.Autowired(required = false)
+	private ValidationEventService validationEvents;
 
 	public AudioTranscriptionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
 			TranscriptionOrchestrator transcriptionOrchestrator, @Lazy RecordingService recordingService,
@@ -180,9 +182,12 @@ public class AudioTranscriptionListenerService {
 
 					try {
 						try {
-							var qualityReport = qualityReportService.analyzeAndSave(metadataId, tempFilePath,
-									metadataId, "SINGLE_SOURCE", metadata.getClientSource(),
-									firebaseService.getAudioMetadataCollectionName());
+							String attemptId = StringUtils.hasText(metadata.getAttemptId())
+									? metadata.getAttemptId()
+									: metadataId + ":" + metadata.getProcessingAttempt();
+							var qualityReport = qualityReportService.analyzeAndSave(metadataId, tempFilePath, attemptId,
+									metadata.getAudioFingerprint(), metadataId, "SINGLE_SOURCE",
+									metadata.getClientSource(), firebaseService.getAudioMetadataCollectionName());
 							Map<String, Object> qualityUpdates = new HashMap<>();
 							qualityUpdates.put("qualityReport", qualityReport.toMap());
 							qualityUpdates.put("lastUpdated", Timestamp.now());
@@ -580,6 +585,8 @@ public class AudioTranscriptionListenerService {
 
 		try {
 			firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+			if (validationEvents != null)
+				validationEvents.emitAttemptTerminal(metadataId, ProcessingStatus.FAILED);
 			invalidateCache(effectiveUserId);
 			log.error("[{}] Transcription failed after retries. Reason: {}", metadataId, updates.get("failureReason"));
 		} catch (FirestoreInteractionException updateFailure) {

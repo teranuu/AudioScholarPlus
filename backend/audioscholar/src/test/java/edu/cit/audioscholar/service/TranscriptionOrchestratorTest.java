@@ -18,6 +18,7 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
+import edu.cit.audioscholar.exception.DeferredProcessingException;
 import edu.cit.audioscholar.exception.GeminiQuotaTimeoutException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.exception.NonRetryableTaskException;
@@ -26,7 +27,7 @@ import edu.cit.audioscholar.model.TranscriptChunk;
 
 class TranscriptionOrchestratorTest {
 	@Test
-	void waitsForQuotaAndResumesWithoutConsumingRetryAttempt() throws Exception {
+	void defersQuotaWaitWithoutConsumingRetryAttempt() throws Exception {
 		AudioChunkingService chunking = mock(AudioChunkingService.class);
 		TranscriptionProvider provider = mock(TranscriptionProvider.class);
 		TranscriptChunkRepository repository = mock(TranscriptChunkRepository.class);
@@ -35,8 +36,7 @@ class TranscriptionOrchestratorTest {
 		when(chunking.prepareChunks(any(), any())).thenReturn(List.of(audioChunk));
 		when(repository.findAll("metadata-1")).thenReturn(List.of());
 		when(provider.transcribe(audioChunk, "metadata-1"))
-				.thenThrow(new GeminiRateLimitException("rate limited", Instant.now().plusMillis(20), null))
-				.thenReturn("completed transcript");
+				.thenThrow(new GeminiRateLimitException("rate limited", Instant.now().plusSeconds(20), null));
 		when(provider.name()).thenReturn("GEMINI");
 		when(firebase.getAudioMetadataCollectionName()).thenReturn("audio_metadata");
 		List<String> statuses = new ArrayList<>();
@@ -50,12 +50,13 @@ class TranscriptionOrchestratorTest {
 		TranscriptionOrchestrator orchestrator = new TranscriptionOrchestrator(chunking, provider, repository, firebase,
 				1, 3, Duration.ofMinutes(1));
 
-		String result = orchestrator.transcribe("metadata-1", Path.of("source.mp3"), Path.of("work"));
+		DeferredProcessingException deferred = assertThrows(DeferredProcessingException.class,
+				() -> orchestrator.transcribe("metadata-1", Path.of("source.mp3"), Path.of("work")));
 
-		assertEquals("completed transcript", result);
+		assertEquals("WAITING_FOR_GEMINI_QUOTA", deferred.getProcessingStage());
 		assertTrue(statuses.contains("WAITING_FOR_QUOTA"));
 		assertTrue(attempts.stream().allMatch(attempt -> attempt == 1));
-		verify(provider, org.mockito.Mockito.times(2)).transcribe(audioChunk, "metadata-1");
+		verify(provider, org.mockito.Mockito.times(1)).transcribe(audioChunk, "metadata-1");
 	}
 
 	@Test

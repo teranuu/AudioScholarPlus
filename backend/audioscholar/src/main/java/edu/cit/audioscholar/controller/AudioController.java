@@ -9,6 +9,7 @@ import java.util.Set;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -30,6 +31,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import edu.cit.audioscholar.dto.FavoriteStatusDto;
 import edu.cit.audioscholar.dto.UpdateRecordingRequest;
+import edu.cit.audioscholar.exception.InvalidAudioFileException;
 import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.OutputType;
 import edu.cit.audioscholar.model.Recording;
@@ -41,6 +43,7 @@ import edu.cit.audioscholar.service.ProcessingRetryService;
 import edu.cit.audioscholar.service.ProcessingRetryService.RetryNotReadyException;
 import edu.cit.audioscholar.service.RecordingService;
 import edu.cit.audioscholar.service.UserService;
+import edu.cit.audioscholar.service.ValidationEventService;
 
 @RestController
 @RequestMapping("/api/audio")
@@ -53,10 +56,12 @@ public class AudioController {
 	private final UserService userService;
 	private final NhostStorageService nhostStorageService;
 	private final ProcessingRetryService processingRetryService;
+	@Autowired(required = false)
+	private ValidationEventService validationEvents;
 
 	private static final Set<String> ALLOWED_AUDIO_TYPES = Set.of("audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav",
 			"audio/aac", "audio/x-aac", "audio/ogg", "audio/flac", "audio/x-flac", "audio/aiff", "audio/x-aiff",
-			"audio/vnd.dlna.adts");
+			"audio/vnd.dlna.adts", "audio/mp4", "audio/m4a", "audio/x-m4a");
 	private static final List<String> ALLOWED_POWERPOINT_TYPES = Arrays.asList(
 			"application/vnd.openxmlformats-officedocument.presentationml.presentation",
 			"application/vnd.ms-powerpoint");
@@ -116,11 +121,13 @@ public class AudioController {
 
 		if (audioFile.isEmpty()) {
 			log.warn("Upload attempt failed for user {}: Audio file is empty.", userId);
+			recordRejected(clientHeader, "EMPTY_AUDIO");
 			return ResponseEntity.badRequest().body("Audio file cannot be empty.");
 		}
 		try {
 			OutputType.fromValue(outputType);
 		} catch (IllegalArgumentException e) {
+			recordRejected(clientHeader, "INVALID_OUTPUT_TYPE");
 			return ResponseEntity.badRequest()
 					.body("Please select Notes, Study Material, or Review Material before processing.");
 		}
@@ -129,6 +136,7 @@ public class AudioController {
 		if (audioContentType == null || !isAllowedAudioType(audioContentType)) {
 			log.warn("Upload attempt failed for user {}: Invalid audio file type \'{}\'. Allowed types: {}", userId,
 					audioContentType, ALLOWED_AUDIO_TYPES);
+			recordRejected(clientHeader, "UNSUPPORTED_AUDIO_TYPE");
 			return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
 					.body("Invalid audio file type. Allowed types: " + ALLOWED_AUDIO_TYPES);
 		}
@@ -139,6 +147,7 @@ public class AudioController {
 			if (pptxContentType == null || !isAllowedPowerpointType(pptxContentType)) {
 				log.warn("Upload attempt failed for user {}: Invalid PowerPoint file type \'{}\'. Allowed types: {}",
 						userId, pptxContentType, ALLOWED_POWERPOINT_TYPES);
+				recordRejected(clientHeader, "UNSUPPORTED_POWERPOINT_TYPE");
 				return ResponseEntity.status(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
 						.body("Invalid PowerPoint file type. Allowed types: " + ALLOWED_POWERPOINT_TYPES);
 			}
@@ -154,13 +163,24 @@ public class AudioController {
 		log.info("Received valid upload request for audio file: {} from user: {}", audioFile.getOriginalFilename(),
 				userId);
 
-		AudioMetadata initialMetadata = audioProcessingService.queueFilesForUpload(audioFile, powerpointFile,
-				optTitle.orElse(null), optDescription.orElse(null), outputType, userId, clientHeader);
+		AudioMetadata initialMetadata;
+		try {
+			initialMetadata = audioProcessingService.queueFilesForUpload(audioFile, powerpointFile,
+					optTitle.orElse(null), optDescription.orElse(null), outputType, userId, clientHeader);
+		} catch (InvalidAudioFileException rejected) {
+			recordRejected(clientHeader, "FILE_VALIDATION_REJECTED");
+			throw rejected;
+		}
 
 		log.info("Successfully queued file(s) for upload. Metadata ID: {}, Status: {}, User ID: {}",
 				initialMetadata.getId(), initialMetadata.getStatus(), userId);
 
 		return ResponseEntity.status(HttpStatus.ACCEPTED).body(initialMetadata);
+	}
+
+	private void recordRejected(String clientHeader, String reasonCode) {
+		if (validationEvents != null)
+			validationEvents.recordRejectedRequest(clientHeader, reasonCode);
 	}
 
 	private boolean isAllowedAudioType(String contentType) {

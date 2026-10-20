@@ -18,9 +18,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 public final class ValidationEvaluator {
 	private static final ObjectMapper JSON = new ObjectMapper();
+	private static final Set<String> VALID_OUTPUT_TYPES = Set.of("NOTES", "STUDY_MATERIAL", "REVIEW_MATERIAL");
 	private final Map<String, List<JsonNode>> rows = new HashMap<>();
 	private final JsonNode truth;
 	private final Map<Integer, Map<String, Object>> metrics = new LinkedHashMap<>();
+	private final List<Map<String, Object>> qualityMatches = new ArrayList<>();
 	private ValidationEvaluator(Path export, Path truthFile) throws Exception {
 		for (String line : Files.readAllLines(export)) {
 			if (line.isBlank())
@@ -30,8 +32,15 @@ public final class ValidationEvaluator {
 					.add(wrapper.path("data"));
 		}
 		truth = JSON.readTree(Files.readString(truthFile));
-		if (truth.path("schemaVersion").asInt() != 1)
-			throw new IllegalArgumentException("ground-truth schemaVersion must be 1");
+		int schemaVersion = truth.path("schemaVersion").asInt();
+		if (schemaVersion != 1 && schemaVersion != 2)
+			throw new IllegalArgumentException("ground-truth schemaVersion must be 1 or 2");
+		if (schemaVersion == 2) {
+			JsonNode manifest = data("manifest").stream().findFirst()
+					.orElseThrow(() -> new IllegalArgumentException("export manifest missing"));
+			if (!manifest.path("exportBindingHash").asText().equals(truth.path("exportManifestHash").asText()))
+				throw new IllegalArgumentException("ground truth is not bound to this export manifest");
+		}
 	}
 	public static void main(String[] args) throws Exception {
 		if (args.length != 3)
@@ -52,40 +61,67 @@ public final class ValidationEvaluator {
 					.append(m.getValue().get("excludedRecords")).append(',').append(m.getValue().get("missingEvidence"))
 					.append('\n');
 		Files.writeString(out.resolve("metrics.csv"), csv);
+		Files.writeString(out.resolve("quality-matches.json"),
+				JSON.writerWithDefaultPrettyPrinter().writeValueAsString(e.qualityMatches));
+		StringBuilder matchesCsv = new StringBuilder(
+				"result,reportId,detectionIssueId,annotationId,issueType,iou,startErrorMs,endErrorMs\n");
+		for (Map<String, Object> row : e.qualityMatches)
+			matchesCsv.append(csv(row.get("result"))).append(',').append(csv(row.get("reportId"))).append(',')
+					.append(csv(row.get("detectionIssueId"))).append(',').append(csv(row.get("annotationId")))
+					.append(',').append(csv(row.get("issueType"))).append(',').append(csv(row.get("iou"))).append(',')
+					.append(csv(row.get("startErrorMs"))).append(',').append(csv(row.get("endErrorMs"))).append('\n');
+		Files.writeString(out.resolve("quality-matches.csv"), matchesCsv);
+	}
+	private static String csv(Object value) {
+		String text = value == null ? "" : String.valueOf(value);
+		return '"' + text.replace("\"", "\"\"") + '"';
 	}
 	private void evaluate() {
-		Set<String> incomplete = new HashSet<>();
+		Set<String> multiSourceIncomplete = new HashSet<>();
+		Set<String> configurationIncomplete = new HashSet<>();
 		for (JsonNode j : data("multiSourceJobs"))
-			if (j.path("measurementIncomplete").asBoolean())
-				incomplete.add(j.path("jobId").asText());
-		for (JsonNode r : data("audio_metadata"))
-			if (r.path("measurementIncomplete").asBoolean())
-				incomplete.add(r.path("id").asText(r.path("recordingId").asText()));
+			if (j.path("measurementIncomplete").asBoolean()) {
+				multiSourceIncomplete.add(j.path("jobId").asText());
+				configurationIncomplete.add(j.path("jobId").asText());
+			}
+		for (JsonNode metadata : data("audio_metadata"))
+			if (metadata.path("measurementIncomplete").asBoolean())
+				configurationIncomplete.add(metadata.path("id").asText(metadata.path("recordingId").asText()));
 		for (JsonNode e : data("events"))
-			if ("EVIDENCE_WRITE_FAILED".equals(e.path("eventType").asText()))
-				incomplete.add(e.path("workflowId").asText());
-		lifecycle(incomplete);
-		quality(incomplete);
-		warnings(incomplete);
-		semantic(incomplete);
-		attribution(incomplete);
-		alignment(incomplete);
+			if ("EVIDENCE_WRITE_FAILED".equals(e.path("eventType").asText())) {
+				String workflowId = e.path("workflowId").asText();
+				configurationIncomplete.add(workflowId);
+				if ("MULTI_SOURCE".equals(e.path("workflowType").asText()))
+					multiSourceIncomplete.add(workflowId);
+			}
+		lifecycle(configurationIncomplete, multiSourceIncomplete);
+		quality();
+		warnings();
+		semantic(multiSourceIncomplete);
+		attribution(multiSourceIncomplete);
+		alignment(multiSourceIncomplete);
 	}
-	private void lifecycle(Set<String> incomplete) {
+	private void lifecycle(Set<String> configurationIncomplete, Set<String> multiSourceIncomplete) {
 		Map<String, Map<String, Instant>> events = new HashMap<>();
+		Map<String, List<JsonNode>> workflowEvents = new HashMap<>();
 		for (JsonNode e : data("events")) {
 			if (!"WEB".equals(e.path("clientSource").asText()))
 				continue;
+			String workflowId = e.path("workflowId").asText();
+			workflowEvents.computeIfAbsent(workflowId, ignored -> new ArrayList<>()).add(e);
 			try {
-				events.computeIfAbsent(e.path("workflowId").asText(), ignored -> new HashMap<>())
-						.put(e.path("eventType").asText(), Instant.parse(e.path("occurredAt").asText()));
+				events.computeIfAbsent(workflowId, ignored -> new HashMap<>()).merge(e.path("eventType").asText(),
+						Instant.parse(e.path("occurredAt").asText()), (a, b) -> a.isBefore(b) ? a : b);
 			} catch (Exception x) {
-				incomplete.add(e.path("workflowId").asText());
+				configurationIncomplete.add(workflowId);
+				if ("MULTI_SOURCE".equals(e.path("workflowType").asText()))
+					multiSourceIncomplete.add(workflowId);
 			}
 		}
 		long accepted = 0, configured = 0, valid = 0, complete = 0, acceptedStage = 0, queuedStage = 0,
 				uploadedStage = 0, under = 0, missingLatencyEvidence = 0;
 		Map<String, Object> jobs = new LinkedHashMap<>();
+		Map<String, Object> configurationWorkflows = new LinkedHashMap<>();
 		Map<String, Integer> expected = new HashMap<>(), completed = new HashMap<>();
 		Map<String, Instant> lastSource = new HashMap<>();
 		for (JsonNode j : data("multiSourceJobs"))
@@ -101,11 +137,26 @@ public final class ValidationEvaluator {
 		for (var entry : events.entrySet()) {
 			String id = entry.getKey();
 			Map<String, Instant> e = entry.getValue();
-			if (e.containsKey("JOB_ACCEPTED") || e.containsKey("CONFIG_CONFIRMED")) {
+			if (e.containsKey("JOB_ACCEPTED") || e.containsKey("CONFIG_CONFIRMED")
+					|| e.containsKey("PROCESSING_STARTED")) {
 				accepted++;
-				if (e.containsKey("CONFIG_CONFIRMED") && e.containsKey("PROCESSING_STARTED")
-						&& e.get("CONFIG_CONFIRMED").isBefore(e.get("PROCESSING_STARTED")))
+				JsonNode config = workflowEvents.getOrDefault(id, List.of()).stream()
+						.filter(event -> "CONFIG_CONFIRMED".equals(event.path("eventType").asText()))
+						.filter(event -> VALID_OUTPUT_TYPES.contains(event.path("payload").path("outputType").asText()))
+						.filter(event -> eventTime(event) != null)
+						.filter(event -> !e.containsKey("PROCESSING_STARTED")
+								|| eventTime(event).isBefore(e.get("PROCESSING_STARTED")))
+						.min(Comparator.comparing(ValidationEvaluator::eventTime)).orElse(null);
+				if (config != null)
 					configured++;
+				Map<String, Object> diagnostic = new LinkedHashMap<>();
+				diagnostic.put("configurationValid", config != null);
+				diagnostic.put("processingStarted", e.containsKey("PROCESSING_STARTED"));
+				if (config != null)
+					diagnostic.put("outputType", config.path("payload").path("outputType").asText());
+				else
+					diagnostic.put("reason", configurationFailureReason(workflowEvents.getOrDefault(id, List.of()), e));
+				configurationWorkflows.put(id, diagnostic);
 			}
 			if (e.containsKey("BATCH_VALIDATED")) {
 				valid++;
@@ -134,23 +185,66 @@ public final class ValidationEvaluator {
 				jobs.put(id, d);
 			}
 		}
-		boolean invalid = !incomplete.isEmpty();
-		put(2, configured, accepted, 1, invalid, incomplete.size(), incomplete.size(), Map.of("jobs", jobs));
-		put(9, complete, valid, 1, invalid, incomplete.size(), incomplete.size(),
+		boolean configurationInvalid = !configurationIncomplete.isEmpty();
+		boolean multiSourceInvalid = !multiSourceIncomplete.isEmpty();
+		put(2, configured, accepted, 1, configurationInvalid, configurationIncomplete.size(),
+				configurationIncomplete.size(), Map.of("workflows", configurationWorkflows));
+		put(9, complete, valid, 1, multiSourceInvalid, multiSourceIncomplete.size(), multiSourceIncomplete.size(),
 				Map.of("stageRates", Map.of("accepted", ratio(acceptedStage, valid), "queued",
 						ratio(queuedStage, valid), "allSourcesUploaded", ratio(uploadedStage, valid)), "jobs", jobs));
-		put(12, under, complete, 1, invalid || missingLatencyEvidence > 0, incomplete.size() + missingLatencyEvidence,
-				incomplete.size() + missingLatencyEvidence, Map.of("limitMsExclusive", 120000, "jobs", jobs));
+		put(12, under, complete, 1, multiSourceInvalid || missingLatencyEvidence > 0,
+				multiSourceIncomplete.size() + missingLatencyEvidence,
+				multiSourceIncomplete.size() + missingLatencyEvidence,
+				Map.of("limitMsExclusive", 120000, "jobs", jobs));
 	}
-	private void quality(Set<String> incomplete) {
-		List<JsonNode> predicted = data("qualityIssues"), actual = array(truth.path("problemSegments"));
+
+	private static Instant eventTime(JsonNode event) {
+		try {
+			return Instant.parse(event.path("occurredAt").asText());
+		} catch (Exception ignored) {
+			return null;
+		}
+	}
+
+	private static String configurationFailureReason(List<JsonNode> workflowEvents, Map<String, Instant> eventTimes) {
+		List<JsonNode> configurations = workflowEvents.stream()
+				.filter(event -> "CONFIG_CONFIRMED".equals(event.path("eventType").asText())).toList();
+		if (configurations.isEmpty())
+			return "CONFIG_CONFIRMED_MISSING";
+		if (configurations.stream()
+				.noneMatch(event -> VALID_OUTPUT_TYPES.contains(event.path("payload").path("outputType").asText())))
+			return "OUTPUT_TYPE_INVALID_OR_MISSING";
+		if (eventTimes.containsKey("PROCESSING_STARTED"))
+			return "CONFIG_NOT_BEFORE_PROCESSING";
+		return "CONFIG_TIMESTAMP_INVALID";
+	}
+	private void quality() {
+		boolean legacy = truth.path("schemaVersion").asInt() == 1;
+		Set<String> eligibleReports = new HashSet<>();
+		for (JsonNode report : data("qualityReports"))
+			if ("COMPLETED".equals(report.path("analysisStatus").asText())
+					&& "FULL_PCM".equals(report.path("analysisMode").asText()))
+				eligibleReports.add(report.path("reportId").asText());
+		Set<String> reviewedReports = new HashSet<>();
+		for (JsonNode review : array(truth.path("reviewedRecordings")))
+			if (review.path("reviewComplete").asBoolean())
+				reviewedReports.add(review.path("reportId").asText());
+		List<JsonNode> predicted = data("qualityIssues").stream()
+				.filter(p -> legacy || reviewedReports.contains(p.path("reportId").asText())
+						&& eligibleReports.contains(p.path("reportId").asText()))
+				.sorted(segmentOrder("issueId")).toList();
+		List<JsonNode> actual = array(truth.path("problemSegments")).stream()
+				.filter(a -> legacy || reviewedReports.contains(a.path("reportId").asText())
+						&& eligibleReports.contains(a.path("reportId").asText()))
+				.sorted(segmentOrder("annotationId")).toList();
 		List<List<Match>> graph = new ArrayList<>();
 		for (int i = 0; i < predicted.size(); i++)
 			graph.add(new ArrayList<>());
 		for (int i = 0; i < predicted.size(); i++)
 			for (int j = 0; j < actual.size(); j++) {
 				JsonNode p = predicted.get(i), a = actual.get(j);
-				if (p.path("recordingId").asText().equals(a.path("recordingId").asText())
+				String joinField = legacy ? "recordingId" : "reportId";
+				if (p.path(joinField).asText().equals(a.path(joinField).asText())
 						&& p.path("issueType").asText().equals(a.path("issueType").asText())) {
 					double score = iou(p.path("startMs").asLong(-1), p.path("endMs").asLong(-1),
 							a.path("startMs").asLong(-1), a.path("endMs").asLong(-1));
@@ -175,11 +269,24 @@ public final class ValidationEvaluator {
 				errors.add(Math.max(se, ee));
 				if (se <= 10000 && ee <= 10000)
 					accurate++;
+				int actualIndex = a;
+				qualityMatches.add(matchRow("TP", p, t, graph.get(matched[a]).stream()
+						.filter(m -> m.actual() == actualIndex).map(Match::score).findFirst().orElse(0.0), se, ee));
 			}
-		boolean invalid = actual.isEmpty() || !validSegments(actual) || !validSegments(predicted)
-				|| !incomplete.isEmpty();
-		put(3, usedPred.size(), predicted.size(), .8, invalid, incomplete.size(), incomplete.size(), Map.of());
-		put(4, usedPred.size(), actual.size(), .75, invalid, incomplete.size(), incomplete.size(), Map.of());
+		for (int i = 0; i < predicted.size(); i++)
+			if (!usedPred.contains(i))
+				qualityMatches.add(matchRow("FP", predicted.get(i), null, 0, null, null));
+		for (int i = 0; i < actual.size(); i++)
+			if (matched[i] < 0)
+				qualityMatches.add(matchRow("FN", null, actual.get(i), 0, null, null));
+		long ineligibleReviews = legacy
+				? 0
+				: reviewedReports.stream().filter(r -> !eligibleReports.contains(r)).count();
+		boolean invalid = (!legacy && reviewedReports.isEmpty()) || ineligibleReviews > 0 || !validSegments(actual)
+				|| !validSegments(predicted);
+		Map<String, Object> reviewDiagnostics = Map.of("ineligibleReviewedReports", ineligibleReviews);
+		put(3, usedPred.size(), predicted.size(), .8, invalid, ineligibleReviews, ineligibleReviews, reviewDiagnostics);
+		put(4, usedPred.size(), actual.size(), .75, invalid, ineligibleReviews, ineligibleReviews, reviewDiagnostics);
 		errors.sort(Long::compare);
 		Map<String, Object> diag = new LinkedHashMap<>();
 		if (!errors.isEmpty()) {
@@ -187,42 +294,121 @@ public final class ValidationEvaluator {
 			diag.put("p95ErrorMs", errors.get((int) Math.ceil(.95 * errors.size()) - 1));
 			diag.put("maxErrorMs", errors.get(errors.size() - 1));
 		}
-		put(5, accurate, usedPred.size(), 1, invalid, incomplete.size(), incomplete.size(), diag);
+		diag.put("ineligibleReviewedReports", ineligibleReviews);
+		put(5, accurate, usedPred.size(), 1, invalid, ineligibleReviews, ineligibleReviews, diag);
 		Set<String> expected = new HashSet<>(), delivered = new HashSet<>();
+		Set<String> startedMultiSourceWorkflows = new HashSet<>();
 		for (JsonNode e : data("events")) {
 			if (!"WEB".equals(e.path("clientSource").asText()))
 				continue;
 			String type = e.path("eventType").asText();
-			if ("CONFIG_CONFIRMED".equals(type) && "SINGLE_SOURCE".equals(e.path("workflowType").asText()))
-				expected.add(e.path("workflowId").asText());
-			if ("SOURCE_UPLOADED".equals(type) && "MEDIA".equals(e.path("payload").path("sourceKind").asText()))
-				expected.add(e.path("payload").path("sourceFileId").asText());
-			if ("QUALITY_REPORT_PERSISTED".equals(type)
-					&& Set.of("ALL_CLEAR", "ISSUES_DETECTED").contains(e.path("payload").path("status").asText()))
-				delivered.add(e.path("payload").path("recordingId").asText());
+			if ("PROCESSING_STARTED".equals(type) && "SINGLE_SOURCE".equals(e.path("workflowType").asText()))
+				expected.add("SINGLE_SOURCE:"
+						+ e.path("payload").path("attemptId").asText(e.path("idempotencyKey").asText()));
+			if ("PROCESSING_STARTED".equals(type) && "MULTI_SOURCE".equals(e.path("workflowType").asText()))
+				startedMultiSourceWorkflows.add(e.path("workflowId").asText());
 		}
-		put(6, expected.stream().filter(delivered::contains).count(), expected.size(), 1, !incomplete.isEmpty(),
-				incomplete.size(), incomplete.size(), Map.of());
+		for (JsonNode source : data("sourceFiles"))
+			if (startedMultiSourceWorkflows.contains(source.path("jobId").asText())
+					&& "MEDIA".equals(source.path("sourceKind").asText()))
+				expected.add("MULTI_SOURCE:" + source.path("sourceFileId").asText());
+		for (JsonNode report : data("qualityReports")) {
+			String status = report.path("status").asText();
+			boolean validStatus = Set.of("ALL_CLEAR", "ISSUES_DETECTED").contains(status);
+			boolean validIdentity = !report.path("reportId").asText().isBlank()
+					&& !report.path("attemptId").asText().isBlank();
+			boolean validAllClear = !"ALL_CLEAR".equals(status)
+					|| "COMPLETED".equals(report.path("analysisStatus").asText())
+							&& "FULL_PCM".equals(report.path("analysisMode").asText());
+			if (validStatus && validIdentity && validAllClear) {
+				delivered.add("SINGLE_SOURCE:" + report.path("attemptId").asText());
+				delivered.add("MULTI_SOURCE:" + report.path("recordingId").asText());
+			}
+		}
+		long blankAttempts = expected.stream().filter(value -> value.endsWith(":")).count();
+		long rejectedBeforeProcessing = data("events").stream()
+				.filter(e -> "WEB".equals(e.path("clientSource").asText())
+						&& "SINGLE_SOURCE".equals(e.path("workflowType").asText())
+						&& "REQUEST_REJECTED".equals(e.path("eventType").asText()))
+				.count();
+		expected.removeIf(value -> value.endsWith(":"));
+		delivered.removeIf(value -> value.endsWith(":"));
+		put(6, expected.stream().filter(delivered::contains).count(), expected.size(), 1, blankAttempts > 0, 0,
+				blankAttempts, Map.of("rejectedBeforeProcessing", rejectedBeforeProcessing, "expectedDeliveries",
+						expected, "multiSourceWorkflows", startedMultiSourceWorkflows));
 	}
-	private void warnings(Set<String> incomplete) {
+	private Map<String, Object> matchRow(String result, JsonNode prediction, JsonNode annotation, double iou,
+			Long startError, Long endError) {
+		Map<String, Object> row = new LinkedHashMap<>();
+		row.put("result", result);
+		JsonNode source = prediction != null ? prediction : annotation;
+		row.put("reportId", source.path("reportId").asText());
+		row.put("detectionIssueId", prediction == null ? null : prediction.path("issueId").asText());
+		row.put("annotationId", annotation == null ? null : annotation.path("annotationId").asText());
+		row.put("issueType", source.path("issueType").asText());
+		row.put("iou", iou);
+		row.put("startErrorMs", startError);
+		row.put("endErrorMs", endError);
+		return row;
+	}
+	private void warnings() {
 		Set<String> eligible = new HashSet<>(), warned = new HashSet<>();
 		long unmappable = 0;
 		for (JsonNode m : data("warningMappings")) {
-			String item = m.path("summaryId").asText() + ":" + m.path("itemId").asText();
+			if ("LEGACY_READ_BACKFILL".equals(m.path("evidenceSource").asText()) || m.path("stale").asBoolean())
+				continue;
+			String item = warningItem(m);
 			if ("OVERLAP".equals(m.path("decision").asText()))
 				eligible.add(item);
 			if ("UNMAPPABLE".equals(m.path("decision").asText()))
 				unmappable++;
 		}
+		Set<String> visible = new HashSet<>();
+		for (JsonNode receipt : data("warningDisplayReceipts"))
+			if ("INDICATOR_VISIBLE".equals(receipt.path("displayState").asText()) && !receipt.path("stale").asBoolean())
+				visible.add(receipt.path("warningId").asText() + ":" + receipt.path("summaryEvidenceVersion").asText());
 		for (JsonNode w : data("warningIndicators")) {
-			String item = w.path("keyPointId").asText();
-			if (item.isBlank())
-				item = w.path("cardId").asText();
-			warned.add(w.path("summaryId").asText() + ":" + item);
+			String receiptKey = w.path("warningId").asText() + ":" + w.path("summaryEvidenceVersion").asText();
+			if (visible.contains(receiptKey) && !w.path("stale").asBoolean()
+					&& "DISPLAYABLE".equals(w.path("generationStatus").asText())
+					&& !"LEGACY_READ_BACKFILL".equals(w.path("evidenceSource").asText()))
+				warned.add(warningItem(w));
 		}
-		put(7, eligible.stream().filter(warned::contains).count(), eligible.size(), .8,
-				unmappable > 0 || !incomplete.isEmpty(), incomplete.size() + unmappable, incomplete.size() + unmappable,
-				Map.of("unmappable", unmappable));
+		boolean staleSummary = data("summaries").stream().anyMatch(s -> s.path("warningEvidenceStale").asBoolean());
+		put(7, eligible.stream().filter(warned::contains).count(), eligible.size(), .8, unmappable > 0 || staleSummary,
+				unmappable, unmappable, Map.of("unmappable", unmappable, "staleSummaryEvidence", staleSummary));
+		Map<String, Boolean> expert = new HashMap<>();
+		for (JsonNode review : array(truth.path("warningTemplateReviews")))
+			expert.put(review.path("templateId").asText() + ":" + review.path("templateVersion").asText(),
+					review.path("reviewerConforms").asBoolean());
+		long candidates = 0, conforming = 0, missingReview = 0;
+		for (JsonNode candidate : data("warningCandidates")) {
+			if ("LEGACY_READ_BACKFILL".equals(candidate.path("evidenceSource").asText())
+					|| candidate.path("stale").asBoolean())
+				continue;
+			candidates++;
+			Boolean review = expert
+					.get(candidate.path("templateId").asText() + ":" + candidate.path("templateVersion").asText());
+			if (review == null)
+				missingReview++;
+			else if (review && candidate.path("automatedConformancePassed").asBoolean())
+				conforming++;
+		}
+		put(8, conforming, candidates, 1, candidates == 0 || missingReview > 0 || staleSummary, missingReview,
+				missingReview, Map.of("missingExpertReviews", missingReview, "staleSummaryEvidence", staleSummary));
+	}
+	private static String warningItem(JsonNode node) {
+		String item = node.path("itemId").asText();
+		if (item.isBlank())
+			item = node.path("keyPointId").asText();
+		if (item.isBlank())
+			item = node.path("cardId").asText();
+		return node.path("summaryId").asText() + ":" + node.path("summaryEvidenceVersion").asText() + ":" + item;
+	}
+	private static Comparator<JsonNode> segmentOrder(String idField) {
+		return Comparator.comparing((JsonNode n) -> n.path("reportId").asText())
+				.thenComparing(n -> n.path("issueType").asText()).thenComparingLong(n -> n.path("startMs").asLong())
+				.thenComparingLong(n -> n.path("endMs").asLong()).thenComparing(n -> n.path(idField).asText());
 	}
 	private void semantic(Set<String> incomplete) {
 		Map<String, Boolean> reviewed = new HashMap<>();
@@ -345,9 +531,10 @@ public final class ValidationEvaluator {
 	}
 	private static boolean validSegments(List<JsonNode> s) {
 		for (JsonNode n : s)
-			if (n.path("recordingId").asText().isBlank() || n.path("issueType").asText().isBlank()
-					|| !n.path("startMs").canConvertToLong() || !n.path("endMs").canConvertToLong()
-					|| n.path("startMs").asLong() < 0 || n.path("endMs").asLong() <= n.path("startMs").asLong())
+			if ((n.path("reportId").asText().isBlank() && n.path("recordingId").asText().isBlank())
+					|| n.path("issueType").asText().isBlank() || !n.path("startMs").canConvertToLong()
+					|| !n.path("endMs").canConvertToLong() || n.path("startMs").asLong() < 0
+					|| n.path("endMs").asLong() <= n.path("startMs").asLong())
 				return false;
 		return true;
 	}

@@ -1,11 +1,14 @@
 package edu.cit.audioscholar.service;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -27,14 +30,28 @@ public class ProcessingRetryService {
 	private final Firestore firestore;
 	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	private final String metadataCollection;
+	private final ValidationEventService validationEvents;
+	private final NhostStorageService storage;
+	private final QualityReportService qualityReports;
 
 	public ProcessingRetryService(FirebaseService firebaseService, Firestore firestore,
 			ConfirmedRabbitPublisher confirmedRabbitPublisher,
 			@Value("${firebase.firestore.collection.audiometadata}") String metadataCollection) {
+		this(firebaseService, firestore, confirmedRabbitPublisher, metadataCollection, null, null, null);
+	}
+
+	@Autowired
+	public ProcessingRetryService(FirebaseService firebaseService, Firestore firestore,
+			ConfirmedRabbitPublisher confirmedRabbitPublisher,
+			@Value("${firebase.firestore.collection.audiometadata}") String metadataCollection,
+			ValidationEventService validationEvents, NhostStorageService storage, QualityReportService qualityReports) {
 		this.firebaseService = firebaseService;
 		this.firestore = firestore;
 		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.metadataCollection = metadataCollection;
+		this.validationEvents = validationEvents;
+		this.storage = storage;
+		this.qualityReports = qualityReports;
 	}
 
 	public ProcessingRetryResponse retry(String recordingId, String userId) {
@@ -50,6 +67,8 @@ public class ProcessingRetryService {
 		}
 
 		RetryJob job = reserveRetry(metadata.getId(), userId);
+		emitStarted(job);
+		materializeQualityReport(job);
 		try {
 			publish(job);
 			return new ProcessingRetryResponse(job.metadataId(), job.recordingId(), job.status().name(),
@@ -64,6 +83,8 @@ public class ProcessingRetryService {
 			rollback.put("failureReason", job.stage().name() + "_RETRY_QUEUE_FAILED: " + e.getMessage());
 			rollback.put("lastUpdated", Timestamp.now());
 			firebaseService.updateDataWithMap(metadataCollection, job.metadataId(), rollback);
+			if (validationEvents != null)
+				validationEvents.emitAttemptTerminal(job.metadataId(), ProcessingStatus.FAILED);
 			throw new IllegalStateException("Could not queue processing retry", e);
 		}
 	}
@@ -91,12 +112,16 @@ public class ProcessingRetryService {
 				updates.put("failureReason", null);
 				updates.put("quotaRetryAt", null);
 				updates.put("lastUpdated", Timestamp.now());
-				transaction.update(reference, updates);
 				String durableRecordingId = StringUtils.hasText(current.getRecordingId())
 						? current.getRecordingId()
 						: current.getId();
+				int processingAttempt = current.getProcessingAttempt() + 1;
+				String attemptId = durableRecordingId + ":" + processingAttempt;
+				updates.put("processingAttempt", processingAttempt);
+				updates.put("attemptId", attemptId);
+				transaction.update(reference, updates);
 				return new RetryJob(current.getId(), durableRecordingId, current.getUserId(), current.getNhostFileId(),
-						plan.stage(), plan.status(), plan.message());
+						plan.stage(), plan.status(), plan.message(), attemptId, current.getClientSource());
 			}).get();
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -199,6 +224,42 @@ public class ProcessingRetryService {
 		}
 	}
 
+	private void emitStarted(RetryJob job) {
+		if (validationEvents != null)
+			validationEvents.emit(job.metadataId(), "SINGLE_SOURCE", job.clientSource(), "PROCESSING_STARTED",
+					java.util.List.of(6), job.attemptId(),
+					Map.of("recordingId", job.recordingId(), "attemptId", job.attemptId()), metadataCollection);
+	}
+
+	private void materializeQualityReport(RetryJob job) {
+		if (storage == null || qualityReports == null || !StringUtils.hasText(job.nhostFileId()))
+			return;
+		Path source = null;
+		boolean analysisStarted = false;
+		try {
+			source = Files.createTempFile("audioscholar-retry-quality-", ".audio");
+			storage.downloadFileToPath(job.nhostFileId(), source);
+			analysisStarted = true;
+			qualityReports.analyzeAndSave(job.recordingId(), source, job.attemptId(), null, job.recordingId(),
+					"SINGLE_SOURCE", job.clientSource(), metadataCollection);
+		} catch (Exception failure) {
+			if (!analysisStarted)
+				try {
+					qualityReports.analyzeAndSave(job.recordingId(), null, job.attemptId(), "unavailable",
+							job.recordingId(), "SINGLE_SOURCE", job.clientSource(), metadataCollection);
+				} catch (Exception ignored) {
+				}
+			firebaseService.updateDataWithMap(metadataCollection, job.metadataId(),
+					Map.of("measurementIncomplete", true));
+		} finally {
+			if (source != null)
+				try {
+					Files.deleteIfExists(source);
+				} catch (Exception ignored) {
+				}
+		}
+	}
+
 	private void publishConfirmed(String routingKey, Object message) {
 		confirmedRabbitPublisher.publishToProcessingExchange(routingKey, message);
 	}
@@ -224,6 +285,6 @@ public class ProcessingRetryService {
 	}
 
 	private record RetryJob(String metadataId, String recordingId, String userId, String nhostFileId, RetryStage stage,
-			ProcessingStatus status, String message) {
+			ProcessingStatus status, String message, String attemptId, String clientSource) {
 	}
 }

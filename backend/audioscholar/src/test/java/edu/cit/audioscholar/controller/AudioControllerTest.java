@@ -1,7 +1,9 @@
 package edu.cit.audioscholar.controller;
 
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.multipart;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
@@ -16,8 +18,10 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.MediaType;
+import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
@@ -32,6 +36,7 @@ import edu.cit.audioscholar.service.NhostStorageService;
 import edu.cit.audioscholar.service.ProcessingRetryService;
 import edu.cit.audioscholar.service.RecordingService;
 import edu.cit.audioscholar.service.UserService;
+import edu.cit.audioscholar.service.ValidationEventService;
 
 @ExtendWith(MockitoExtension.class)
 public class AudioControllerTest {
@@ -57,6 +62,9 @@ public class AudioControllerTest {
 	@Mock
 	private ProcessingRetryService processingRetryService;
 
+	@Mock
+	private ValidationEventService validationEventService;
+
 	@InjectMocks
 	private AudioController audioController;
 
@@ -66,6 +74,7 @@ public class AudioControllerTest {
 
 	@BeforeEach
 	void setUp() {
+		ReflectionTestUtils.setField(audioController, "validationEvents", validationEventService);
 		mockMvc = MockMvcBuilders.standaloneSetup(audioController).build();
 		SecurityContextHolder.getContext()
 				.setAuthentication(new UsernamePasswordAuthenticationToken(TEST_USER_ID, null, null));
@@ -86,6 +95,16 @@ public class AudioControllerTest {
 				.contentType(MediaType.APPLICATION_JSON).content(objectMapper.writeValueAsString(request)))
 				.andExpect(status().isOk()).andExpect(jsonPath("$.title").value("New Title"))
 				.andExpect(jsonPath("$.description").value("New Description"));
+	}
+
+	@Test
+	void rejectedWebUploadIsReportedWithoutStartingProcessing() throws Exception {
+		MockMultipartFile emptyAudio = new MockMultipartFile("audioFile", "empty.wav", "audio/wav", new byte[0]);
+
+		mockMvc.perform(multipart("/api/audio/upload").file(emptyAudio).param("outputType", "NOTES")
+				.header("X-AudioScholar-Client", "WEB")).andExpect(status().isBadRequest());
+
+		verify(validationEventService).recordRejectedRequest("WEB", "EMPTY_AUDIO");
 	}
 
 	@Test

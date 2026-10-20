@@ -36,7 +36,6 @@ public class DotenvConfig {
 				String key = entry.getKey();
 				String value = entry.getValue();
 				dotenvProperties.put(key, value);
-				logger.debug("Loaded .env property: {} = {}", key, value);
 			});
 
 			// Add to Spring Environment

@@ -33,17 +33,28 @@ public class PptxConversionListenerService {
 	private final ProcessingStageClaimService stageClaimService;
 	@SuppressWarnings("unused")
 	private final ObjectMapper objectMapper;
+	private final ValidationEventService validationEvents;
 	private final Map<String, Lock> metadataLocks = new ConcurrentHashMap<>();
 
 	public PptxConversionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
 			PptxConversionProvider pptxConversionProvider, ConfirmedRabbitPublisher confirmedRabbitPublisher,
 			ObjectMapper objectMapper, ProcessingStageClaimService stageClaimService) {
+		this(firebaseService, nhostStorageService, pptxConversionProvider, confirmedRabbitPublisher, objectMapper,
+				stageClaimService, null);
+	}
+
+	@org.springframework.beans.factory.annotation.Autowired
+	public PptxConversionListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
+			PptxConversionProvider pptxConversionProvider, ConfirmedRabbitPublisher confirmedRabbitPublisher,
+			ObjectMapper objectMapper, ProcessingStageClaimService stageClaimService,
+			ValidationEventService validationEvents) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
 		this.pptxConversionProvider = pptxConversionProvider;
 		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.objectMapper = objectMapper;
 		this.stageClaimService = stageClaimService;
+		this.validationEvents = validationEvents;
 	}
 
 	@RabbitListener(queues = RabbitMQConfig.PPTX_CONVERSION_QUEUE_NAME, containerFactory = "pptxContainerFactory")
@@ -200,6 +211,8 @@ public class PptxConversionListenerService {
 			}
 
 			firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+			if (status == ProcessingStatus.FAILED && validationEvents != null)
+				validationEvents.emitAttemptTerminal(metadataId, ProcessingStatus.FAILED);
 			logger.info("Updated status to {} for metadata ID: {}", status, metadataId);
 		} catch (Exception e) {
 			logger.error("Failed to update status for metadata ID: {}", metadataId, e);

@@ -43,14 +43,23 @@ public class NhostUploadListenerService {
 	private final ConfirmedRabbitPublisher confirmedRabbitPublisher;
 	@SuppressWarnings("unused")
 	private final ObjectMapper objectMapper;
+	private final ValidationEventService validationEvents;
 	private final Map<String, Lock> metadataLocks = new ConcurrentHashMap<>();
 
 	public NhostUploadListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
 			ConfirmedRabbitPublisher confirmedRabbitPublisher, ObjectMapper objectMapper) {
+		this(firebaseService, nhostStorageService, confirmedRabbitPublisher, objectMapper, null);
+	}
+
+	@org.springframework.beans.factory.annotation.Autowired
+	public NhostUploadListenerService(FirebaseService firebaseService, NhostStorageService nhostStorageService,
+			ConfirmedRabbitPublisher confirmedRabbitPublisher, ObjectMapper objectMapper,
+			ValidationEventService validationEvents) {
 		this.firebaseService = firebaseService;
 		this.nhostStorageService = nhostStorageService;
 		this.confirmedRabbitPublisher = confirmedRabbitPublisher;
 		this.objectMapper = objectMapper;
+		this.validationEvents = validationEvents;
 	}
 
 	@RabbitListener(queues = RabbitMQConfig.UPLOAD_QUEUE_NAME, containerFactory = "uploadContainerFactory")
@@ -227,6 +236,8 @@ public class NhostUploadListenerService {
 			updates.put("failureReason", null);
 		}
 		firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+		if (status == ProcessingStatus.FAILED && validationEvents != null)
+			validationEvents.emitAttemptTerminal(metadataId, ProcessingStatus.FAILED);
 		log.info("[{}] Metadata status updated to {}.", metadataId, status);
 
 		if (status == ProcessingStatus.FAILED || status == ProcessingStatus.PROCESSING_QUEUED
@@ -385,6 +396,8 @@ public class NhostUploadListenerService {
 		updates.put("lastUpdated", Timestamp.now());
 		try {
 			firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+			if (validationEvents != null)
+				validationEvents.emitAttemptTerminal(metadataId, ProcessingStatus.FAILED);
 			log.info("[{}] Metadata status updated to FAILED after RabbitMQ rejection.", metadataId);
 			invalidateUserCache(userId);
 		} catch (FirestoreInteractionException e) {

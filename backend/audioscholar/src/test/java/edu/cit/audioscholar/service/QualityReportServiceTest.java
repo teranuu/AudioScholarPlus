@@ -84,6 +84,23 @@ class QualityReportServiceTest {
 		assertThat(report.getIssues()).isEmpty();
 	}
 
+	@Test
+	void decoderFailureCanNeverBecomeAllClear() {
+		QualityReport report = service.analyze("recording-bad", tempDir.resolve("not-audio.mp3"));
+		assertThat(report.getStatus()).isEqualTo("UNAVAILABLE");
+		assertThat(report.getAnalysisStatus()).isEqualTo("FAILED");
+	}
+
+	@Test
+	void reportAndIssueIdsAreStableForSameAttemptAndAudio() throws Exception {
+		Path audio = writeClippedWave("stable.wav", 16_000, 1.0);
+		QualityReport first = service.analyze("recording-stable", audio, "recording-stable:2", "fingerprint");
+		QualityReport second = service.analyze("recording-stable", audio, "recording-stable:2", "fingerprint");
+		assertThat(first.getReportId()).isEqualTo(second.getReportId());
+		assertThat(first.getIssues()).extracting(issue -> issue.getIssueId())
+				.containsExactlyElementsOf(second.getIssues().stream().map(issue -> issue.getIssueId()).toList());
+	}
+
 	private Path writeSineWave(String filename, int sampleRate, double seconds, double frequency, double amplitude)
 			throws Exception {
 		int sampleCount = (int) (sampleRate * seconds);

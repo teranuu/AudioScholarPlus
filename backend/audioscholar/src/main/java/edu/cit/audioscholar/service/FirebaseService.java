@@ -415,6 +415,33 @@ public class FirebaseService {
 		}
 	}
 
+	/** Atomically chooses and stores exactly one terminal event for an attempt. */
+	public boolean createAttemptTerminalEvidence(String metadataCollection, String metadataId, String attemptId,
+			String terminalType, String evidenceCollection, String eventId, Map<String, Object> event) {
+		try {
+			DocumentReference metadataRef = getFirestore().collection(metadataCollection).document(metadataId);
+			DocumentReference eventRef = getFirestore().collection(evidenceCollection).document(eventId);
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot metadata = transaction.get(metadataRef).get();
+				DocumentSnapshot existingEvent = transaction.get(eventRef).get();
+				if (!metadata.exists())
+					return false;
+				if (attemptId.equals(metadata.getString("terminalAttemptId")))
+					return true;
+				if (!existingEvent.exists())
+					transaction.create(eventRef, event);
+				transaction.set(metadataRef, Map.of("terminalAttemptId", attemptId, "terminalEventType", terminalType),
+						SetOptions.merge());
+				return true;
+			}).get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Interrupted storing attempt terminal evidence", e);
+		} catch (ExecutionException e) {
+			throw new FirestoreInteractionException("Could not store attempt terminal evidence", e);
+		}
+	}
+
 	public boolean claimQueuedJob(String collection, String document) {
 		try {
 			DocumentReference ref = getFirestore().collection(collection).document(document);
@@ -428,6 +455,89 @@ public class FirebaseService {
 			}).get();
 		} catch (Exception e) {
 			throw new FirestoreInteractionException("Could not claim queued job", e);
+		}
+	}
+
+	public boolean saveJobIfNonterminal(String collection, String document, Map<String, Object> data) {
+		try {
+			DocumentReference ref = getFirestore().collection(collection).document(document);
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot snapshot = transaction.get(ref).get();
+				if (!snapshot.exists() || isTerminalStatus(snapshot.getString("status")))
+					return false;
+				transaction.set(ref, data, SetOptions.merge());
+				return true;
+			}).get();
+		} catch (Exception e) {
+			throw new FirestoreInteractionException("Could not save nonterminal multi-source job", e);
+		}
+	}
+
+	public boolean transitionJobToTerminal(String collection, String document, Map<String, Object> terminalData,
+			String eventType, String occurrenceKey, List<Integer> objectives, Map<String, Object> payload) {
+		try {
+			DocumentReference ref = getFirestore().collection(collection).document(document);
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot snapshot = transaction.get(ref).get();
+				if (!snapshot.exists() || isTerminalStatus(snapshot.getString("status")))
+					return false;
+				Map<String, Object> update = new HashMap<>(terminalData);
+				update.put("terminalEventPending", true);
+				update.put("terminalEventType", eventType);
+				update.put("terminalEventOccurrenceKey", occurrenceKey);
+				update.put("terminalEventObjectives", objectives);
+				update.put("terminalEventPayload", payload);
+				transaction.set(ref, update, SetOptions.merge());
+				return true;
+			}).get();
+		} catch (Exception e) {
+			throw new FirestoreInteractionException("Could not transition multi-source job to terminal state", e);
+		}
+	}
+
+	private boolean isTerminalStatus(String status) {
+		return "COMPLETE".equals(status) || "FAILED".equals(status);
+	}
+
+	public boolean failJobIfNonterminalAndStale(String collection, String document, Date cutoff) {
+		try {
+			DocumentReference ref = getFirestore().collection(collection).document(document);
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot snapshot = transaction.get(ref).get();
+				if (!snapshot.exists())
+					return false;
+				String status = snapshot.getString("status");
+				if ("COMPLETE".equals(status) || "FAILED".equals(status))
+					return false;
+				Timestamp updatedAt = snapshot.getTimestamp("updatedAt");
+				if (updatedAt == null || !updatedAt.toDate().before(cutoff))
+					return false;
+				Timestamp now = Timestamp.now();
+				Map<String, Object> payload = Map.of("jobId", document, "outcome", "FAILED", "failureStage",
+						"RECONCILIATION", "failureCode", "PROCESSING_TIMEOUT");
+				Map<String, Object> updates = new HashMap<>();
+				updates.put("status", "FAILED");
+				updates.put("failureStage", "RECONCILIATION");
+				updates.put("failureCode", "PROCESSING_TIMEOUT");
+				updates.put("failureDetail", "Job exceeded the configured processing timeout.");
+				updates.put("failureReason", "Job exceeded the configured processing timeout.");
+				updates.put("failedAt", now);
+				updates.put("updatedAt", now);
+				updates.put("finalAttemptCount",
+						snapshot.getLong("processingAttempts") == null ? 0 : snapshot.getLong("processingAttempts"));
+				updates.put("terminalEventPending", true);
+				updates.put("terminalEventType", "JOB_FAILED");
+				updates.put("terminalEventOccurrenceKey", "initial");
+				updates.put("terminalEventObjectives", List.of(9, 12));
+				updates.put("terminalEventPayload", payload);
+				transaction.update(ref, updates);
+				return true;
+			}).get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Could not reconcile stale multi-source job", e);
+		} catch (ExecutionException e) {
+			throw new FirestoreInteractionException("Could not reconcile stale multi-source job", e);
 		}
 	}
 
@@ -845,7 +955,7 @@ public class FirebaseService {
 		}
 	}
 
-	private AudioMetadata fromDocumentSnapshot(DocumentSnapshot document) {
+	AudioMetadata fromDocumentSnapshot(DocumentSnapshot document) {
 		if (document == null || !document.exists()) {
 			log.warn("Attempted to map null or non-existent document snapshot.");
 			return null;
@@ -875,6 +985,13 @@ public class FirebaseService {
 			metadata.setDurationSeconds(getInteger(data, "durationSeconds", document.getId()));
 			metadata.setLastUpdated(getTimestamp(data, "lastUpdated", document.getId()));
 			metadata.setFailureReason(getString(data, "failureReason", document.getId()));
+			metadata.setClientSource(getString(data, "clientSource", document.getId()));
+			metadata.setMeasurementIncomplete(getBoolean(data, "measurementIncomplete", document.getId(), false));
+			metadata.setAudioFingerprint(getString(data, "audioFingerprint", document.getId()));
+			Integer processingAttempt = getInteger(data, "processingAttempt", document.getId());
+			metadata.setProcessingAttempt(processingAttempt == null ? 1 : processingAttempt);
+			metadata.setAttemptId(getString(data, "attemptId", document.getId()));
+			metadata.setStudySessionId(getString(data, "studySessionId", document.getId()));
 
 			String statusStr = getString(data, "status", document.getId());
 			if (StringUtils.hasText(statusStr)) {

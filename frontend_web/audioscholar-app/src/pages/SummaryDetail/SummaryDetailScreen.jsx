@@ -15,6 +15,7 @@ import {
   isTerminalProcessingStatus,
 } from '../../utils/processingStatus';
 import { Header } from '../Home/HomePage';
+import { emitExpandedWarningReceipts, emitVisibleWarningReceipts } from './warningExposure';
 
 const DownloadIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>;
 
@@ -171,14 +172,66 @@ const QualityWarningDetailsPanel = ({ warnings }) => {
   );
 };
 
-const QualityWarningIndicator = ({ warnings }) => {
-  const [expanded, setExpanded] = useState(false);
-  if (!warnings?.length) return null;
+const StudySessionCode = ({ value }) => {
+  if (!value) return null;
   return (
-    <span className="inline-flex flex-col align-middle">
+    <div className="rounded-md border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">
+      <div className="font-semibold">Validation study code</div>
+      <div className="mt-1 flex items-center gap-2">
+        <code className="break-all">{value}</code>
+        <button type="button" title="Copy study code" onClick={() => navigator.clipboard?.writeText(value)}
+          className="rounded p-1 hover:bg-blue-100"><FiCopy /></button>
+      </div>
+      <p className="mt-1 text-xs">Copy this anonymous code into the external questionnaire.</p>
+    </div>
+  );
+};
+
+const sendWarningDisplayReceipt = async (summaryId, warningId, displayState) => {
+  const token = localStorage.getItem('AuthToken');
+  if (!token || !summaryId || !warningId) return;
+  try {
+    await axios.post(
+      `${API_BASE_URL}api/summaries/${summaryId}/warning-indicators/${warningId}/display`,
+      { displayState },
+      { headers: { Authorization: `Bearer ${token}`, 'X-AudioScholar-Client': 'WEB' } },
+    );
+  } catch (error) {
+    // Exposure telemetry is intentionally best-effort and must never hide or break a warning.
+    console.debug('Warning display receipt was not recorded:', error);
+  }
+};
+
+const QualityWarningIndicator = ({ warnings, summaryId }) => {
+  const [expanded, setExpanded] = useState(false);
+  const badgeRef = useRef(null);
+  const visibleSent = useRef(new Set());
+  const expandedSent = useRef(new Set());
+
+  useEffect(() => {
+    const node = badgeRef.current;
+    if (!node || !warnings?.length || !('IntersectionObserver' in window)) return undefined;
+    const observer = new IntersectionObserver(([entry]) => {
+      const sent = emitVisibleWarningReceipts(entry, warnings, visibleSent.current,
+        (warningId, state) => sendWarningDisplayReceipt(summaryId, warningId, state));
+      if (sent) observer.disconnect();
+    }, { threshold: 0.5 });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [warnings, summaryId]);
+
+  if (!warnings?.length) return null;
+  const toggleExpanded = () => {
+    const opening = !expanded;
+    setExpanded(opening);
+    if (opening) emitExpandedWarningReceipts(warnings, expandedSent.current,
+      (warningId, state) => sendWarningDisplayReceipt(summaryId, warningId, state));
+  };
+  return (
+    <span ref={badgeRef} className="inline-flex flex-col align-middle">
       <button
         type="button"
-        onClick={() => setExpanded((value) => !value)}
+        onClick={toggleExpanded}
         className="ml-2 inline-flex items-center rounded-full bg-yellow-100 px-2 py-0.5 text-xs font-medium text-yellow-800 hover:bg-yellow-200"
         title="Show warning details"
       >
@@ -193,7 +246,7 @@ const QualityWarningIndicator = ({ warnings }) => {
 const warningsForKeyPoint = (warnings, keyPointId) => warnings.filter((warning) => warning.keyPointId === keyPointId);
 const warningsForFlashcard = (warnings, cardId) => warnings.filter((warning) => warning.cardId === cardId);
 
-const SummaryKeyPointList = ({ keyPoints, summaryKeyPoints, warningIndicators }) => {
+const SummaryKeyPointList = ({ keyPoints, summaryKeyPoints, warningIndicators, summaryId }) => {
   const items = summaryKeyPoints?.length
     ? summaryKeyPoints.map((item) => ({ key: item.keyPointId || item.text, id: item.keyPointId, text: item.text }))
     : (keyPoints || []).map((text, index) => ({ key: index, id: null, text }));
@@ -207,7 +260,7 @@ const SummaryKeyPointList = ({ keyPoints, summaryKeyPoints, warningIndicators })
         {items.map((item) => (
           <li key={item.key}>
             <span>{item.text}</span>
-            <QualityWarningIndicator warnings={item.id ? warningsForKeyPoint(warningIndicators, item.id) : []} />
+            <QualityWarningIndicator summaryId={summaryId} warnings={item.id ? warningsForKeyPoint(warningIndicators, item.id) : []} />
           </li>
         ))}
       </ul>
@@ -215,7 +268,7 @@ const SummaryKeyPointList = ({ keyPoints, summaryKeyPoints, warningIndicators })
   );
 };
 
-const FlashcardViewer = ({ flashcards, warningIndicators = [] }) => {
+const FlashcardViewer = ({ flashcards, warningIndicators = [], summaryId }) => {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
 
@@ -260,7 +313,7 @@ const FlashcardViewer = ({ flashcards, warningIndicators = [] }) => {
             Source: {[currentCard.sourceStartTime, currentCard.sourceEndTime].filter(Boolean).join(' - ')}
           </p>
         )}
-        <QualityWarningIndicator warnings={warningsForFlashcard(warningIndicators, currentCard.cardId)} />
+        <QualityWarningIndicator summaryId={summaryId} warnings={warningsForFlashcard(warningIndicators, currentCard.cardId)} />
       </button>
 
       <div className="mt-4 grid grid-cols-2 gap-3">
@@ -1343,8 +1396,9 @@ const SummaryDetailScreen = () => {
                         return (
                           <>
                       <OutputTypeBadge outputType={outputType} status={recordingData?.status} />
+                      <StudySessionCode value={recordingData?.studySessionId} />
                       <QualityReportSection report={summaryData.qualityReport || recordingData?.qualityReport} />
-                      {shouldShowFlashcards && <FlashcardViewer flashcards={summaryData.flashcards} warningIndicators={warningIndicators} />}
+                      {shouldShowFlashcards && <FlashcardViewer summaryId={summaryData.summaryId} flashcards={summaryData.flashcards} warningIndicators={warningIndicators} />}
                       {shouldShowSummaryText && <SummaryContentViewer content={summaryData.formattedSummaryText} />}
                       {!shouldShowFlashcards && !summaryData.formattedSummaryText && <SummaryContentViewer />}
                           </>
@@ -1357,6 +1411,7 @@ const SummaryDetailScreen = () => {
                         keyPoints={summaryData.keyPoints}
                         summaryKeyPoints={summaryData.summaryKeyPoints}
                         warningIndicators={warningIndicators}
+                        summaryId={summaryData.summaryId}
                       />
 
                       {summaryData.glossary && summaryData.glossary.length > 0 && (

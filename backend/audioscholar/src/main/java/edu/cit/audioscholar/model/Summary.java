@@ -19,6 +19,8 @@ public class Summary {
 	private List<Map<String, String>> glossary;
 	private List<Flashcard> flashcards;
 	private String formattedSummaryText;
+	private String summaryEvidenceVersion;
+	private boolean warningEvidenceStale;
 
 	@ServerTimestamp
 	private Date createdAt;
@@ -143,6 +145,18 @@ public class Summary {
 	public void setFormattedSummaryText(String formattedSummaryText) {
 		this.formattedSummaryText = formattedSummaryText;
 	}
+	public String getSummaryEvidenceVersion() {
+		return summaryEvidenceVersion;
+	}
+	public void setSummaryEvidenceVersion(String value) {
+		summaryEvidenceVersion = value;
+	}
+	public boolean isWarningEvidenceStale() {
+		return warningEvidenceStale;
+	}
+	public void setWarningEvidenceStale(boolean value) {
+		warningEvidenceStale = value;
+	}
 
 	public String getContent() {
 		return formattedSummaryText;
@@ -188,6 +202,8 @@ public class Summary {
 		map.put("glossary", glossary);
 		map.put("flashcards", flashcards != null ? flashcards.stream().map(Flashcard::toMap).toList() : List.of());
 		map.put("formattedSummaryText", formattedSummaryText);
+		map.put("summaryEvidenceVersion", summaryEvidenceVersion);
+		map.put("warningEvidenceStale", warningEvidenceStale);
 		map.put("createdAt", createdAt);
 		map.put("updatedAt", updatedAt);
 		return map;
@@ -203,6 +219,8 @@ public class Summary {
 		summary.userId = (String) map.get("userId");
 		summary.outputType = (String) map.get("outputType");
 		summary.status = (String) map.get("status");
+		summary.summaryEvidenceVersion = (String) map.get("summaryEvidenceVersion");
+		summary.warningEvidenceStale = Boolean.TRUE.equals(map.get("warningEvidenceStale"));
 		Object qualityReportObj = map.get("qualityReport");
 		if (qualityReportObj instanceof Map) {
 			@SuppressWarnings("unchecked")

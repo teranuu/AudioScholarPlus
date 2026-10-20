@@ -1,5 +1,6 @@
 package edu.cit.audioscholar.controller;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 
@@ -29,6 +30,7 @@ import edu.cit.audioscholar.model.Summary;
 import edu.cit.audioscholar.service.FirebaseService;
 import edu.cit.audioscholar.service.RecordingService;
 import edu.cit.audioscholar.service.SummaryService;
+import edu.cit.audioscholar.service.WarningIndicatorService;
 
 @RestController
 @RequestMapping("/api")
@@ -39,12 +41,14 @@ public class SummaryController {
 	private final SummaryService summaryService;
 	private final RecordingService recordingService;
 	private final FirebaseService firebaseService;
+	private final WarningIndicatorService warningIndicatorService;
 
 	public SummaryController(SummaryService summaryService, RecordingService recordingService,
-			FirebaseService firebaseService) {
+			FirebaseService firebaseService, WarningIndicatorService warningIndicatorService) {
 		this.summaryService = summaryService;
 		this.recordingService = recordingService;
 		this.firebaseService = firebaseService;
+		this.warningIndicatorService = warningIndicatorService;
 	}
 
 	@GetMapping("/summaries/{summaryId}")
@@ -299,6 +303,9 @@ public class SummaryController {
 			}
 			if (request.getKeyPoints() != null) {
 				summary.setKeyPoints(request.getKeyPoints());
+				// Structured points carry the old source ranges. They must not be reused after
+				// the participant changes the corresponding text.
+				summary.setSummaryKeyPoints(List.of());
 				updated = true;
 			}
 			if (request.getGlossary() != null) {
@@ -307,6 +314,8 @@ public class SummaryController {
 			}
 
 			if (updated) {
+				if (warningIndicatorService != null)
+					warningIndicatorService.markEvidenceStale(summary);
 				summaryService.updateSummary(summary);
 				log.info("Successfully updated summary {}", summaryId);
 			}

@@ -13,8 +13,15 @@ public class StorageService {
 		this.nhostStorageService = nhostStorageService;
 	}
 
-	public String storeSourceFile(Path path, String originalFilename, String contentType) throws IOException {
-		String fileId = nhostStorageService.uploadFile(path.toFile(), originalFilename, contentType);
-		return nhostStorageService.getPublicUrl(fileId);
+	public StoredObject storeSourceFile(Path path, String originalFilename, String contentType) throws IOException {
+		String objectId = nhostStorageService.uploadFile(path.toFile(), originalFilename, contentType);
+		return new StoredObject(objectId, nhostStorageService.getPublicUrl(objectId));
+	}
+
+	public void retrieveSourceFile(String objectId, Path targetPath) throws IOException {
+		nhostStorageService.downloadFileToPath(objectId, targetPath);
+	}
+
+	public record StoredObject(String objectId, String compatibilityUrl) {
 	}
 }

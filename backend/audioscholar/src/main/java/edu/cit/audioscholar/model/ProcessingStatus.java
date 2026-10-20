@@ -4,6 +4,7 @@ package edu.cit.audioscholar.model;
  * Represents the various stages an audio file goes through during processing.
  */
 public enum ProcessingStatus {
+	ACCEPTED, // Multi-source request validated and accepted before durable queueing
 	UPLOAD_PENDING, // Initial state after request, before Nhost upload starts
 	UPLOAD_IN_PROGRESS, // File(s) currently being uploaded to Nhost
 	UPLOADED, // Both files successfully uploaded to Nhost

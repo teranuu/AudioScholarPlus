@@ -33,8 +33,11 @@ public class SourceFileService {
 		sourceFile.setFileType(file.getContentType());
 		sourceFile.setFileSize(file.getSize());
 		sourceFile.setUploadStatus("UPLOADING");
-		sourceFile.setFileUrl(
-				storageService.storeSourceFile(localPath, file.getOriginalFilename(), file.getContentType()));
+		StorageService.StoredObject stored = storageService.storeSourceFile(localPath, file.getOriginalFilename(),
+				file.getContentType());
+		sourceFile.setStorageObjectId(stored.objectId());
+		// Kept for backward-compatible clients only. Workers retrieve by object ID.
+		sourceFile.setFileUrl(stored.compatibilityUrl());
 		sourceFile.setUploadStatus("UPLOADED");
 		sourceFile.setUploadCompletedAt(new Date());
 		return sourceFile;
@@ -45,5 +48,9 @@ public class SourceFileService {
 
 	public SourceFile save(SourceFile sourceFile) {
 		return sourceFileRepository.save(sourceFile);
+	}
+
+	public void retrieveToPath(String storageObjectId, Path targetPath) throws IOException {
+		storageService.retrieveSourceFile(storageObjectId, targetPath);
 	}
 }

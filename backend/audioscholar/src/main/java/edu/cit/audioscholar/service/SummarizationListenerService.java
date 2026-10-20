@@ -67,9 +67,12 @@ public class SummarizationListenerService {
 	private final RobustTaskExecutor robustTaskExecutor;
 	private final TranscriptClarityService transcriptClarityService;
 	private final ProcessingStageClaimService stageClaimService;
+	private final WarningIndicatorService warningIndicatorService;
 	private final Map<String, Long> processedMessageIds = new ConcurrentHashMap<>();
 	private final Map<String, Lock> metadataLocks = new ConcurrentHashMap<>();
 	private static final long MESSAGE_ID_EXPIRATION_TIME = 10 * 60 * 1000;
+	@org.springframework.beans.factory.annotation.Autowired(required = false)
+	private ValidationEventService validationEvents;
 
 	@Value("${gemini.summarization.max-attempts:2}")
 	private int summarizationMaxAttempts;
@@ -83,6 +86,18 @@ public class SummarizationListenerService {
 			@Lazy RecordingService recordingService, ConfirmedRabbitPublisher confirmedRabbitPublisher,
 			RobustTaskExecutor robustTaskExecutor, TranscriptClarityService transcriptClarityService,
 			ProcessingStageClaimService stageClaimService) {
+		this(firebaseService, geminiService, nhostStorageService, summaryService, cacheManager, objectMapper,
+				tempDirStr, recordingService, confirmedRabbitPublisher, robustTaskExecutor, transcriptClarityService,
+				stageClaimService, null);
+	}
+
+	@org.springframework.beans.factory.annotation.Autowired
+	public SummarizationListenerService(FirebaseService firebaseService, GeminiService geminiService,
+			NhostStorageService nhostStorageService, @Lazy SummaryService summaryService, CacheManager cacheManager,
+			ObjectMapper objectMapper, @Value("${app.temp-file-dir:./temp_files}") String tempDirStr,
+			@Lazy RecordingService recordingService, ConfirmedRabbitPublisher confirmedRabbitPublisher,
+			RobustTaskExecutor robustTaskExecutor, TranscriptClarityService transcriptClarityService,
+			ProcessingStageClaimService stageClaimService, @Lazy WarningIndicatorService warningIndicatorService) {
 		this.firebaseService = firebaseService;
 		this.geminiService = geminiService;
 		this.nhostStorageService = nhostStorageService;
@@ -95,6 +110,7 @@ public class SummarizationListenerService {
 		this.robustTaskExecutor = robustTaskExecutor;
 		this.transcriptClarityService = transcriptClarityService;
 		this.stageClaimService = stageClaimService;
+		this.warningIndicatorService = warningIndicatorService;
 		try {
 			Files.createDirectories(this.tempDir);
 		} catch (IOException e) {
@@ -707,6 +723,16 @@ public class SummarizationListenerService {
 		try {
 			log.info("[{}] Saving summary with ID {} to Firestore", metadataId, summary.getSummaryId());
 			summaryService.createSummary(summary);
+			if (warningIndicatorService != null) {
+				try {
+					warningIndicatorService.generateWarningIndicators(summary.getSummaryId());
+				} catch (Exception warningFailure) {
+					log.error("[{}] Warning evidence generation failed for summary {}", metadataId,
+							summary.getSummaryId(), warningFailure);
+					firebaseService.updateDataWithMap(firebaseService.getAudioMetadataCollectionName(), metadataId,
+							Map.of("measurementIncomplete", true));
+				}
+			}
 			log.info("[{}] Successfully saved summary with ID {}", metadataId, summary.getSummaryId());
 		} catch (ExecutionException | InterruptedException e) {
 			log.error("[{}] Error saving summary to Firestore: {}", metadataId, e.getMessage(), e);
@@ -919,6 +945,10 @@ public class SummarizationListenerService {
 
 		try {
 			firebaseService.updateData(firebaseService.getAudioMetadataCollectionName(), metadataId, updates);
+			if ((status == ProcessingStatus.SUMMARY_FAILED || status == ProcessingStatus.FAILED
+					|| status == ProcessingStatus.PROCESSING_HALTED_NO_SPEECH
+					|| status == ProcessingStatus.PROCESSING_HALTED_UNSUITABLE_CONTENT) && validationEvents != null)
+				validationEvents.emitAttemptTerminal(metadataId, status);
 
 			try {
 				Map<String, Object> updatedDataMap = firebaseService
