@@ -44,8 +44,18 @@ public class MultiSourceJobRepository {
 		firebaseService.updateDataWithMap(COLLECTION_NAME, jobId, Map.of("terminalEventPending", false));
 	}
 
-	public List<Map<String, Object>> findAll() {
-		return firebaseService.getAllData(COLLECTION_NAME);
+	public List<Map<String, Object>> findStaleNonterminal(List<String> activeStatuses, Date cutoff, int limit) {
+		return firebaseService.queryCollectionWhereInBefore(COLLECTION_NAME, "status", activeStatuses, "updatedAt",
+				cutoff, limit);
+	}
+
+	public List<Map<String, Object>> findPendingTerminalEvents(int limit) {
+		return firebaseService.queryCollectionLimited(COLLECTION_NAME, "terminalEventPending", true, limit);
+	}
+
+	public boolean tryAcquireReconciliationLease(String owner, Date leaseUntil) {
+		return firebaseService.tryAcquireLease("systemMaintenanceLocks", "multiSourceReconciliation", owner,
+				leaseUntil);
 	}
 
 	public boolean failIfNonterminalAndStale(String jobId, Date cutoff) {

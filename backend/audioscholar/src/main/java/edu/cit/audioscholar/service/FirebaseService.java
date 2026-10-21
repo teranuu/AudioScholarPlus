@@ -600,6 +600,66 @@ public class FirebaseService {
 		}
 	}
 
+	public List<Map<String, Object>> queryCollectionWhereInBefore(String collection, String statusField,
+			List<String> statuses, String dateField, Date cutoff, int limit) {
+		if (statuses == null || statuses.isEmpty() || cutoff == null) {
+			return Collections.emptyList();
+		}
+		int boundedLimit = Math.max(1, Math.min(limit, 50));
+		try {
+			QuerySnapshot snapshot = getFirestore().collection(collection).whereIn(statusField, statuses)
+					.whereLessThanOrEqualTo(dateField, cutoff).orderBy(dateField, Direction.ASCENDING)
+					.limit(boundedLimit).get().get();
+			return documentsWithIds(snapshot.getDocuments());
+		} catch (ExecutionException | InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Error querying bounded stale documents from " + collection, e);
+		}
+	}
+
+	public List<Map<String, Object>> queryCollectionLimited(String collection, String field, Object value, int limit) {
+		int boundedLimit = Math.max(1, Math.min(limit, 50));
+		try {
+			QuerySnapshot snapshot = getFirestore().collection(collection).whereEqualTo(field, value)
+					.limit(boundedLimit).get().get();
+			return documentsWithIds(snapshot.getDocuments());
+		} catch (ExecutionException | InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Error querying bounded documents from " + collection, e);
+		}
+	}
+
+	public boolean tryAcquireLease(String collection, String document, String owner, Date leaseUntil) {
+		DocumentReference reference = getFirestore().collection(collection).document(document);
+		try {
+			return getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot snapshot = transaction.get(reference).get();
+				Timestamp now = Timestamp.now();
+				Timestamp existingLease = snapshot.exists() ? snapshot.getTimestamp("leaseUntil") : null;
+				if (existingLease != null && existingLease.compareTo(now) > 0) {
+					return false;
+				}
+				transaction.set(reference,
+						Map.of("owner", owner, "acquiredAt", now, "leaseUntil", Timestamp.of(leaseUntil)),
+						SetOptions.merge());
+				return true;
+			}).get();
+		} catch (ExecutionException | InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Could not acquire maintenance lease " + document, e);
+		}
+	}
+
+	private List<Map<String, Object>> documentsWithIds(List<QueryDocumentSnapshot> documents) {
+		List<Map<String, Object>> results = new ArrayList<>();
+		for (QueryDocumentSnapshot document : documents) {
+			Map<String, Object> data = document.getData();
+			data.putIfAbsent("id", document.getId());
+			results.add(data);
+		}
+		return results;
+	}
+
 	@SuppressWarnings("null")
 	public List<Map<String, Object>> getAllData(String collection) {
 		try {
