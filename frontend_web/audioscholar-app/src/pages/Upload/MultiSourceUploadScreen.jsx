@@ -30,6 +30,9 @@ const DOCUMENT_ACCEPT = VALID_DOCUMENT_EXTENSIONS.map((ext) => `.${ext}`).join('
 const MEDIA_LABEL = VALID_MEDIA_EXTENSIONS.join(', ').toUpperCase();
 const DOCUMENT_LABEL = VALID_DOCUMENT_EXTENSIONS.join(', ').toUpperCase();
 const MAX_TOTAL_SOURCES = 5;
+const JOB_POLL_INITIAL_DELAY_MS = 2000;
+const JOB_POLL_MAX_DELAY_MS = 15000;
+const JOB_POLL_MAX_DURATION_MS = 30 * 60 * 1000;
 
 const sourceLabel = (index) => `Source ${String.fromCharCode(65 + index)}`;
 const extensionOf = (file) => file.name.split('.').pop().toLowerCase();
@@ -259,15 +262,21 @@ const MultiSourceUploadScreen = () => {
         throw new Error(data.message || `Upload failed with status ${response.status}`);
       }
 	  let current = data;
+	  let pollDelayMs = JOB_POLL_INITIAL_DELAY_MS;
+	  const pollingStartedAt = Date.now();
 	  const terminal = new Set(['COMPLETE', 'FAILED']);
 	  while (current.jobId && !terminal.has(current.status)) {
-		await new Promise((resolve) => setTimeout(resolve, 2000));
+		if (Date.now() - pollingStartedAt >= JOB_POLL_MAX_DURATION_MS) {
+		  throw new Error('Processing is taking longer than expected. It will continue in the background; check the recordings page later.');
+		}
+		await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
 		const poll = await fetch(`${API_BASE_URL}api/audio/multi-source/${current.jobId}`, {
 		  headers: { Authorization: `Bearer ${token}`, 'X-AudioScholar-Client': 'WEB' },
 		});
 		if (!poll.ok) throw new Error(`Could not check processing status (${poll.status}).`);
 		current = await poll.json();
 		setJob(current);
+		pollDelayMs = Math.min(Math.ceil(pollDelayMs * 1.5), JOB_POLL_MAX_DELAY_MS);
 	  }
 	  if (current.status === 'FAILED') throw new Error(current.failureReason || 'Multi-source processing failed.');
 	  setJob(current);

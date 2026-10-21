@@ -14,6 +14,9 @@ import {
 import { Header } from '../Home/HomePage';
 
 const UPLOAD_TIMEOUT_SECONDS = 10 * 60;
+const POLL_INITIAL_DELAY_MS = 15000;
+const POLL_MAX_DELAY_MS = 60000;
+const POLL_MAX_DURATION_MS = 30 * 60 * 1000;
 
 const canRetryProcessing = (recording) => {
     const statusUpper = recording.status?.toUpperCase() ?? '';
@@ -92,9 +95,9 @@ const RecordingList = () => {
 
     const startPolling = useCallback((initialData) => {
         if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current);
+            clearTimeout(pollIntervalRef.current);
             pollIntervalRef.current = null;
-            console.log("Cleared existing poll interval");
+            console.log("Cleared existing poll timer");
         }
 
         const needsPolling = initialData?.some(rec => {
@@ -120,12 +123,24 @@ const RecordingList = () => {
             return;
         }
 
-        console.log("Starting polling for recordings not in a terminal or timed-out upload state...");
-        pollIntervalRef.current = setInterval(async () => {
-            if (!isMountedRef.current) {
-                console.log("Component unmounted, stopping poll interval.");
-                clearInterval(pollIntervalRef.current);
+        console.log("Starting bounded polling for recordings not in a terminal or timed-out upload state...");
+        const pollingStartedAt = Date.now();
+        let nextDelayMs = POLL_INITIAL_DELAY_MS;
+
+        const scheduleNextPoll = (poll) => {
+            if (!isMountedRef.current || Date.now() - pollingStartedAt >= POLL_MAX_DURATION_MS) {
                 pollIntervalRef.current = null;
+                console.log("Recording status polling stopped after reaching its maximum duration.");
+                return;
+            }
+            pollIntervalRef.current = setTimeout(poll, nextDelayMs);
+            nextDelayMs = Math.min(Math.ceil(nextDelayMs * 1.5), POLL_MAX_DELAY_MS);
+        };
+
+        const poll = async () => {
+            pollIntervalRef.current = null;
+            if (!isMountedRef.current) {
+                console.log("Component unmounted, stopping polling.");
                 return;
             }
             console.log("Polling for updates...");
@@ -161,14 +176,18 @@ const RecordingList = () => {
                     });
 
                     if (!stillNeedsPolling) {
-                        clearInterval(pollIntervalRef.current);
                         pollIntervalRef.current = null;
+                    } else {
+                        scheduleNextPoll(poll);
                     }
                 }
             } catch (err) {
                 console.error("Error during poll:", err);
+                scheduleNextPoll(poll);
             }
-        }, 15000);
+        };
+
+        scheduleNextPoll(poll);
 
     }, []);
 
@@ -190,10 +209,10 @@ const RecordingList = () => {
         });
 
         return () => {
-            console.log("RecordingList component unmounting, clearing interval.");
+            console.log("RecordingList component unmounting, clearing poll timer.");
             isMountedRef.current = false;
             if (pollIntervalRef.current) {
-                clearInterval(pollIntervalRef.current);
+                clearTimeout(pollIntervalRef.current);
                 pollIntervalRef.current = null;
             }
         };
@@ -339,7 +358,7 @@ const RecordingList = () => {
         
         // Stop polling immediately since list is empty
         if (pollIntervalRef.current) {
-            clearInterval(pollIntervalRef.current);
+            clearTimeout(pollIntervalRef.current);
             pollIntervalRef.current = null;
         }
 

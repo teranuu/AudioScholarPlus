@@ -20,6 +20,8 @@ import { emitExpandedWarningReceipts, emitVisibleWarningReceipts } from './warni
 const DownloadIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>;
 
 const METADATA_POLL_INTERVAL_MS = 15000;
+const METADATA_POLL_MAX_INTERVAL_MS = 60000;
+const METADATA_POLL_MAX_DURATION_MS = 30 * 60 * 1000;
 
 const canRetryProcessing = (recording) => {
   const statusUpper = recording?.status?.toUpperCase() ?? '';
@@ -917,7 +919,7 @@ const SummaryDetailScreen = () => {
 
   useEffect(() => {
     if (metadataPollIntervalRef.current) {
-      clearInterval(metadataPollIntervalRef.current);
+      clearTimeout(metadataPollIntervalRef.current);
       metadataPollIntervalRef.current = null;
     }
 
@@ -925,13 +927,32 @@ const SummaryDetailScreen = () => {
       return undefined;
     }
 
-    metadataPollIntervalRef.current = setInterval(() => {
-      fetchRecordingMetadataByRecordingId(recordingData.recordingId);
-    }, METADATA_POLL_INTERVAL_MS);
+    let cancelled = false;
+    let nextDelayMs = METADATA_POLL_INTERVAL_MS;
+    const pollingStartedAt = Date.now();
+
+    const poll = async () => {
+      metadataPollIntervalRef.current = null;
+      if (cancelled) return;
+      if (Date.now() - pollingStartedAt >= METADATA_POLL_MAX_DURATION_MS) {
+        setSummaryError((current) => current || 'Processing is continuing in the background. Refresh later for the latest status.');
+        return;
+      }
+
+      const freshRecording = await fetchRecordingMetadataByRecordingId(recordingData.recordingId);
+      if (cancelled || (freshRecording && !isActiveProcessingStatus(freshRecording.status))) return;
+
+      metadataPollIntervalRef.current = setTimeout(poll, nextDelayMs);
+      nextDelayMs = Math.min(Math.ceil(nextDelayMs * 1.5), METADATA_POLL_MAX_INTERVAL_MS);
+    };
+
+    metadataPollIntervalRef.current = setTimeout(poll, nextDelayMs);
+    nextDelayMs = Math.min(Math.ceil(nextDelayMs * 1.5), METADATA_POLL_MAX_INTERVAL_MS);
 
     return () => {
+      cancelled = true;
       if (metadataPollIntervalRef.current) {
-        clearInterval(metadataPollIntervalRef.current);
+        clearTimeout(metadataPollIntervalRef.current);
         metadataPollIntervalRef.current = null;
       }
     };

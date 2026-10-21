@@ -9,54 +9,86 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-
 class MultiSourceOperationsServiceTest {
+	private MultiSourceJobRepository jobs;
+	private ValidationEventService events;
+	private MultiSourceOperationsMetrics metrics;
+	private MultiSourceOperationsService service;
+
+	@BeforeEach
+	void setUp() {
+		jobs = mock(MultiSourceJobRepository.class);
+		events = mock(ValidationEventService.class);
+		metrics = mock(MultiSourceOperationsMetrics.class);
+		service = new MultiSourceOperationsService(jobs, events, metrics, Duration.ofMinutes(30),
+				Duration.ofMinutes(14), 25, "test-worker");
+		when(jobs.tryAcquireReconciliationLease(eq("test-worker"), any())).thenReturn(true);
+		when(jobs.findStaleNonterminal(anyList(), any(), eq(25))).thenReturn(List.of());
+		when(jobs.findPendingTerminalEvents(25)).thenReturn(List.of());
+	}
+
 	@Test
-	void historicalTerminalJobWithoutPendingMarkerIsNotReplayed() {
-		MultiSourceJobRepository jobs = mock(MultiSourceJobRepository.class);
-		FirebaseService firebase = mock(FirebaseService.class);
-		ValidationEventService events = mock(ValidationEventService.class);
-		Map<String, Object> historical = Map.of("jobId", "historical-job", "status", "FAILED", "clientSource", "WEB",
-				"sourceCount", 0);
-		when(jobs.findAll()).thenReturn(List.of(historical));
-		when(firebase.getAllData(anyString())).thenReturn(List.of());
-		MultiSourceOperationsService service = new MultiSourceOperationsService(jobs, firebase, events,
-				new SimpleMeterRegistry(), Duration.ofMinutes(30));
+	void historicalTerminalJobWithoutPendingMarkerIsNotLoadedOrReplayed() {
+		service.reconcile();
 
-		service.reconcileAndMeasure();
-
+		verify(jobs).findStaleNonterminal(anyList(), any(), eq(25));
+		verify(jobs).findPendingTerminalEvents(25);
 		verify(events, never()).emit(anyString(), anyString(), anyString(), anyString(), anyList(), anyString(),
 				anyMap(), anyString());
 	}
 
 	@Test
-	void staleJobIsFailedAndItsPendingTerminalEventIsPublished() {
-		MultiSourceJobRepository jobs = mock(MultiSourceJobRepository.class);
-		FirebaseService firebase = mock(FirebaseService.class);
-		ValidationEventService events = mock(ValidationEventService.class);
-		Map<String, Object> stale = Map.of("jobId", "job-1", "status", "PROCESSING", "clientSource", "WEB",
-				"sourceCount", 0, "updatedAt", Date.from(Instant.now().minus(Duration.ofHours(1))));
-		Map<String, Object> failed = Map.of("jobId", "job-1", "status", "FAILED", "clientSource", "WEB", "sourceCount",
-				0, "terminalEventPending", false);
-		when(jobs.findAll()).thenReturn(List.of(stale), List.of(failed));
+	void staleJobIsFailedAndItsTerminalEventIsPublished() {
+		Map<String, Object> stale = Map.of("jobId", "job-1", "status", "PROCESSING", "clientSource", "WEB", "updatedAt",
+				Date.from(Instant.now().minus(Duration.ofHours(1))));
+		when(jobs.findStaleNonterminal(anyList(), any(), eq(25))).thenReturn(List.of(stale));
 		when(jobs.failIfNonterminalAndStale(eq("job-1"), any())).thenReturn(true);
 		when(events.emit(eq("job-1"), eq("MULTI_SOURCE"), eq("WEB"), eq("JOB_FAILED"), anyList(), eq("initial"),
 				anyMap(), eq("multiSourceJobs"))).thenReturn(true);
-		when(firebase.getAllData(anyString())).thenAnswer(invocation -> {
-			String collection = invocation.getArgument(0);
-			if ("validationEvents".equals(collection))
-				return List.of(Map.of("workflowId", "job-1", "eventType", "JOB_FAILED"));
-			return List.of();
-		});
-		MultiSourceOperationsService service = new MultiSourceOperationsService(jobs, firebase, events,
-				new SimpleMeterRegistry(), Duration.ofMinutes(30));
 
-		service.reconcileAndMeasure();
+		service.reconcile();
 
 		verify(jobs).failIfNonterminalAndStale(eq("job-1"), any());
 		verify(jobs).markTerminalEventPublished("job-1");
+		verify(metrics).recordRun(eq(1L), eq(1L), eq(0L), anyLong());
+	}
+
+	@Test
+	void pendingTerminalEventIsRepublishedWithoutScanningHistoricalCollections() {
+		Map<String, Object> pending = Map.of("jobId", "job-2", "status", "COMPLETE", "clientSource", "WEB",
+				"terminalEventPending", true);
+		when(jobs.findPendingTerminalEvents(25)).thenReturn(List.of(pending));
+		when(events.emit(eq("job-2"), eq("MULTI_SOURCE"), eq("WEB"), eq("JOB_COMPLETED"), anyList(), eq("initial"),
+				anyMap(), eq("multiSourceJobs"))).thenReturn(true);
+
+		service.reconcile();
+
+		verify(jobs).markTerminalEventPublished("job-2");
+		verify(metrics).recordRun(eq(1L), eq(0L), eq(1L), anyLong());
+	}
+
+	@Test
+	void leaseOwnedByAnotherInstanceSkipsAllFirestoreQueries() {
+		when(jobs.tryAcquireReconciliationLease(eq("test-worker"), any())).thenReturn(false);
+
+		service.reconcile();
+
+		verify(jobs, never()).findStaleNonterminal(anyList(), any(), anyInt());
+		verify(jobs, never()).findPendingTerminalEvents(anyInt());
+		verify(metrics).recordSkippedRun();
+	}
+
+	@Test
+	void configuredQueryLimitIsHardCappedAtFifty() {
+		MultiSourceOperationsService capped = new MultiSourceOperationsService(jobs, events, metrics,
+				Duration.ofMinutes(30), Duration.ofMinutes(14), 500, "test-worker");
+
+		capped.reconcile();
+
+		verify(jobs).findStaleNonterminal(anyList(), any(), eq(50));
+		verify(jobs).findPendingTerminalEvents(50);
 	}
 }

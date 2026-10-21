@@ -16,6 +16,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -34,6 +35,7 @@ import edu.cit.audioscholar.service.ValidationEventService;
 @RestController
 @RequestMapping("/api/admin/validation")
 @PreAuthorize("hasRole('ADMIN')")
+@ConditionalOnProperty(name = "validation.export.enabled", havingValue = "true", matchIfMissing = false)
 public class ValidationExportController {
 	private static final long MERGE_LATENCY_LIMIT_MS_EXCLUSIVE = 120_000;
 	private static final Set<String> VALID_OUTPUT_TYPES = Set.of("NOTES", "STUDY_MATERIAL", "REVIEW_MATERIAL");

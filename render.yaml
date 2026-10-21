@@ -12,6 +12,14 @@ services:
         value: https://audioscholar.vercel.app
       - key: FIREBASE_SERVICE_ACCOUNT_BASE64
         sync: false
+      - key: MULTI_SOURCE_RECONCILIATION_ENABLED
+        value: "true"
+      - key: MULTI_SOURCE_RECONCILIATION_INTERVAL_MS
+        value: "900000"
+      - key: MULTI_SOURCE_RECONCILIATION_MAX_JOBS_PER_RUN
+        value: "25"
+      - key: VALIDATION_EXPORT_ENABLED
+        value: "false"
       - key: JWT_SECRET
         sync: false
       - key: NHOST_STORAGE_URL
