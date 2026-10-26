@@ -70,9 +70,9 @@ class ValidationEvaluatorTest {
 	@Test
 	void t7RequiresViewportReceiptAndT8CountsExpertRejectionAsFailure() throws Exception {
 		String export = manifest("warnings") + row("warningMappings",
-				"{\"summaryId\":\"s1\",\"summaryEvidenceVersion\":\"v1\",\"itemId\":\"k1\",\"decision\":\"OVERLAP\",\"evidenceSource\":\"PROCESSING\",\"stale\":false}")
+				"{\"summaryId\":\"s1\",\"summaryEvidenceVersion\":\"v1\",\"itemId\":\"k1\",\"issueId\":\"issue-1\",\"decision\":\"OVERLAP\",\"evidenceSource\":\"PROCESSING\",\"stale\":false}")
 				+ row("warningIndicators",
-						"{\"warningId\":\"w1\",\"summaryId\":\"s1\",\"summaryEvidenceVersion\":\"v1\",\"keyPointId\":\"k1\",\"generationStatus\":\"DISPLAYABLE\",\"evidenceSource\":\"PROCESSING\",\"stale\":false}")
+						"{\"warningId\":\"w1\",\"summaryId\":\"s1\",\"summaryEvidenceVersion\":\"v1\",\"keyPointId\":\"k1\",\"issueId\":\"issue-1\",\"generationStatus\":\"DISPLAYABLE\",\"evidenceSource\":\"PROCESSING\",\"stale\":false}")
 				+ row("warningDisplayReceipts",
 						"{\"warningId\":\"w1\",\"summaryEvidenceVersion\":\"v1\",\"displayState\":\"DETAILS_EXPANDED\",\"stale\":false}")
 				+ row("warningCandidates",
@@ -88,6 +88,29 @@ class ValidationEvaluatorTest {
 		assertThat(metrics.path("8").path("numerator").asInt()).isZero();
 		assertThat(metrics.path("8").path("denominator").asInt()).isEqualTo(1);
 		assertThat(metrics.path("8").path("status").asText()).isEqualTo("FAIL");
+	}
+
+	@Test
+	void t7CountsUniqueQualityIssuesAndTreatsUnmappableIssuesAsUncovered() throws Exception {
+		String export = manifest("segment-coverage") + row("warningMappings",
+				"{\"summaryId\":\"s1\",\"summaryEvidenceVersion\":\"v1\",\"itemId\":\"k1\",\"issueId\":\"issue-covered\",\"decision\":\"OVERLAP\",\"evidenceSource\":\"PROCESSING\",\"stale\":false}")
+				+ row("warningMappings",
+						"{\"summaryId\":\"s1\",\"summaryEvidenceVersion\":\"v1\",\"itemId\":\"k2\",\"issueId\":\"issue-covered\",\"decision\":\"OVERLAP\",\"evidenceSource\":\"PROCESSING\",\"stale\":false}")
+				+ row("warningMappings",
+						"{\"summaryId\":\"s1\",\"summaryEvidenceVersion\":\"v1\",\"itemId\":\"k3\",\"issueId\":\"issue-unmappable\",\"decision\":\"UNMAPPABLE\",\"evidenceSource\":\"PROCESSING\",\"stale\":false}")
+				+ row("warningIndicators",
+						"{\"warningId\":\"w1\",\"summaryId\":\"s1\",\"summaryEvidenceVersion\":\"v1\",\"keyPointId\":\"k1\",\"issueId\":\"issue-covered\",\"generationStatus\":\"DISPLAYABLE\",\"evidenceSource\":\"PROCESSING\",\"stale\":false}")
+				+ row("warningDisplayReceipts",
+						"{\"warningId\":\"w1\",\"summaryEvidenceVersion\":\"v1\",\"displayState\":\"INDICATOR_VISIBLE\",\"stale\":false}");
+
+		JsonNode metrics = evaluate(export, "{\"schemaVersion\":2,\"exportManifestHash\":\"segment-coverage\"}");
+
+		assertThat(metrics.path("7").path("numerator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("7").path("denominator").asInt()).isEqualTo(2);
+		assertThat(metrics.path("7").path("status").asText()).isEqualTo("FAIL");
+		assertThat(metrics.path("7").path("diagnostics").path("measurementUnit").asText())
+				.isEqualTo("UNIQUE_QUALITY_ISSUE");
+		assertThat(metrics.path("7").path("diagnostics").path("unmappableOnlyIssues").asInt()).isEqualTo(1);
 	}
 
 	@Test
@@ -172,18 +195,21 @@ class ValidationEvaluatorTest {
 	@Test
 	void t12TreatsExactlyTwoMinutesAsOutsideTheExclusiveTarget() throws Exception {
 		StringBuilder export = new StringBuilder(manifest("latency-boundary"));
-		for (String eventType : new String[]{"BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED",
-				"PROCESSING_STARTED"})
+		String[] lifecycle = {"BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED",
+				"PROCESSING_STARTED"};
+		for (int index = 0; index < lifecycle.length; index++)
 			export.append(row("events",
-					"{\"workflowId\":\"job-1\",\"occurredAt\":\"2026-01-01T00:00:00Z\"," + "\"eventType\":\""
-							+ eventType + "\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
+					"{\"workflowId\":\"job-1\",\"occurredAt\":\"2026-01-01T00:00:0" + index + "Z\",\"eventType\":\""
+							+ lifecycle[index] + "\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
 		export.append(row("events",
 				"{\"workflowId\":\"job-1\",\"occurredAt\":\"2026-01-01T00:02:00Z\",\"eventType\":\"MERGED_SUMMARY_AVAILABLE\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
 		export.append(row("events",
 				"{\"workflowId\":\"job-1\",\"occurredAt\":\"2026-01-01T00:02:00Z\",\"eventType\":\"JOB_COMPLETED\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
-		export.append(row("multiSourceJobs", "{\"jobId\":\"job-1\",\"sourceCount\":1}"));
+		export.append(row("multiSourceJobs", "{\"jobId\":\"job-1\",\"sourceCount\":2}"));
 		export.append(row("sourceFiles",
 				"{\"jobId\":\"job-1\",\"sourceFileId\":\"doc-1\",\"sourceKind\":\"DOCUMENT\",\"transcriptionCompletedAt\":\"2026-01-01T00:00:00Z\"}"));
+		export.append(row("sourceFiles",
+				"{\"jobId\":\"job-1\",\"sourceFileId\":\"doc-2\",\"sourceKind\":\"DOCUMENT\",\"transcriptionCompletedAt\":\"2026-01-01T00:00:00Z\"}"));
 
 		JsonNode metrics = evaluate(export.toString(),
 				"{\"schemaVersion\":2,\"exportManifestHash\":\"latency-boundary\"}");
@@ -191,6 +217,56 @@ class ValidationEvaluatorTest {
 		assertThat(metrics.path("12").path("numerator").asInt()).isZero();
 		assertThat(metrics.path("12").path("denominator").asInt()).isEqualTo(1);
 		assertThat(metrics.path("12").path("status").asText()).isEqualTo("FAIL");
+	}
+
+	@Test
+	void t9ExcludesPreValidationFailuresAndRequiresOrderedLifecycle() throws Exception {
+		StringBuilder export = new StringBuilder(manifest("ordered-lifecycle"));
+		export.append(row("events",
+				"{\"workflowId\":\"rejected\",\"occurredAt\":\"2026-01-01T00:00:00Z\",\"eventType\":\"BATCH_SUBMITTED\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
+		export.append(row("events",
+				"{\"workflowId\":\"rejected\",\"occurredAt\":\"2026-01-01T00:00:01Z\",\"eventType\":\"JOB_FAILED\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
+		export.append(row("multiSourceJobs",
+				"{\"jobId\":\"rejected\",\"sourceCount\":2,\"measurementIncomplete\":true,\"failureStage\":\"SUBMISSION\"}"));
+		String[] lifecycle = {"BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED",
+				"PROCESSING_STARTED", "JOB_COMPLETED"};
+		for (int index = 0; index < lifecycle.length; index++)
+			export.append(row("events",
+					"{\"workflowId\":\"valid\",\"occurredAt\":\"2026-01-01T00:01:0" + index + "Z\",\"eventType\":\""
+							+ lifecycle[index] + "\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
+		export.append(row("multiSourceJobs", "{\"jobId\":\"valid\",\"sourceCount\":2}"));
+		export.append(row("sourceFiles",
+				"{\"jobId\":\"valid\",\"sourceFileId\":\"source-1\",\"transcriptionCompletedAt\":\"2026-01-01T00:01:04Z\"}"));
+		export.append(row("sourceFiles",
+				"{\"jobId\":\"valid\",\"sourceFileId\":\"source-2\",\"transcriptionCompletedAt\":\"2026-01-01T00:01:04Z\"}"));
+
+		JsonNode metrics = evaluate(export.toString(),
+				"{\"schemaVersion\":2,\"exportManifestHash\":\"ordered-lifecycle\"}");
+
+		assertThat(metrics.path("9").path("numerator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("9").path("denominator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("9").path("status").asText()).isEqualTo("PASS");
+	}
+
+	@Test
+	void t9RejectsOutOfOrderCompletionEvidence() throws Exception {
+		String export = manifest("out-of-order")
+				+ row("events", multiEvent("job-1", "BATCH_VALIDATED", "2026-01-01T00:00:00Z"))
+				+ row("events", multiEvent("job-1", "JOB_ACCEPTED", "2026-01-01T00:00:01Z"))
+				+ row("events", multiEvent("job-1", "JOB_QUEUED", "2026-01-01T00:00:02Z"))
+				+ row("events", multiEvent("job-1", "ALL_SOURCES_UPLOADED", "2026-01-01T00:00:03Z"))
+				+ row("events", multiEvent("job-1", "PROCESSING_STARTED", "2026-01-01T00:00:04Z"))
+				+ row("events", multiEvent("job-1", "JOB_COMPLETED", "2026-01-01T00:00:05Z"))
+				+ row("multiSourceJobs", "{\"jobId\":\"job-1\",\"sourceCount\":2}");
+
+		JsonNode metrics = evaluate(export, "{\"schemaVersion\":2,\"exportManifestHash\":\"out-of-order\"}");
+
+		assertThat(metrics.path("9").path("numerator").asInt()).isZero();
+		assertThat(metrics.path("9").path("denominator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("9").path("status").asText()).isEqualTo("NOT_EVALUABLE");
+		assertThat(
+				metrics.path("9").path("diagnostics").path("jobs").path("job-1").path("lifecycleOrdered").asBoolean())
+				.isFalse();
 	}
 
 	@Test
@@ -220,6 +296,11 @@ class ValidationEvaluatorTest {
 
 	private String row(String dataset, String data) {
 		return "{\"dataset\":\"" + dataset + "\",\"data\":" + data + "}\n";
+	}
+
+	private String multiEvent(String workflowId, String eventType, String occurredAt) {
+		return "{\"workflowId\":\"" + workflowId + "\",\"occurredAt\":\"" + occurredAt + "\",\"eventType\":\""
+				+ eventType + "\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}";
 	}
 
 	private JsonNode evaluate(String exportText, String truthText) throws Exception {

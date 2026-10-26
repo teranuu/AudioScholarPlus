@@ -127,10 +127,9 @@ public class MultiSourceJobService {
 		job.setClientSource(ValidationEventService.clientSource(clientHeader));
 		job.setAcceptedAt(new Date());
 		save(job);
-		event(job, "BATCH_VALIDATED", List.of(9), "initial", Map.of("sourceCount", job.getSourceCount()));
+		event(job, "BATCH_SUBMITTED", List.of(9), "initial", Map.of("sourceCount", job.getSourceCount()));
 		event(job, "CONFIG_CONFIRMED", List.of(2), "initial",
 				Map.of("jobId", job.getJobId(), "outputType", outputType.name()));
-		event(job, "JOB_ACCEPTED", List.of(2, 9), "initial", Map.of("jobId", job.getJobId()));
 
 		List<Path> tempFiles = new ArrayList<>();
 		try {
@@ -162,6 +161,8 @@ public class MultiSourceJobService {
 						"sourceFileId", sourceFile.getSourceFileId(), "sourceKind", sourceKind.name()));
 			}
 			guardrailService.validateMultiSourceAggregate(mediaGuardrails);
+			event(job, "BATCH_VALIDATED", List.of(9), "initial", Map.of("sourceCount", job.getSourceCount()));
+			event(job, "JOB_ACCEPTED", List.of(2, 9), "initial", Map.of("jobId", job.getJobId()));
 			event(job, "ALL_SOURCES_UPLOADED", List.of(9), "initial", Map.of("sourceCount", job.getSourceCount()));
 			job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
 			job.setQueuedAt(new Date());

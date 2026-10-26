@@ -63,12 +63,13 @@ class ValidationExportControllerTest {
 	void module3ZeroResultRunsAreExplicitlyNoApplicableRatherThanIncomplete() throws Exception {
 		FirebaseService firebase = mock(FirebaseService.class);
 		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
-		when(firebase.getAllData("validationEvents"))
-				.thenReturn(List.of(Map.of("eventId", "e1", "workflowId", "job-1", "clientSource", "WEB", "eventType",
-						"JOB_COMPLETED", "occurredAt", occurredAt, "objectiveCodes", List.of(9))));
+		when(firebase.getAllData("validationEvents")).thenReturn(lifecycleEvents("job-1", occurredAt));
 		when(firebase.getAllData("multiSourceJobs")).thenReturn(List.of(Map.of("jobId", "job-1", "status", "COMPLETE",
-				"sourceCount", 0, "finalTranscriptionCompletedAt", occurredAt, "mergeStartedAt", occurredAt,
+				"sourceCount", 2, "finalTranscriptionCompletedAt", occurredAt, "mergeStartedAt", occurredAt,
 				"mergedSummaryAvailableAt", occurredAt, "mergeLatencyMs", 0)));
+		when(firebase.getAllData("sourceFiles")).thenReturn(
+				List.of(Map.of("jobId", "job-1", "sourceFileId", "source-a", "transcriptionCompletedAt", occurredAt),
+						Map.of("jobId", "job-1", "sourceFileId", "source-b", "transcriptionCompletedAt", occurredAt)));
 		when(firebase.getAllData("multiSourceStageRuns")).thenReturn(List.of(zeroRun("SOURCE_KEY_POINT_EXTRACTION"),
 				zeroRun("DEDUPLICATION"), zeroRun("ATTRIBUTION"), zeroRun("ALIGNMENT")));
 		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
@@ -86,6 +87,29 @@ class ValidationExportControllerTest {
 		assertThat(manifest.path("module3OutcomeMetrics").path("numeratorCompleted").asInt()).isEqualTo(1);
 		assertThat(manifest.path("module3OutcomeMetrics").path("denominatorValid").asInt()).isEqualTo(1);
 		assertThat(manifest.path("module3MergeLatencyMetrics").path("targetMs").asLong()).isEqualTo(120_000);
+	}
+
+	@Test
+	void objective9And12StatusesIgnoreUnrelatedReviewerEvidenceGaps() throws Exception {
+		FirebaseService firebase = mock(FirebaseService.class);
+		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
+		when(firebase.getAllData("validationEvents")).thenReturn(lifecycleEvents("job-1", occurredAt));
+		when(firebase.getAllData("multiSourceJobs")).thenReturn(List.of(Map.of("jobId", "job-1", "status", "COMPLETE",
+				"sourceCount", 2, "finalTranscriptionCompletedAt", occurredAt, "mergeStartedAt", occurredAt,
+				"mergedSummaryAvailableAt", occurredAt, "mergeLatencyMs", 0)));
+		when(firebase.getAllData("sourceFiles")).thenReturn(
+				List.of(Map.of("jobId", "job-1", "sourceFileId", "source-a", "transcriptionCompletedAt", occurredAt),
+						Map.of("jobId", "job-1", "sourceFileId", "source-b", "transcriptionCompletedAt", occurredAt)));
+		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
+
+		String body = new String(controller
+				.export("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", null, "WEB", "jsonl", false).getBody(),
+				StandardCharsets.UTF_8);
+		var manifest = new ObjectMapper().readTree(body.lines().findFirst().orElseThrow()).path("data");
+
+		assertThat(manifest.path("integrityIssues").toString()).contains("missing-stage-run");
+		assertThat(manifest.path("objectiveEvidenceStatus").path("9").asText()).isEqualTo("COMPLETE");
+		assertThat(manifest.path("objectiveEvidenceStatus").path("12").asText()).isEqualTo("COMPLETE");
 	}
 
 	@Test
@@ -125,9 +149,9 @@ class ValidationExportControllerTest {
 		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
 		when(firebase.getAllData("validationEvents"))
 				.thenReturn(List.of(Map.of("eventId", "e1", "workflowId", "job-1", "clientSource", "WEB", "eventType",
-						"JOB_COMPLETED", "occurredAt", occurredAt, "objectiveCodes", List.of(12))));
+						"BATCH_VALIDATED", "occurredAt", occurredAt, "objectiveCodes", List.of(9, 12))));
 		when(firebase.getAllData("multiSourceJobs")).thenReturn(List.of(Map.of("jobId", "job-1", "status", "COMPLETE",
-				"sourceCount", 1, "finalTranscriptionCompletedAt", occurredAt, "mergeStartedAt", occurredAt,
+				"sourceCount", 2, "finalTranscriptionCompletedAt", occurredAt, "mergeStartedAt", occurredAt,
 				"mergedSummaryAvailableAt", occurredAt, "mergeLatencyMs", 120_000)));
 		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
 
@@ -171,5 +195,15 @@ class ValidationExportControllerTest {
 		return Map.of("stageRunId", stage, "jobId", "job-1", "stage", stage, "status", "COMPLETED", "candidateCount",
 				candidateCount, "outputCount", outputCount, "algorithmVersion", "test-v1", "completedAt",
 				"2026-01-01T12:00:00Z");
+	}
+
+	private List<Map<String, Object>> lifecycleEvents(String jobId, Date occurredAt) {
+		return java.util.stream.IntStream.range(0, 6)
+				.mapToObj(index -> Map.<String, Object>of("eventId", "e" + index, "workflowId", jobId, "workflowType",
+						"MULTI_SOURCE", "clientSource", "WEB", "eventType",
+						List.of("BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED",
+								"PROCESSING_STARTED", "JOB_COMPLETED").get(index),
+						"occurredAt", occurredAt, "objectiveCodes", List.of(9)))
+				.toList();
 	}
 }
