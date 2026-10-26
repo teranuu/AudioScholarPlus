@@ -119,11 +119,13 @@ public final class ValidationEvaluator {
 			}
 		}
 		long accepted = 0, configured = 0, valid = 0, complete = 0, acceptedStage = 0, queuedStage = 0,
-				uploadedStage = 0, under = 0, missingLatencyEvidence = 0;
+				uploadedStage = 0, completedValidJobs = 0, under = 0, missingLatencyEvidence = 0,
+				invalidLifecycleEvidence = 0;
 		Map<String, Object> jobs = new LinkedHashMap<>();
 		Map<String, Object> configurationWorkflows = new LinkedHashMap<>();
 		Map<String, Integer> expected = new HashMap<>(), completed = new HashMap<>();
 		Map<String, Instant> lastSource = new HashMap<>();
+		Set<String> validBatchIds = new HashSet<>();
 		for (JsonNode j : data("multiSourceJobs"))
 			expected.put(j.path("jobId").asText(), j.path("sourceCount").asInt(j.path("sourceFiles").size()));
 		for (JsonNode s : data("sourceFiles"))
@@ -159,6 +161,7 @@ public final class ValidationEvaluator {
 				configurationWorkflows.put(id, diagnostic);
 			}
 			if (e.containsKey("BATCH_VALIDATED")) {
+				validBatchIds.add(id);
 				valid++;
 				if (e.containsKey("JOB_ACCEPTED"))
 					acceptedStage++;
@@ -166,35 +169,55 @@ public final class ValidationEvaluator {
 					queuedStage++;
 				if (e.containsKey("ALL_SOURCES_UPLOADED"))
 					uploadedStage++;
-				if (e.keySet()
-						.containsAll(Set.of("JOB_ACCEPTED", "JOB_QUEUED", "ALL_SOURCES_UPLOADED", "JOB_COMPLETED")))
+				long terminalCount = workflowEvents.getOrDefault(id, List.of()).stream().filter(
+						event -> Set.of("JOB_COMPLETED", "JOB_FAILED").contains(event.path("eventType").asText()))
+						.count();
+				boolean sourceCountValid = expected.getOrDefault(id, -1) >= 2 && expected.getOrDefault(id, -1) <= 5;
+				boolean allSourcesCompleted = completed.getOrDefault(id, 0) == expected.getOrDefault(id, -1);
+				boolean lifecycleOrdered = ordered(e, "BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED",
+						"JOB_QUEUED", "PROCESSING_STARTED", "JOB_COMPLETED");
+				boolean lifecycleComplete = sourceCountValid && allSourcesCompleted && terminalCount == 1
+						&& lifecycleOrdered;
+				if (lifecycleComplete)
 					complete++;
+				else if (e.containsKey("JOB_COMPLETED"))
+					invalidLifecycleEvidence++;
 				Map<String, Object> d = new LinkedHashMap<>();
 				d.put("expectedSources", expected.get(id));
 				d.put("completedSources", completed.getOrDefault(id, 0));
-				if (e.containsKey("JOB_COMPLETED") && lastSource.containsKey(id)
-						&& e.containsKey("MERGED_SUMMARY_AVAILABLE")
-						&& completed.getOrDefault(id, 0) == expected.getOrDefault(id, -1)) {
-					long ms = java.time.Duration.between(lastSource.get(id), e.get("MERGED_SUMMARY_AVAILABLE"))
-							.toMillis();
-					d.put("mergeDurationMs", ms);
-					if (ms >= 0 && ms < 120000)
-						under++;
-				} else if (e.containsKey("JOB_COMPLETED"))
-					missingLatencyEvidence++;
+				d.put("terminalEventCount", terminalCount);
+				d.put("sourceCountValid", sourceCountValid);
+				d.put("allSourcesCompleted", allSourcesCompleted);
+				d.put("lifecycleOrdered", lifecycleOrdered);
+				if (e.containsKey("JOB_COMPLETED") && terminalCount == 1) {
+					completedValidJobs++;
+					if (lastSource.containsKey(id) && e.containsKey("MERGED_SUMMARY_AVAILABLE")
+							&& completed.getOrDefault(id, 0) == expected.getOrDefault(id, -1)) {
+						long ms = java.time.Duration.between(lastSource.get(id), e.get("MERGED_SUMMARY_AVAILABLE"))
+								.toMillis();
+						d.put("mergeDurationMs", ms);
+						if (ms >= 0 && ms < 120000)
+							under++;
+					} else
+						missingLatencyEvidence++;
+				}
 				jobs.put(id, d);
 			}
 		}
 		boolean configurationInvalid = !configurationIncomplete.isEmpty();
-		boolean multiSourceInvalid = !multiSourceIncomplete.isEmpty();
+		long relevantIncomplete = multiSourceIncomplete.stream().filter(validBatchIds::contains).count();
+		boolean multiSourceInvalid = relevantIncomplete > 0;
 		put(2, configured, accepted, 1, configurationInvalid, configurationIncomplete.size(),
 				configurationIncomplete.size(), Map.of("workflows", configurationWorkflows));
-		put(9, complete, valid, 1, multiSourceInvalid, multiSourceIncomplete.size(), multiSourceIncomplete.size(),
-				Map.of("stageRates", Map.of("accepted", ratio(acceptedStage, valid), "queued",
-						ratio(queuedStage, valid), "allSourcesUploaded", ratio(uploadedStage, valid)), "jobs", jobs));
-		put(12, under, complete, 1, multiSourceInvalid || missingLatencyEvidence > 0,
-				multiSourceIncomplete.size() + missingLatencyEvidence,
-				multiSourceIncomplete.size() + missingLatencyEvidence,
+		put(9, complete, valid, 1, multiSourceInvalid || invalidLifecycleEvidence > 0,
+				relevantIncomplete + invalidLifecycleEvidence, relevantIncomplete + invalidLifecycleEvidence, Map.of(
+						"stageRates", Map.of("accepted", ratio(acceptedStage, valid), "queued",
+								ratio(queuedStage, valid), "allSourcesUploaded", ratio(uploadedStage, valid)),
+						"jobs", jobs));
+		put(12, under, completedValidJobs, 1,
+				multiSourceInvalid || missingLatencyEvidence > 0 || invalidLifecycleEvidence > 0,
+				relevantIncomplete + missingLatencyEvidence + invalidLifecycleEvidence,
+				relevantIncomplete + missingLatencyEvidence + invalidLifecycleEvidence,
 				Map.of("limitMsExclusive", 120000, "jobs", jobs));
 	}
 
@@ -352,16 +375,22 @@ public final class ValidationEvaluator {
 		return row;
 	}
 	private void warnings() {
-		Set<String> eligible = new HashSet<>(), warned = new HashSet<>();
-		long unmappable = 0;
+		Set<String> eligibleIssues = new HashSet<>(), overlapIssues = new HashSet<>(), warnedIssues = new HashSet<>();
+		long invalidMappings = 0;
 		for (JsonNode m : data("warningMappings")) {
 			if ("LEGACY_READ_BACKFILL".equals(m.path("evidenceSource").asText()) || m.path("stale").asBoolean())
 				continue;
-			String item = warningItem(m);
-			if ("OVERLAP".equals(m.path("decision").asText()))
-				eligible.add(item);
-			if ("UNMAPPABLE".equals(m.path("decision").asText()))
-				unmappable++;
+			String issueId = m.path("issueId").asText();
+			String decision = m.path("decision").asText();
+			if (issueId.isBlank()) {
+				invalidMappings++;
+				continue;
+			}
+			if ("OVERLAP".equals(decision)) {
+				eligibleIssues.add(issueId);
+				overlapIssues.add(issueId);
+			} else if ("UNMAPPABLE".equals(decision))
+				eligibleIssues.add(issueId);
 		}
 		Set<String> visible = new HashSet<>();
 		for (JsonNode receipt : data("warningDisplayReceipts"))
@@ -371,12 +400,18 @@ public final class ValidationEvaluator {
 			String receiptKey = w.path("warningId").asText() + ":" + w.path("summaryEvidenceVersion").asText();
 			if (visible.contains(receiptKey) && !w.path("stale").asBoolean()
 					&& "DISPLAYABLE".equals(w.path("generationStatus").asText())
-					&& !"LEGACY_READ_BACKFILL".equals(w.path("evidenceSource").asText()))
-				warned.add(warningItem(w));
+					&& !"LEGACY_READ_BACKFILL".equals(w.path("evidenceSource").asText())
+					&& !w.path("issueId").asText().isBlank())
+				warnedIssues.add(w.path("issueId").asText());
 		}
 		boolean staleSummary = data("summaries").stream().anyMatch(s -> s.path("warningEvidenceStale").asBoolean());
-		put(7, eligible.stream().filter(warned::contains).count(), eligible.size(), .8, unmappable > 0 || staleSummary,
-				unmappable, unmappable, Map.of("unmappable", unmappable, "staleSummaryEvidence", staleSummary));
+		Set<String> unmappableOnly = new HashSet<>(eligibleIssues);
+		unmappableOnly.removeAll(overlapIssues);
+		put(7, eligibleIssues.stream().filter(warnedIssues::contains).count(), eligibleIssues.size(), .8,
+				invalidMappings > 0 || staleSummary, invalidMappings, invalidMappings,
+				Map.of("measurementUnit", "UNIQUE_QUALITY_ISSUE", "overlapIssues", overlapIssues.size(),
+						"unmappableOnlyIssues", unmappableOnly.size(), "unmappablePolicy", "COUNT_AS_UNCOVERED",
+						"staleSummaryEvidence", staleSummary));
 		Map<String, Boolean> expert = new HashMap<>();
 		for (JsonNode review : array(truth.path("warningTemplateReviews")))
 			expert.put(review.path("templateId").asText() + ":" + review.path("templateVersion").asText(),

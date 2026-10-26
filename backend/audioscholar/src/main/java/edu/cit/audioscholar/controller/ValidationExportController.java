@@ -192,28 +192,45 @@ public class ValidationExportController {
 	}
 	private Map<Integer, String> module3Statuses(Map<String, List<Map<String, Object>>> datasets) {
 		Map<Integer, String> result = new LinkedHashMap<>();
-		List<Map<String, Object>> jobs = datasets.get("multiSourceJobs");
+		Set<String> validJobIds = validBatchIds(datasets);
+		List<Map<String, Object>> jobs = datasets.get("multiSourceJobs").stream()
+				.filter(job -> validJobIds.contains(String.valueOf(job.get("jobId")))).toList();
 		if (jobs.isEmpty()) {
 			for (int code = 9; code <= 14; code++)
 				result.put(code, "NO_APPLICABLE_RECORDS");
 			return result;
 		}
 		boolean processingFailed = jobs.stream().anyMatch(j -> "FAILED".equals(j.get("status")));
-		boolean incomplete = integrityIssues(datasets).stream().anyMatch(issue -> !issue.startsWith("qualityReport:")
-				&& !issue.startsWith("warningMapping:") && !issue.startsWith("warningCandidate:"));
-		result.put(9, processingFailed ? "PROCESSING_FAILED" : incomplete ? "EXPORT_INCOMPLETE" : "COMPLETE");
-		result.put(12, processingFailed ? "PROCESSING_FAILED" : incomplete ? "EXPORT_INCOMPLETE" : "COMPLETE");
+		boolean reviewerEvidenceIncomplete = integrityIssues(datasets).stream()
+				.anyMatch(issue -> !issue.startsWith("qualityReport:") && !issue.startsWith("warningMapping:")
+						&& !issue.startsWith("warningCandidate:"));
+		boolean lifecycleIncomplete = jobs.stream()
+				.anyMatch(job -> !validSourceCount(job) || !allSourcesCompleted(datasets, job)
+						|| !hasOrderedSuccessfulLifecycle(datasets, String.valueOf(job.get("jobId"))));
+		boolean latencyIncomplete = jobs.stream().filter(job -> "COMPLETE".equals(job.get("status")))
+				.anyMatch(job -> job.get("finalTranscriptionCompletedAt") == null
+						|| job.get("mergedSummaryAvailableAt") == null || job.get("mergeLatencyMs") == null);
+		result.put(9, processingFailed ? "PROCESSING_FAILED" : lifecycleIncomplete ? "EXPORT_INCOMPLETE" : "COMPLETE");
+		result.put(12,
+				processingFailed
+						? "PROCESSING_FAILED"
+						: lifecycleIncomplete || latencyIncomplete ? "EXPORT_INCOMPLETE" : "COMPLETE");
 		result.put(10,
-				reviewerStatus(processingFailed, incomplete,
+				reviewerStatus(processingFailed, reviewerEvidenceIncomplete,
 						datasets.get("sourceKeyPoints").isEmpty() && datasets.get("mergedKeyPointLineage").isEmpty()
 								&& completedRunWithCount(datasets, "SOURCE_KEY_POINT_EXTRACTION", "outputCount", 0)
 								&& completedRunWithCount(datasets, "DEDUPLICATION", "outputCount", 0)));
-		result.put(11, reviewerStatus(processingFailed, incomplete, datasets.get("semanticDecisions").isEmpty()
-				&& completedRunWithCount(datasets, "DEDUPLICATION", "candidateCount", 0)));
-		result.put(13, reviewerStatus(processingFailed, incomplete, datasets.get("sourceAttributions").isEmpty()
-				&& completedRunWithCount(datasets, "ATTRIBUTION", "outputCount", 0)));
-		result.put(14, reviewerStatus(processingFailed, incomplete, datasets.get("crossSourceAlignments").isEmpty()
-				&& completedRunWithCount(datasets, "ALIGNMENT", "outputCount", 0)));
+		result.put(11,
+				reviewerStatus(processingFailed, reviewerEvidenceIncomplete, datasets.get("semanticDecisions").isEmpty()
+						&& completedRunWithCount(datasets, "DEDUPLICATION", "candidateCount", 0)));
+		result.put(13,
+				reviewerStatus(processingFailed, reviewerEvidenceIncomplete,
+						datasets.get("sourceAttributions").isEmpty()
+								&& completedRunWithCount(datasets, "ATTRIBUTION", "outputCount", 0)));
+		result.put(14,
+				reviewerStatus(processingFailed, reviewerEvidenceIncomplete,
+						datasets.get("crossSourceAlignments").isEmpty()
+								&& completedRunWithCount(datasets, "ALIGNMENT", "outputCount", 0)));
 		return result;
 	}
 
@@ -245,17 +262,16 @@ public class ValidationExportController {
 						: deliveredAttempts.containsAll(expectedDeliveries) ? "COMPLETE" : "NOT_EVALUABLE");
 		boolean stale = datasets.get("summaries").stream()
 				.anyMatch(s -> Boolean.TRUE.equals(s.get("warningEvidenceStale")));
-		boolean mappings = datasets.get("warningMappings").stream().anyMatch(m -> !Boolean.TRUE.equals(m.get("stale"))
-				&& !"LEGACY_READ_BACKFILL".equals(m.get("evidenceSource")) && "OVERLAP".equals(m.get("decision")));
-		Set<String> visibleWarnings = datasets.get("warningDisplayReceipts").stream()
-				.filter(r -> !Boolean.TRUE.equals(r.get("stale")) && "INDICATOR_VISIBLE".equals(r.get("displayState")))
-				.map(r -> String.valueOf(r.get("warningId")) + ":" + r.get("summaryEvidenceVersion"))
-				.collect(Collectors.toSet());
-		boolean receipts = datasets.get("warningIndicators").stream()
-				.anyMatch(w -> !Boolean.TRUE.equals(w.get("stale")) && "DISPLAYABLE".equals(w.get("generationStatus"))
-						&& !"LEGACY_READ_BACKFILL".equals(w.get("evidenceSource")) && visibleWarnings
-								.contains(String.valueOf(w.get("warningId")) + ":" + w.get("summaryEvidenceVersion")));
-		result.put(7, stale || !mappings || !receipts ? "NOT_EVALUABLE" : "COMPLETE");
+		List<Map<String, Object>> coverageMappings = datasets.get("warningMappings").stream()
+				.filter(m -> !Boolean.TRUE.equals(m.get("stale")))
+				.filter(m -> !"LEGACY_READ_BACKFILL".equals(m.get("evidenceSource")))
+				.filter(m -> Set.of("OVERLAP", "UNMAPPABLE").contains(String.valueOf(m.get("decision")))).toList();
+		boolean malformedCoverageMapping = coverageMappings.stream()
+				.anyMatch(m -> m.get("issueId") == null || String.valueOf(m.get("issueId")).isBlank());
+		result.put(7,
+				coverageMappings.isEmpty()
+						? "NO_APPLICABLE_RECORDS"
+						: stale || malformedCoverageMapping ? "NOT_EVALUABLE" : "COMPLETE");
 		boolean candidates = datasets.get("warningCandidates").stream().anyMatch(
 				c -> !Boolean.TRUE.equals(c.get("stale")) && !"LEGACY_READ_BACKFILL".equals(c.get("evidenceSource")));
 		result.put(8, candidates ? "EXPERT_REVIEW_REQUIRED" : "NOT_EVALUABLE");
@@ -291,11 +307,46 @@ public class ValidationExportController {
 				for (int code : List.of(7, 8))
 					result.get(code).add(Map.of("recordingId", String.valueOf(summary.get("recordingId")), "reason",
 							"WARNING_EVIDENCE_STALE"));
-		for (Map<String, Object> mapping : datasets.get("warningMappings"))
-			if (!Boolean.TRUE.equals(mapping.get("stale")) && "UNMAPPABLE".equals(mapping.get("decision")))
-				result.get(7).add(Map.of("recordingId", String.valueOf(mapping.get("recordingId")), "reason",
-						"WARNING_ITEM_UNMAPPABLE", "itemId", String.valueOf(mapping.get("itemId"))));
 		return result;
+	}
+
+	private Set<String> validBatchIds(Map<String, List<Map<String, Object>>> datasets) {
+		return datasets.get("events").stream().filter(event -> "BATCH_VALIDATED".equals(event.get("eventType")))
+				.map(event -> String.valueOf(event.get("workflowId"))).filter(id -> !id.isBlank())
+				.collect(Collectors.toCollection(LinkedHashSet::new));
+	}
+
+	private boolean validSourceCount(Map<String, Object> job) {
+		return job.get("sourceCount") instanceof Number count && count.longValue() >= 2 && count.longValue() <= 5;
+	}
+
+	private boolean allSourcesCompleted(Map<String, List<Map<String, Object>>> datasets, Map<String, Object> job) {
+		if (!(job.get("sourceCount") instanceof Number expected))
+			return false;
+		String jobId = String.valueOf(job.get("jobId"));
+		long completed = datasets.get("sourceFiles").stream().filter(source -> jobId.equals(source.get("jobId")))
+				.filter(source -> source.get("transcriptionCompletedAt") != null).count();
+		return completed == expected.longValue();
+	}
+
+	private boolean hasOrderedSuccessfulLifecycle(Map<String, List<Map<String, Object>>> datasets, String jobId) {
+		List<Map<String, Object>> workflowEvents = datasets.get("events").stream()
+				.filter(event -> jobId.equals(String.valueOf(event.get("workflowId")))).toList();
+		long terminalCount = workflowEvents.stream()
+				.filter(event -> Set.of("JOB_COMPLETED", "JOB_FAILED").contains(event.get("eventType"))).count();
+		if (terminalCount != 1)
+			return false;
+		Instant previous = null;
+		for (String type : List.of("BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED",
+				"PROCESSING_STARTED", "JOB_COMPLETED")) {
+			Instant occurredAt = workflowEvents.stream().filter(event -> type.equals(event.get("eventType")))
+					.map(event -> instant(event.get("occurredAt"))).filter(java.util.Objects::nonNull)
+					.min(Instant::compareTo).orElse(null);
+			if (occurredAt == null || previous != null && occurredAt.isBefore(previous))
+				return false;
+			previous = occurredAt;
+		}
+		return true;
 	}
 
 	private String attemptId(Map<String, Object> event) {
@@ -493,22 +544,28 @@ public class ValidationExportController {
 
 	private Map<String, Object> module3OutcomeMetrics(Map<String, List<Map<String, Object>>> datasets) {
 		List<Map<String, Object>> jobs = datasets.get("multiSourceJobs");
-		long exclusions = jobs.stream().filter(j -> "SUBMISSION".equals(j.get("failureStage"))).count();
-		long completed = jobs.stream().filter(j -> "COMPLETE".equals(j.get("status"))).count();
-		Map<String, Long> failures = jobs.stream().filter(j -> "FAILED".equals(j.get("status")))
+		Set<String> validJobIds = validBatchIds(datasets);
+		List<Map<String, Object>> validJobs = jobs.stream()
+				.filter(job -> validJobIds.contains(String.valueOf(job.get("jobId")))).toList();
+		long completed = validJobs.stream().filter(j -> "COMPLETE".equals(j.get("status"))).count();
+		Map<String, Long> failures = validJobs.stream().filter(j -> "FAILED".equals(j.get("status")))
 				.collect(Collectors.groupingBy(j -> String.valueOf(j.getOrDefault("failureCode", "UNKNOWN")),
 						LinkedHashMap::new, Collectors.counting()));
 		Map<String, Object> result = new LinkedHashMap<>();
-		result.put("acceptedJobs", jobs.size());
+		result.put("submittedJobs", jobs.size());
+		result.put("validJobs", validJobs.size());
+		result.put("acceptedJobs", validJobs.size());
 		result.put("numeratorCompleted", completed);
-		result.put("denominatorValid", Math.max(0, jobs.size() - exclusions));
-		result.put("excludedSubmissionFailures", exclusions);
+		result.put("denominatorValid", validJobs.size());
+		result.put("excludedBeforeValidation", Math.max(0, jobs.size() - validJobs.size()));
 		result.put("failureReasons", failures);
 		return result;
 	}
 
 	private Map<String, Object> module3MergeLatencyMetrics(Map<String, List<Map<String, Object>>> datasets) {
-		long[] values = datasets.get("multiSourceJobs").stream().map(j -> j.get("mergeLatencyMs"))
+		Set<String> validJobIds = validBatchIds(datasets);
+		long[] values = datasets.get("multiSourceJobs").stream()
+				.filter(job -> validJobIds.contains(String.valueOf(job.get("jobId")))).map(j -> j.get("mergeLatencyMs"))
 				.filter(Number.class::isInstance).mapToLong(value -> ((Number) value).longValue()).sorted().toArray();
 		Map<String, Object> result = new LinkedHashMap<>();
 		result.put("targetMs", MERGE_LATENCY_LIMIT_MS_EXCLUSIVE);

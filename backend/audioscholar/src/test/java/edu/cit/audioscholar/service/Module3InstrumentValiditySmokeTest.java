@@ -94,9 +94,9 @@ class Module3InstrumentValiditySmokeTest {
 					.contains("PPT evidence explains quantum energy levels");
 
 		List<Map<String, Object>> events = harness.rows("validationEvents");
-		assertThat(eventTypes(events)).containsSubsequence("BATCH_VALIDATED", "CONFIG_CONFIRMED", "JOB_ACCEPTED",
-				"ALL_SOURCES_UPLOADED", "JOB_QUEUED", "PROCESSING_STARTED", "ALL_TRANSCRIPTIONS_COMPLETED",
-				"DEDUPLICATION_COMPLETED", "MERGED_SUMMARY_AVAILABLE", "JOB_COMPLETED");
+		assertThat(eventTypes(events)).containsSubsequence("BATCH_SUBMITTED", "CONFIG_CONFIRMED", "BATCH_VALIDATED",
+				"JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED", "PROCESSING_STARTED",
+				"ALL_TRANSCRIPTIONS_COMPLETED", "DEDUPLICATION_COMPLETED", "MERGED_SUMMARY_AVAILABLE", "JOB_COMPLETED");
 		assertThat(events.stream().filter(e -> "SOURCE_RETRIEVED".equals(e.get("eventType")))).hasSize(sourceCount);
 		assertThat(events.stream().filter(e -> "SOURCE_TRANSCRIPTION_COMPLETED".equals(e.get("eventType"))))
 				.hasSize(sourceCount);
