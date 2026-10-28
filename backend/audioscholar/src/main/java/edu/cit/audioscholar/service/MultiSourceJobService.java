@@ -4,6 +4,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -70,6 +72,10 @@ public class MultiSourceJobService {
 	private final ValidationEventService events;
 	private final TimedTranscriptSegmentService timedSegments;
 	private final SemanticEvidenceService semanticEvidence;
+	private final GeminiRequestGovernor requestGovernor;
+	private final Duration processingLeaseDuration;
+	private final Duration contentionRetryDelay;
+	private final String workerIdentity;
 
 	public MultiSourceJobService(GeminiService geminiService, QualityReportService qualityReportService,
 			SummaryService summaryService, DeduplicationService deduplicationService,
@@ -80,7 +86,11 @@ public class MultiSourceJobService {
 			AudioProcessingGuardrailService guardrailService, @Value("${app.temp-file-dir}") String tempDirStr,
 			@Value("${spring.servlet.multipart.max-file-size}") String maxFileSizeValue,
 			ConfirmedRabbitPublisher publisher, ValidationEventService events,
-			TimedTranscriptSegmentService timedSegments, SemanticEvidenceService semanticEvidence) throws IOException {
+			TimedTranscriptSegmentService timedSegments, SemanticEvidenceService semanticEvidence,
+			GeminiRequestGovernor requestGovernor,
+			@Value("${multi-source.single-job.lease-duration:35m}") Duration processingLeaseDuration,
+			@Value("${multi-source.single-job.retry-delay:15s}") Duration contentionRetryDelay,
+			@Value("${multi-source.worker-identity:multi-source-worker}") String workerIdentity) throws IOException {
 		this.geminiService = geminiService;
 		this.qualityReportService = qualityReportService;
 		this.summaryService = summaryService;
@@ -98,6 +108,10 @@ public class MultiSourceJobService {
 		this.events = events;
 		this.timedSegments = timedSegments;
 		this.semanticEvidence = semanticEvidence;
+		this.requestGovernor = requestGovernor;
+		this.processingLeaseDuration = processingLeaseDuration;
+		this.contentionRetryDelay = contentionRetryDelay;
+		this.workerIdentity = workerIdentity;
 		Files.createDirectories(this.tempDir);
 	}
 
@@ -124,15 +138,18 @@ public class MultiSourceJobService {
 		job.setOutputType(outputType.name());
 		job.setStatus(ProcessingStatus.ACCEPTED.name());
 		job.setSourceCount(normalizedMediaFiles.size() + normalizedDocumentFiles.size());
+		int estimatedGeminiRequests = normalizedMediaFiles.size() + 3;
+		requestGovernor.requireDailyCapacity("multi-source.job-admission", estimatedGeminiRequests, job.getJobId());
+		job.setEstimatedGeminiRequests(estimatedGeminiRequests);
 		job.setClientSource(ValidationEventService.clientSource(clientHeader));
 		job.setAcceptedAt(new Date());
-		save(job);
-		event(job, "BATCH_SUBMITTED", List.of(9), "initial", Map.of("sourceCount", job.getSourceCount()));
-		event(job, "CONFIG_CONFIRMED", List.of(2), "initial",
-				Map.of("jobId", job.getJobId(), "outputType", outputType.name()));
-
 		List<Path> tempFiles = new ArrayList<>();
 		try {
+			save(job);
+			event(job, "BATCH_SUBMITTED", List.of(9), "initial",
+					Map.of("sourceCount", job.getSourceCount(), "estimatedGeminiRequests", estimatedGeminiRequests));
+			event(job, "CONFIG_CONFIRMED", List.of(2), "initial",
+					Map.of("jobId", job.getJobId(), "outputType", outputType.name()));
 			List<AudioProcessingGuardrailService.GuardrailResult> mediaGuardrails = new ArrayList<>();
 			List<MultipartFile> allFiles = new ArrayList<>();
 			allFiles.addAll(normalizedMediaFiles);
@@ -180,8 +197,12 @@ public class MultiSourceJobService {
 			job.setFailedAt(new Date());
 			job.setFinalAttemptCount(job.getProcessingAttempts());
 			job.setUpdatedAt(new Date());
-			terminalEvent(job, "JOB_FAILED", List.of(9), "initial", Map.of("jobId", job.getJobId(), "outcome", "FAILED",
-					"failureStage", "SUBMISSION", "failureCode", job.getFailureCode()));
+			try {
+				terminalEvent(job, "JOB_FAILED", List.of(9), "initial", Map.of("jobId", job.getJobId(), "outcome",
+						"FAILED", "failureStage", "SUBMISSION", "failureCode", job.getFailureCode()));
+			} finally {
+				releaseDailyAdmission(job.getJobId());
+			}
 			throw e;
 		} finally {
 			for (Path tempFile : tempFiles) {
@@ -194,6 +215,22 @@ public class MultiSourceJobService {
 	}
 
 	public void processQueuedJob(String jobId) throws Exception {
+		String leaseOwner = workerIdentity + ":" + jobId + ":" + UUID.randomUUID();
+		if (!multiSourceJobRepository.tryAcquireProcessingLease(leaseOwner,
+				Date.from(Instant.now().plus(processingLeaseDuration)))) {
+			log.info("Deferring multi-source job because another job owns the global processing lease jobId={}", jobId);
+			publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY,
+					new MultiSourceJobMessage(jobId), contentionRetryDelay);
+			return;
+		}
+		try {
+			processQueuedJobUnderLease(jobId);
+		} finally {
+			multiSourceJobRepository.releaseProcessingLease(leaseOwner);
+		}
+	}
+
+	private void processQueuedJobUnderLease(String jobId) throws Exception {
 		if (!multiSourceJobRepository.claim(jobId))
 			return;
 		MultiSourceJob job = hydrateJob(multiSourceJobRepository.findById(jobId));
@@ -242,7 +279,7 @@ public class MultiSourceJobService {
 					source.setQualityReport(qualityReportService.analyzeAndSave(source.getSourceFileId(), local, jobId,
 							"MULTI_SOURCE", job.getClientSource(), "multiSourceJobs"));
 				String transcript = kind == SourceKind.MEDIA
-						? geminiService.callGeminiTranscriptionAPIWithFallback(local, source.getFileName())
+						? geminiService.callGeminiTranscriptionAPIWithFallback(local, source.getFileName(), jobId)
 						: documentTextExtractionService.extractText(local, source.getFileName(),
 								source.getContentType());
 				rejectGeminiErrorTranscript(transcript);
@@ -276,8 +313,13 @@ public class MultiSourceJobService {
 			stage = "DEDUPLICATION";
 			List<SourceAttribution> attributions = semanticEvidence.evaluate(job, summary);
 			event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial", Map.of("jobId", jobId, "outputCount",
-					summary.getKeyPoints().size(), "algorithmVersion", "semantic-clustering-v1"));
+					summary.getKeyPoints().size(), "algorithmVersion", "semantic-clustering-batch-v2"));
 			summaryService.createSummary(summary);
+			event(job, "OUTPUT_GENERATED", List.of(1), summary.getSummaryId(),
+					Map.of("jobId", jobId, "summaryId", summary.getSummaryId(), "outputType", summary.getOutputType(),
+							"summaryStatus", summary.getStatus(), "keyPointCount", summary.getKeyPoints().size(),
+							"topicCount", summary.getTopics().size(), "glossaryCount", summary.getGlossary().size(),
+							"flashcardCount", summary.getFlashcards().size()));
 			MergedSummary merged = buildMergedSummaryRecord(job, summary, attributions);
 			mergedSummaryRepository.save(merged);
 			job.setMergedSummary(summary);
@@ -289,8 +331,12 @@ public class MultiSourceJobService {
 			job.setStatus(ProcessingStatus.COMPLETE.name());
 			job.setFinalAttemptCount(job.getProcessingAttempts());
 			job.setUpdatedAt(new Date());
+			applyGeminiUsage(job, true);
+			releaseDailyAdmission(job.getJobId());
 			terminalEvent(job, "JOB_COMPLETED", List.of(9), "initial", Map.of("jobId", jobId, "outcome", "COMPLETE"));
 		} catch (Exception e) {
+			log.error("Multi-source processing failed jobId={} stage={} attempt={}", jobId, stage,
+					job.getProcessingAttempts(), e);
 			job.setFailureReason(sanitizeFailure(e.getMessage()));
 			job.setFailureStage(stage);
 			job.setFailureCode(failureCode(e));
@@ -303,6 +349,7 @@ public class MultiSourceJobService {
 			}
 			boolean permanent = isPermanent(e);
 			if (!permanent && job.getProcessingAttempts() < 3) {
+				applyGeminiUsage(job, false);
 				job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
 				if (saveWorkerProgress(job)) {
 					publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY,
@@ -315,6 +362,8 @@ public class MultiSourceJobService {
 				job.setStatus(ProcessingStatus.FAILED.name());
 				job.setFailedAt(new Date());
 				job.setFinalAttemptCount(job.getProcessingAttempts());
+				applyGeminiUsage(job, true);
+				releaseDailyAdmission(job.getJobId());
 				terminalEvent(job, "JOB_FAILED", List.of(9, 12), "initial",
 						Map.of("jobId", jobId, "outcome", "FAILED", "attempts", job.getProcessingAttempts(),
 								"failureStage", stage, "failureCode", job.getFailureCode()));
@@ -323,6 +372,40 @@ public class MultiSourceJobService {
 			for (Path file : localFiles)
 				Files.deleteIfExists(file);
 		}
+	}
+
+	private void releaseDailyAdmission(String jobId) {
+		try {
+			requestGovernor.releaseDailyAdmission(jobId);
+		} catch (RuntimeException releaseFailure) {
+			log.error("Could not release unused Gemini daily admission jobId={}", jobId, releaseFailure);
+		}
+	}
+
+	private void applyGeminiUsage(MultiSourceJob job, boolean clear) {
+		GeminiRequestGovernor.UsageSnapshot usage = clear
+				? requestGovernor.snapshotAndClear(job.getJobId())
+				: requestGovernor.snapshot(job.getJobId());
+		if (usage.requestAttempts() == 0 && job.getActualGeminiRequests() != null)
+			return;
+		job.setActualGeminiRequests(usage.requestAttempts());
+		job.setGeminiPacingWaitMs(usage.pacingWaitMs());
+		job.setGeminiFirstRequestAt(usage.firstRequestAt() == null ? null : Date.from(usage.firstRequestAt()));
+		job.setGeminiLastRequestAt(usage.lastRequestAt() == null ? null : Date.from(usage.lastRequestAt()));
+		long requestWindowMs = usage.firstRequestAt() == null || usage.lastRequestAt() == null
+				? 0
+				: Duration.between(usage.firstRequestAt(), usage.lastRequestAt()).toMillis();
+		Map<String, Object> payload = new HashMap<>();
+		payload.put("jobId", job.getJobId());
+		payload.put("estimatedGeminiRequests", job.getEstimatedGeminiRequests());
+		payload.put("actualGeminiRequests", usage.requestAttempts());
+		payload.put("pacingWaitMs", usage.pacingWaitMs());
+		payload.put("requestWindowMs", requestWindowMs);
+		event(job, "GEMINI_USAGE_RECORDED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(), payload);
+		log.info(
+				"Multi-source Gemini usage jobId={} estimatedRequests={} actualRequests={} pacingWaitMs={} requestWindowMs={}",
+				job.getJobId(), job.getEstimatedGeminiRequests(), usage.requestAttempts(), usage.pacingWaitMs(),
+				requestWindowMs);
 	}
 
 	public java.util.Map<String, Object> getJobMap(String jobId) {
@@ -516,6 +599,14 @@ public class MultiSourceJobService {
 		job.setProcessingAttempts(row.get("processingAttempts") instanceof Number n ? n.intValue() : 0);
 		if (row.get("finalAttemptCount") instanceof Number n)
 			job.setFinalAttemptCount(n.intValue());
+		if (row.get("estimatedGeminiRequests") instanceof Number n)
+			job.setEstimatedGeminiRequests(n.intValue());
+		if (row.get("actualGeminiRequests") instanceof Number n)
+			job.setActualGeminiRequests(n.intValue());
+		if (row.get("geminiPacingWaitMs") instanceof Number n)
+			job.setGeminiPacingWaitMs(n.longValue());
+		job.setGeminiFirstRequestAt(date(row.get("geminiFirstRequestAt")));
+		job.setGeminiLastRequestAt(date(row.get("geminiLastRequestAt")));
 		job.setFailureStage((String) row.get("failureStage"));
 		job.setFailureCode((String) row.get("failureCode"));
 		job.setFailureDetail((String) row.get("failureDetail"));

@@ -1,5 +1,7 @@
 package edu.cit.audioscholar.exception;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -65,6 +67,27 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 	public ResponseEntity<Object> handleProcessingGuardrailException(ProcessingGuardrailException ex,
 			WebRequest request) {
 		return badRequest(ex, request, "Processing guardrail rejected request");
+	}
+
+	@ExceptionHandler(GeminiBudgetExceededException.class)
+	public ResponseEntity<Object> handleGeminiBudgetExceededException(GeminiBudgetExceededException ex,
+			WebRequest request) {
+		Map<String, Object> body = new HashMap<>();
+		body.put("timestamp", System.currentTimeMillis());
+		body.put("status", HttpStatus.TOO_MANY_REQUESTS.value());
+		body.put("error", "Too Many Requests");
+		body.put("message", ex.getMessage());
+		if (ex.getRetryAt() != null) {
+			body.put("retryAt", ex.getRetryAt().toString());
+		}
+		HttpHeaders headers = new HttpHeaders();
+		long retryAfter = ex.getRetryAt() == null
+				? 60
+				: Math.max(1, Duration.between(Instant.now(), ex.getRetryAt()).toSeconds());
+		headers.set(HttpHeaders.RETRY_AFTER, Long.toString(retryAfter));
+		log.warn("Gemini quota admission rejected for request [{}]: {} retryAt={}", request.getDescription(false),
+				ex.getMessage(), ex.getRetryAt());
+		return new ResponseEntity<>(body, headers, HttpStatus.TOO_MANY_REQUESTS);
 	}
 
 	private ResponseEntity<Object> badRequest(Exception ex, WebRequest request, String logMessage) {

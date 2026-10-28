@@ -35,6 +35,11 @@ public class MultiSourceJob {
 	private String clientSource = "UNKNOWN";
 	private int processingAttempts;
 	private Integer finalAttemptCount;
+	private Integer estimatedGeminiRequests;
+	private Integer actualGeminiRequests;
+	private Long geminiPacingWaitMs;
+	private Date geminiFirstRequestAt;
+	private Date geminiLastRequestAt;
 
 	public String getJobId() {
 		return jobId;
@@ -200,6 +205,36 @@ public class MultiSourceJob {
 	public void setFinalAttemptCount(Integer value) {
 		finalAttemptCount = value;
 	}
+	public Integer getEstimatedGeminiRequests() {
+		return estimatedGeminiRequests;
+	}
+	public void setEstimatedGeminiRequests(Integer value) {
+		estimatedGeminiRequests = value;
+	}
+	public Integer getActualGeminiRequests() {
+		return actualGeminiRequests;
+	}
+	public void setActualGeminiRequests(Integer value) {
+		actualGeminiRequests = value;
+	}
+	public Long getGeminiPacingWaitMs() {
+		return geminiPacingWaitMs;
+	}
+	public void setGeminiPacingWaitMs(Long value) {
+		geminiPacingWaitMs = value;
+	}
+	public Date getGeminiFirstRequestAt() {
+		return geminiFirstRequestAt;
+	}
+	public void setGeminiFirstRequestAt(Date value) {
+		geminiFirstRequestAt = value;
+	}
+	public Date getGeminiLastRequestAt() {
+		return geminiLastRequestAt;
+	}
+	public void setGeminiLastRequestAt(Date value) {
+		geminiLastRequestAt = value;
+	}
 
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
@@ -230,6 +265,11 @@ public class MultiSourceJob {
 		map.put("clientSource", clientSource);
 		map.put("processingAttempts", processingAttempts);
 		map.put("finalAttemptCount", finalAttemptCount);
+		map.put("estimatedGeminiRequests", estimatedGeminiRequests);
+		map.put("actualGeminiRequests", actualGeminiRequests);
+		map.put("geminiPacingWaitMs", geminiPacingWaitMs);
+		map.put("geminiFirstRequestAt", geminiFirstRequestAt);
+		map.put("geminiLastRequestAt", geminiLastRequestAt);
 		return map;
 	}
 }

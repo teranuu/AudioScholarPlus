@@ -18,6 +18,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -66,6 +67,9 @@ class SummarizationListenerServiceIntegrationTest {
 	@Mock
 	private ProcessingStageClaimService stageClaimService;
 
+	@Mock
+	private ValidationEventService validationEvents;
+
 	private SummarizationListenerService summarizationListenerService;
 
 	@Captor
@@ -86,6 +90,7 @@ class SummarizationListenerServiceIntegrationTest {
 				nhostStorageService, summaryService, cacheManager, new ObjectMapper(), "src/test/resources", // tempDir
 				recordingService, confirmedRabbitPublisher, robustTaskExecutor, new TranscriptClarityService(),
 				stageClaimService);
+		ReflectionTestUtils.setField(summarizationListenerService, "validationEvents", validationEvents);
 		lenient().when(stageClaimService.claim(any(), any(), any(), any(), any()))
 				.thenReturn(ProcessingStageClaimService.ClaimResult.acquired(createAudioOnlyMetadata()));
 	}
@@ -156,6 +161,11 @@ class SummarizationListenerServiceIntegrationTest {
 		verify(summaryService, never()).updateSummary(any());
 		assertEquals("NOTES", summaryCaptor.getValue().getOutputType());
 		assertEquals("Personal notes", summaryCaptor.getValue().getFormattedSummaryText());
+		verify(validationEvents).emit(eq(METADATA_ID), eq("SINGLE_SOURCE"), eq("WEB"), eq("OUTPUT_GENERATED"),
+				eq(List.of(1)), eq(summaryCaptor.getValue().getSummaryId()),
+				argThat(payload -> "NOTES".equals(payload.get("outputType"))
+						&& summaryCaptor.getValue().getSummaryId().equals(payload.get("summaryId"))),
+				eq("audioMetadata"));
 	}
 
 	@Test
@@ -323,6 +333,7 @@ class SummarizationListenerServiceIntegrationTest {
 		metadata.setTranscriptText("Test transcript text");
 		metadata.setAudioOnly(true);
 		metadata.setOutputType("NOTES");
+		metadata.setClientSource("WEB");
 		return metadata;
 	}
 
@@ -344,6 +355,7 @@ class SummarizationListenerServiceIntegrationTest {
 			metadataMap.put("transcriptText", metadata.getTranscriptText());
 			metadataMap.put("audioOnly", metadata.isAudioOnly());
 			metadataMap.put("outputType", metadata.getOutputType());
+			metadataMap.put("clientSource", metadata.getClientSource());
 			metadataMap.put("failureReason", null);
 			if (metadata.getQualityReport() != null) {
 				metadataMap.put("qualityReport", metadata.getQualityReport().toMap());
@@ -366,6 +378,7 @@ class SummarizationListenerServiceIntegrationTest {
 		metadataMap.put("transcriptText", metadata.getTranscriptText());
 		metadataMap.put("audioOnly", metadata.isAudioOnly());
 		metadataMap.put("outputType", metadata.getOutputType());
+		metadataMap.put("clientSource", metadata.getClientSource());
 		metadataMap.put("failureReason", null);
 		AtomicReference<Map<String, Object>> current = new AtomicReference<>(metadataMap);
 

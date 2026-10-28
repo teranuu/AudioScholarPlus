@@ -650,6 +650,27 @@ public class FirebaseService {
 		}
 	}
 
+	public void releaseLease(String collection, String document, String owner) {
+		DocumentReference reference = getFirestore().collection(collection).document(document);
+		try {
+			getFirestore().runTransaction(transaction -> {
+				DocumentSnapshot snapshot = transaction.get(reference).get();
+				if (!snapshot.exists() || !owner.equals(snapshot.getString("owner"))) {
+					return null;
+				}
+				Timestamp now = Timestamp.now();
+				transaction.set(reference, Map.of("leaseUntil", now, "releasedAt", now, "releasedBy", owner),
+						SetOptions.merge());
+				return null;
+			}).get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Interrupted while releasing maintenance lease " + document, e);
+		} catch (ExecutionException e) {
+			throw new FirestoreInteractionException("Could not release maintenance lease " + document, e);
+		}
+	}
+
 	private List<Map<String, Object>> documentsWithIds(List<QueryDocumentSnapshot> documents) {
 		List<Map<String, Object>> results = new ArrayList<>();
 		for (QueryDocumentSnapshot document : documents) {

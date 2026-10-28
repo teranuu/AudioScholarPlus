@@ -723,6 +723,16 @@ public class SummarizationListenerService {
 		try {
 			log.info("[{}] Saving summary with ID {} to Firestore", metadataId, summary.getSummaryId());
 			summaryService.createSummary(summary);
+			if (validationEvents != null)
+				validationEvents.emit(metadataId, "SINGLE_SOURCE",
+						ValidationEventService.clientSource(metadata.getClientSource()), "OUTPUT_GENERATED", List.of(1),
+						summary.getSummaryId(),
+						Map.of("recordingId", metadataId, "summaryId", summary.getSummaryId(), "outputType",
+								summary.getOutputType(), "summaryStatus", summary.getStatus(), "keyPointCount",
+								summary.getKeyPoints().size(), "topicCount", summary.getTopics().size(),
+								"glossaryCount", summary.getGlossary().size(), "flashcardCount",
+								summary.getFlashcards().size()),
+						firebaseService.getAudioMetadataCollectionName());
 			if (warningIndicatorService != null) {
 				try {
 					warningIndicatorService.generateWarningIndicators(summary.getSummaryId());

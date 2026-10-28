@@ -37,6 +37,74 @@ class ValidationExportControllerTest {
 		assertThat(manifest.path("objectiveCodes").toString()).isEqualTo("[3,6,7,8]");
 		for (int objective = 2; objective <= 8; objective++)
 			assertThat(manifest.path("objectiveEvidenceStatus").has(String.valueOf(objective))).isTrue();
+		assertThat(manifest.path("objectiveEvidenceStatus").has("1")).isTrue();
+		assertThat(manifest.path("rawEvidenceCollectionsByObjective").size()).isEqualTo(14);
+	}
+
+	@Test
+	void objectiveFilteredExportsContainManualReviewRawArtifacts() throws Exception {
+		FirebaseService firebase = mock(FirebaseService.class);
+		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
+		when(firebase.getAllData("validationEvents")).thenReturn(List.of(
+				Map.of("eventId", "output", "workflowId", "job-1", "clientSource", "WEB", "eventType",
+						"OUTPUT_GENERATED", "occurredAt", occurredAt, "objectiveCodes", List.of(1), "payload",
+						Map.of("summaryId", "summary-1", "outputType", "NOTES")),
+				Map.of("eventId", "alignment", "workflowId", "job-1", "clientSource", "WEB", "eventType",
+						"ALIGNMENT_COMPLETED", "occurredAt", occurredAt, "objectiveCodes", List.of(14))));
+		when(firebase.getAllData("summaries")).thenReturn(List.of(Map.of("summaryId", "summary-1", "recordingId",
+				"job-1", "outputType", "NOTES", "formattedSummaryText", "Reviewer-visible generated output")));
+		when(firebase.getAllData("crossSourceAlignments")).thenReturn(
+				List.of(Map.of("alignmentId", "alignment-1", "jobId", "job-1", "sourcePairId", "source-a:source-b",
+						"sourceAStartMs", 0, "sourceAEndMs", 1000, "sourceBStartMs", 100, "sourceBEndMs", 1100)));
+		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
+
+		String objective1 = new String(controller
+				.export("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", List.of(1), "WEB", "jsonl", true).getBody(),
+				StandardCharsets.UTF_8);
+		String objective14 = new String(controller
+				.export("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", List.of(14), "WEB", "jsonl", false).getBody(),
+				StandardCharsets.UTF_8);
+
+		assertThat(objective1).contains("Reviewer-visible generated output", "REVIEWER_EVIDENCE_REQUIRED");
+		assertThat(objective14).contains("alignment-1", "source-a:source-b");
+	}
+
+	@Test
+	void objective10ExportContainsReviewerUnionAndCompleteWorkflowContext() throws Exception {
+		FirebaseService firebase = mock(FirebaseService.class);
+		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
+		List<Map<String, Object>> events = new java.util.ArrayList<>(lifecycleEvents("job-1", occurredAt));
+		events.add(Map.of("eventId", "dedup", "workflowId", "job-1", "workflowType", "MULTI_SOURCE", "clientSource",
+				"WEB", "eventType", "DEDUPLICATION_COMPLETED", "occurredAt", occurredAt, "objectiveCodes",
+				List.of(10, 11)));
+		when(firebase.getAllData("validationEvents")).thenReturn(events);
+		when(firebase.getAllData("multiSourceJobs")).thenReturn(List.of(Map.of("jobId", "job-1", "status", "COMPLETE",
+				"sourceCount", 2, "finalTranscriptionCompletedAt", occurredAt, "mergeStartedAt", occurredAt,
+				"mergedSummaryAvailableAt", occurredAt, "mergeLatencyMs", 0)));
+		when(firebase.getAllData("sourceFiles")).thenReturn(
+				List.of(Map.of("jobId", "job-1", "sourceFileId", "source-a", "transcriptionCompletedAt", occurredAt),
+						Map.of("jobId", "job-1", "sourceFileId", "source-b", "transcriptionCompletedAt", occurredAt)));
+		when(firebase.getAllData("sourceKeyPoints")).thenReturn(List.of(Map.of("keyPointId", "source-point-1", "jobId",
+				"job-1", "sourceFileId", "source-a", "text", "Reviewer source point")));
+		when(firebase.getAllData("mergedKeyPointLineage")).thenReturn(
+				List.of(Map.of("lineageId", "lineage-1", "jobId", "job-1", "mergedKeyPointId", "merged-point-1",
+						"sourceKeyPointIds", List.of("source-point-1"), "semanticDecisionIds", List.of())));
+		when(firebase.getAllData("sourceAttributions")).thenReturn(List.of(Map.of("attributionId", "attribution-1",
+				"jobId", "job-1", "keyPointId", "merged-point-1", "sourceFileId", "source-a", "sourceLabel", "Source A",
+				"attributionStatus", "RESOLVED", "attributionType", "SINGLE_SOURCE")));
+		when(firebase.getAllData("summaries")).thenReturn(List.of(Map.of("summaryId", "summary-1", "recordingId",
+				"job-1", "formattedSummaryText", "Reviewer merged output", "summaryKeyPoints",
+				List.of(Map.of("keyPointId", "merged-point-1", "text", "Reviewer merged point")))));
+		when(firebase.getAllData("multiSourceStageRuns")).thenReturn(List.of(run("SOURCE_KEY_POINT_EXTRACTION", 1, 1),
+				run("DEDUPLICATION", 1, 1), run("ATTRIBUTION", 1, 1), zeroRun("ALIGNMENT")));
+		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
+
+		String body = new String(controller
+				.export("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", List.of(10), "WEB", "jsonl", true).getBody(),
+				StandardCharsets.UTF_8);
+
+		assertThat(body).contains("Reviewer source point", "Reviewer merged output", "Reviewer merged point",
+				"BATCH_VALIDATED", "DEDUPLICATION_COMPLETED", "REVIEWER_EVIDENCE_REQUIRED");
 	}
 
 	@Test

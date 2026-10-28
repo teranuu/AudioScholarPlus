@@ -67,17 +67,18 @@ public class ValidationExportController {
 			throw new IllegalArgumentException("Use an increasing UTC range and clientSource=WEB");
 		if (!Set.of("jsonl", "zip").contains(format))
 			throw new IllegalArgumentException("format must be jsonl or zip");
-		List<Map<String, Object>> events = firebase.getAllData("validationEvents").stream()
+		List<Map<String, Object>> rangeEvents = firebase.getAllData("validationEvents").stream()
 				.filter(e -> "WEB".equals(e.get("clientSource"))).filter(e -> {
 					Instant at = instant(e.get("occurredAt"));
 					return at != null && !at.isBefore(start) && at.isBefore(end);
-				})
+				}).sorted(Comparator.comparing(e -> instant(e.get("occurredAt")))).toList();
+		Set<String> workflowIds = rangeEvents.stream()
 				.filter(e -> objectiveCodes == null || objectiveCodes.isEmpty()
 						|| ((List<?>) e.getOrDefault("objectiveCodes", List.of())).stream()
-								.anyMatch(c -> objectiveCodes.contains(((Number) c).intValue())))
-				.sorted(Comparator.comparing(e -> instant(e.get("occurredAt")))).toList();
-		Set<String> workflowIds = events.stream().map(e -> (String) e.get("workflowId"))
-				.filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+								.anyMatch(c -> c instanceof Number n && objectiveCodes.contains(n.intValue())))
+				.map(e -> (String) e.get("workflowId")).filter(java.util.Objects::nonNull).collect(Collectors.toSet());
+		List<Map<String, Object>> events = rangeEvents.stream()
+				.filter(event -> workflowIds.contains(event.get("workflowId"))).toList();
 		Map<String, List<Map<String, Object>>> datasets = new LinkedHashMap<>();
 		datasets.put("events", events.stream().map(e -> sanitize(e, false)).toList());
 		Set<String> sourceIds = firebase.getAllData("sourceFiles").stream()
@@ -118,6 +119,7 @@ public class ValidationExportController {
 		manifest.put("from", from);
 		manifest.put("to", to);
 		manifest.put("clientSource", clientSource);
+		manifest.put("requestedObjectiveCodes", objectiveCodes == null ? List.of() : objectiveCodes);
 		manifest.put("includesReviewerText", includeText);
 		Set<Integer> exportedObjectives = new java.util.TreeSet<>();
 		for (Map<String, Object> event : events)
@@ -126,7 +128,12 @@ public class ValidationExportController {
 					if (code instanceof Number n)
 						exportedObjectives.add(n.intValue());
 		manifest.put("objectiveCodes", exportedObjectives);
+		manifest.put("module1ObjectiveCodes", List.of(1));
 		manifest.put("module3ObjectiveCodes", List.of(9, 10, 11, 12, 13, 14));
+		manifest.put("manualReviewObjectiveCodes", List.of(1, 3, 4, 5, 8, 10, 11, 13, 14));
+		manifest.put("reviewerTextObjectiveCodes", List.of(1, 10));
+		manifest.put("reviewerTextIncluded", includeText);
+		manifest.put("rawEvidenceCollectionsByObjective", rawEvidenceCollectionsByObjective());
 		manifest.put("schemaVersions", Map.of("validationEvents", 1, "groundTruth", 2, "metrics", 2));
 		manifest.put("applicationVersions", distinct(datasets, "applicationVersion"));
 		manifest.put("modelVersions", distinct(datasets, "modelVersion"));
@@ -155,7 +162,8 @@ public class ValidationExportController {
 				"unresolvedAttributions",
 				datasets.get("sourceAttributions").stream().filter(r -> "UNRESOLVED".equals(r.get("attributionStatus"))
 						|| "UNRESOLVED".equals(r.get("attributionType"))).count()));
-		Map<Integer, String> statuses = module2Statuses(datasets);
+		Map<Integer, String> statuses = module1Statuses(datasets);
+		statuses.putAll(module2Statuses(datasets));
 		statuses.putAll(module3Statuses(datasets));
 		manifest.put("objectiveEvidenceStatus", statuses);
 		manifest.put("objectiveIncompleteReasons", objectiveIncompleteReasons(datasets));
@@ -189,6 +197,50 @@ public class ValidationExportController {
 				row.put(key, sanitizeValue(e.getValue(), includeText));
 		}
 		return row;
+	}
+
+	private Map<Integer, List<String>> rawEvidenceCollectionsByObjective() {
+		Map<Integer, List<String>> result = new LinkedHashMap<>();
+		result.put(1, List.of("events", "summaries", "summaryKeyPoints", "mergedSummaries"));
+		result.put(2, List.of("events", "audio_metadata", "multiSourceJobs"));
+		for (int code = 3; code <= 5; code++)
+			result.put(code, List.of("events", "qualityReports", "qualityIssues"));
+		result.put(6, List.of("events", "qualityReports", "sourceFiles"));
+		result.put(7, List.of("events", "warningMappings", "warningIndicators", "warningDisplayReceipts"));
+		result.put(8, List.of("events", "warningCandidates", "warningIndicators"));
+		result.put(9, List.of("events", "multiSourceJobs", "sourceFiles"));
+		result.put(10, List.of("events", "sourceKeyPoints", "mergedKeyPointLineage", "summaries", "summaryKeyPoints"));
+		result.put(11, List.of("events", "semanticDecisions", "sourceKeyPoints"));
+		result.put(12, List.of("events", "multiSourceJobs", "sourceFiles"));
+		result.put(13, List.of("events", "sourceAttributions", "sourceKeyPoints", "summaries", "summaryKeyPoints"));
+		result.put(14, List.of("events", "crossSourceAlignments", "transcriptSegments"));
+		return result;
+	}
+
+	private Map<Integer, String> module1Statuses(Map<String, List<Map<String, Object>>> datasets) {
+		Map<Integer, String> result = new LinkedHashMap<>();
+		List<Map<String, Object>> generated = datasets.get("events").stream()
+				.filter(event -> "OUTPUT_GENERATED".equals(event.get("eventType"))).toList();
+		if (generated.isEmpty()) {
+			result.put(1, "NO_APPLICABLE_RECORDS");
+			return result;
+		}
+		Set<String> incomplete = incompleteWorkflowIds(datasets);
+		boolean missingOutput = generated.stream().anyMatch(event -> {
+			Map<?, ?> payload = event.get("payload") instanceof Map<?, ?> map ? map : Map.of();
+			String workflowId = String.valueOf(event.get("workflowId"));
+			String summaryId = String.valueOf(payload.get("summaryId"));
+			String outputType = String.valueOf(payload.get("outputType"));
+			return summaryId.isBlank() || !VALID_OUTPUT_TYPES.contains(outputType)
+					|| datasets.get("summaries").stream()
+							.noneMatch(summary -> summaryId.equals(summary.get("summaryId"))
+									&& workflowId.equals(summary.get("recordingId"))
+									&& outputType.equals(summary.get("outputType")));
+		});
+		boolean measurementIncomplete = generated.stream()
+				.anyMatch(event -> incomplete.contains(String.valueOf(event.get("workflowId"))));
+		result.put(1, missingOutput || measurementIncomplete ? "EXPORT_INCOMPLETE" : "REVIEWER_EVIDENCE_REQUIRED");
+		return result;
 	}
 	private Map<Integer, String> module3Statuses(Map<String, List<Map<String, Object>>> datasets) {
 		Map<Integer, String> result = new LinkedHashMap<>();
@@ -281,9 +333,21 @@ public class ValidationExportController {
 	private Map<Integer, List<Map<String, Object>>> objectiveIncompleteReasons(
 			Map<String, List<Map<String, Object>>> datasets) {
 		Map<Integer, List<Map<String, Object>>> result = new LinkedHashMap<>();
-		for (int code = 2; code <= 8; code++)
+		for (int code = 1; code <= 14; code++)
 			result.put(code, new ArrayList<>());
 		Set<String> incomplete = incompleteWorkflowIds(datasets);
+		for (Map<String, Object> event : datasets.get("events"))
+			if ("OUTPUT_GENERATED".equals(event.get("eventType"))) {
+				Map<?, ?> payload = event.get("payload") instanceof Map<?, ?> map ? map : Map.of();
+				String workflowId = String.valueOf(event.get("workflowId"));
+				String summaryId = String.valueOf(payload.get("summaryId"));
+				String outputType = String.valueOf(payload.get("outputType"));
+				if (incomplete.contains(workflowId))
+					result.get(1).add(Map.of("workflowId", workflowId, "reason", "MEASUREMENT_INCOMPLETE"));
+				else if (summaryId.isBlank() || !VALID_OUTPUT_TYPES.contains(outputType) || datasets.get("summaries")
+						.stream().noneMatch(summary -> summaryId.equals(summary.get("summaryId"))))
+					result.get(1).add(Map.of("workflowId", workflowId, "reason", "GENERATED_OUTPUT_MISSING"));
+			}
 		for (var entry : configurationEvents(datasets.get("events")).entrySet()) {
 			String workflowId = entry.getKey();
 			if (incomplete.contains(workflowId))

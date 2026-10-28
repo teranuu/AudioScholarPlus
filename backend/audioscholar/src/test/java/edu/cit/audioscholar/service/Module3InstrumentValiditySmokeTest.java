@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Date;
@@ -30,6 +31,7 @@ import org.apache.pdfbox.pdmodel.font.Standard14Fonts;
 import org.apache.poi.xslf.usermodel.XMLSlideShow;
 import org.apache.poi.xslf.usermodel.XSLFSlide;
 import org.apache.poi.xslf.usermodel.XSLFTextBox;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -58,6 +60,38 @@ class Module3InstrumentValiditySmokeTest {
 	@TempDir
 	Path tempDir;
 
+	@Test
+	void twoParticipantPilotStaysWithinDailyAdmissionAndMergeTarget() throws Exception {
+		List<Map<String, Object>> completedJobs = new ArrayList<>();
+		List<Long> executionTimesMs = new ArrayList<>();
+		for (int participant = 1; participant <= 2; participant++) {
+			Harness harness = new Harness(2);
+			long started = System.nanoTime();
+			MultiSourceJob accepted = harness.service.createAndProcess("pilot-user-" + participant, harness.mediaFiles,
+					harness.documentFiles, "Two-person pilot " + participant, "Synthetic provider-boundary pilot",
+					"NOTES", "WEB");
+			harness.service.processQueuedJob(accepted.getJobId());
+			executionTimesMs.add(Duration.ofNanos(System.nanoTime() - started).toMillis());
+			completedJobs.add(harness.jobRows.get(accepted.getJobId()));
+		}
+
+		assertThat(completedJobs).allSatisfy(job -> {
+			assertThat(job.get("status")).isEqualTo(ProcessingStatus.COMPLETE.name());
+			assertThat(job.get("estimatedGeminiRequests")).isEqualTo(5);
+			assertThat(job.get("actualGeminiRequests")).isEqualTo(5);
+			assertThat(((Number) job.get("mergeLatencyMs")).longValue()).isLessThan(120_000);
+			Date first = (Date) job.get("geminiFirstRequestAt");
+			Date last = (Date) job.get("geminiLastRequestAt");
+			assertThat(last.getTime() - first.getTime()).isEqualTo(60_000);
+		});
+		int totalRequests = completedJobs.stream()
+				.mapToInt(job -> ((Number) job.get("actualGeminiRequests")).intValue()).sum();
+		assertThat(totalRequests).isEqualTo(10).isLessThanOrEqualTo(18);
+		System.out.printf(
+				"TWO_PERSON_PILOT participants=2 totalGeminiRequests=%d dailyAdmissionLimit=18 modeled4RpmWindowMs=60000 mergeLatencyMs=%s executionTimesMs=%s%n",
+				totalRequests, completedJobs.stream().map(job -> job.get("mergeLatencyMs")).toList(), executionTimesMs);
+	}
+
 	@ParameterizedTest(name = "controlled {0}-source batch completes with coherent evidence")
 	@ValueSource(ints = {2, 3, 5})
 	void controlledBatchesCompleteWithInstrumentReadyEvidence(int sourceCount) throws Exception {
@@ -70,10 +104,14 @@ class Module3InstrumentValiditySmokeTest {
 		harness.service.processQueuedJob(accepted.getJobId());
 
 		Map<String, Object> completed = harness.jobRows.get(accepted.getJobId());
-		assertThat(completed.get("status")).isEqualTo(ProcessingStatus.COMPLETE.name());
+		assertThat(completed.get("status")).withFailMessage("job did not complete: %s", completed)
+				.isEqualTo(ProcessingStatus.COMPLETE.name());
 		assertThat(completed.get("sourceCount")).isEqualTo(sourceCount);
 		assertThat(completed.get("finalAttemptCount")).isEqualTo(1);
 		assertThat(completed.get("measurementIncomplete")).isEqualTo(false);
+		int expectedGeminiRequests = sourceCount == 5 ? 6 : 5;
+		assertThat(completed.get("estimatedGeminiRequests")).isEqualTo(expectedGeminiRequests);
+		assertThat(completed.get("actualGeminiRequests")).isEqualTo(expectedGeminiRequests);
 		assertThat(completed).containsKeys("finalTranscriptionCompletedAt", "mergeStartedAt",
 				"mergedSummaryAvailableAt", "mergeLatencyMs");
 		assertThat(((Number) completed.get("mergeLatencyMs")).longValue()).isNotNegative();
@@ -96,7 +134,9 @@ class Module3InstrumentValiditySmokeTest {
 		List<Map<String, Object>> events = harness.rows("validationEvents");
 		assertThat(eventTypes(events)).containsSubsequence("BATCH_SUBMITTED", "CONFIG_CONFIRMED", "BATCH_VALIDATED",
 				"JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED", "PROCESSING_STARTED",
-				"ALL_TRANSCRIPTIONS_COMPLETED", "DEDUPLICATION_COMPLETED", "MERGED_SUMMARY_AVAILABLE", "JOB_COMPLETED");
+				"ALL_TRANSCRIPTIONS_COMPLETED", "SOURCE_KEY_POINTS_BATCH_EXTRACTED", "SEMANTIC_BATCH_CLASSIFIED",
+				"ALIGNMENT_COMPLETED", "DEDUPLICATION_COMPLETED", "OUTPUT_GENERATED", "MERGED_SUMMARY_AVAILABLE",
+				"GEMINI_USAGE_RECORDED", "JOB_COMPLETED");
 		assertThat(events.stream().filter(e -> "SOURCE_RETRIEVED".equals(e.get("eventType")))).hasSize(sourceCount);
 		assertThat(events.stream().filter(e -> "SOURCE_TRANSCRIPTION_COMPLETED".equals(e.get("eventType"))))
 				.hasSize(sourceCount);
@@ -111,10 +151,15 @@ class Module3InstrumentValiditySmokeTest {
 		assertThat(harness.rows("crossSourceAlignments")).hasSize(1);
 		assertThat(harness.rows("multiSourceStageRuns")).extracting(row -> row.get("stage"))
 				.containsExactlyInAnyOrder("SOURCE_KEY_POINT_EXTRACTION", "DEDUPLICATION", "ATTRIBUTION", "ALIGNMENT");
+		org.mockito.Mockito.verify(harness.gemini, org.mockito.Mockito.times(1)).callSimpleTextAPI(anyString(),
+				anyString(), org.mockito.ArgumentMatchers.eq("multi-source.key-point-batch.generateContent"));
+		org.mockito.Mockito.verify(harness.gemini, org.mockito.Mockito.times(1)).callSimpleTextAPI(anyString(),
+				anyString(), org.mockito.ArgumentMatchers.eq("multi-source.semantic-pair-batch.generateContent"));
 
 		JsonNode manifest = harness.exportManifest();
 		assertThat(manifest.path("integrityIssues")).isEmpty();
 		assertThat(manifest.path("measurementIncompleteWorkflows")).isEmpty();
+		assertThat(manifest.path("objectiveEvidenceStatus").path("1").asText()).isEqualTo("REVIEWER_EVIDENCE_REQUIRED");
 		assertThat(manifest.path("objectiveEvidenceStatus").path("9").asText()).isEqualTo("COMPLETE");
 		assertThat(manifest.path("objectiveEvidenceStatus").path("12").asText()).isEqualTo("COMPLETE");
 		for (String objective : List.of("10", "11", "13", "14"))
@@ -146,6 +191,7 @@ class Module3InstrumentValiditySmokeTest {
 		private final MultiSourceJobRepository jobs = mock(MultiSourceJobRepository.class);
 		private final SourceFileService sourceFiles = mock(SourceFileService.class);
 		private final GeminiService gemini = mock(GeminiService.class);
+		private final GeminiRequestGovernor governor = mock(GeminiRequestGovernor.class);
 		private final MultiSourceJobService service;
 
 		private Harness(int sourceCount) throws Exception {
@@ -173,11 +219,20 @@ class Module3InstrumentValiditySmokeTest {
 			QualityReportService quality = mock(QualityReportService.class);
 			when(quality.analyzeAndSave(anyString(), any(Path.class), anyString(), anyString(), anyString(),
 					anyString())).thenReturn(null);
+			int expectedGeminiRequests = mediaFiles.size() + 3;
+			Instant requestAt = Instant.now();
+			Instant lastRequestAt = requestAt.plusSeconds((expectedGeminiRequests - 1L) * 15L);
+			long pacingWaitMs = (expectedGeminiRequests - 1L) * 15_000L;
+			when(governor.snapshot(anyString())).thenReturn(new GeminiRequestGovernor.UsageSnapshot(
+					expectedGeminiRequests, pacingWaitMs, requestAt, lastRequestAt));
+			when(governor.snapshotAndClear(anyString())).thenReturn(new GeminiRequestGovernor.UsageSnapshot(
+					expectedGeminiRequests, pacingWaitMs, requestAt, lastRequestAt));
 
 			service = new MultiSourceJobService(gemini, quality, summaries, new DeduplicationService(), attributions,
 					sourceFiles, transcripts, new DocumentTextExtractionService(),
 					new MergedSummaryRepository(firebase), jobs, guardrails, tempDir.toString(), "20MB",
-					mock(ConfirmedRabbitPublisher.class), validationEvents, segments, semantic);
+					mock(ConfirmedRabbitPublisher.class), validationEvents, segments, semantic, governor,
+					Duration.ofMinutes(35), Duration.ofSeconds(15), "smoke-worker");
 		}
 
 		private void configurePersistence() {
@@ -214,6 +269,7 @@ class Module3InstrumentValiditySmokeTest {
 				recordStatus("PROCESSING");
 				return true;
 			});
+			when(jobs.tryAcquireProcessingLease(anyString(), any())).thenReturn(true);
 			when(jobs.saveIfNonterminal(any(MultiSourceJob.class))).thenAnswer(invocation -> {
 				MultiSourceJob job = invocation.getArgument(0);
 				Map<String, Object> current = jobRows.get(job.getJobId());
@@ -296,7 +352,7 @@ class Module3InstrumentValiditySmokeTest {
 		}
 
 		private void configureProvider() throws Exception {
-			when(gemini.callGeminiTranscriptionAPIWithFallback(any(Path.class), anyString()))
+			when(gemini.callGeminiTranscriptionAPIWithFallback(any(Path.class), anyString(), anyString()))
 					.thenAnswer(invocation -> switch ((String) invocation.getArgument(1)) {
 						case "source-a.mp3" ->
 							"Shared lecture claim. Tachycardia means rapid heartbeat. Alpha unique insight.";
@@ -304,30 +360,48 @@ class Module3InstrumentValiditySmokeTest {
 							"Shared lecture claim. Rapid heart rate is tachycardia. Beta unique insight.";
 						default -> "Gamma unique insight.";
 					});
-			when(gemini.generateTranscriptOnlySummary(anyString(), anyString(), anyString())).thenAnswer(invocation -> {
-				String id = invocation.getArgument(1);
-				return switch (id) {
-					case "source-a" ->
-						points("Shared lecture claim", "Tachycardia means rapid heartbeat", "Alpha unique insight");
-					case "source-b" ->
-						points("Shared lecture claim", "Rapid heart rate is tachycardia", "Beta unique insight");
-					case "source-c" -> points(mediaFiles.size() == 3
-							? "Gamma unique insight"
-							: "PDF evidence covers chlorophyll absorption");
-					case "source-d" -> points("PDF evidence covers chlorophyll absorption");
-					case "source-e" -> points("PPT evidence explains quantum energy levels");
-					default ->
-						"{\"summaryText\":\"Controlled merged summary\",\"keyPoints\":[],\"topics\":[],\"glossary\":[],\"flashcards\":[]}";
-				};
-			});
-			when(gemini.callSimpleTextAPI(anyString())).thenAnswer(invocation -> {
-				String prompt = invocation.getArgument(0);
-				boolean paraphrase = prompt.contains("Tachycardia means rapid heartbeat")
-						&& prompt.contains("Rapid heart rate is tachycardia");
-				return paraphrase
-						? "{\"duplicate\":true,\"confidence\":0.94}"
-						: "{\"duplicate\":false,\"confidence\":0.12}";
-			});
+			when(gemini.generateTranscriptOnlySummary(anyString(), anyString(), anyString())).thenReturn(
+					"{\"summaryText\":\"Controlled merged summary\",\"keyPoints\":[],\"topics\":[],\"glossary\":[],\"flashcards\":[]}");
+			when(gemini.callSimpleTextAPI(anyString(), anyString(),
+					org.mockito.ArgumentMatchers.eq("multi-source.key-point-batch.generateContent")))
+					.thenReturn(batchPoints());
+			when(gemini.callSimpleTextAPI(anyString(), anyString(),
+					org.mockito.ArgumentMatchers.eq("multi-source.semantic-pair-batch.generateContent")))
+					.thenAnswer(invocation -> batchClassifications(invocation.getArgument(0)));
+		}
+
+		private String batchPoints() throws Exception {
+			List<Map<String, Object>> sources = new ArrayList<>();
+			sources.add(Map.of("sourceFileId", "source-a", "keyPoints",
+					List.of("Shared lecture claim", "Tachycardia means rapid heartbeat", "Alpha unique insight")));
+			sources.add(Map.of("sourceFileId", "source-b", "keyPoints",
+					List.of("Shared lecture claim", "Rapid heart rate is tachycardia", "Beta unique insight")));
+			if (mediaFiles.size() == 3)
+				sources.add(Map.of("sourceFileId", "source-c", "keyPoints", List.of("Gamma unique insight")));
+			if (!documentFiles.isEmpty()) {
+				String pdfId = mediaFiles.size() == 3 ? "source-d" : "source-c";
+				sources.add(Map.of("sourceFileId", pdfId, "keyPoints",
+						List.of("PDF evidence covers chlorophyll absorption")));
+			}
+			if (documentFiles.size() == 2)
+				sources.add(Map.of("sourceFileId", "source-e", "keyPoints",
+						List.of("PPT evidence explains quantum energy levels")));
+			return json.writeValueAsString(Map.of("sources", sources));
+		}
+
+		private String batchClassifications(String prompt) throws Exception {
+			String marker = "INPUT_PAIRS=";
+			JsonNode input = json.readTree(prompt.substring(prompt.indexOf(marker) + marker.length()).trim());
+			List<Map<String, Object>> decisions = new ArrayList<>();
+			for (JsonNode pair : input) {
+				String left = pair.path("leftText").asText();
+				String right = pair.path("rightText").asText();
+				boolean paraphrase = (left.contains("Tachycardia") && right.contains("tachycardia"))
+						|| (right.contains("Tachycardia") && left.contains("tachycardia"));
+				decisions.add(Map.of("pairId", pair.path("pairId").asText(), "duplicate", paraphrase, "confidence",
+						paraphrase ? 0.94 : 0.12));
+			}
+			return json.writeValueAsString(Map.of("pairs", decisions));
 		}
 
 		private JsonNode exportManifest() throws Exception {
@@ -405,10 +479,6 @@ class Module3InstrumentValiditySmokeTest {
 				presentation.write(output);
 				return output.toByteArray();
 			}
-		}
-
-		private String points(String... points) throws Exception {
-			return json.writeValueAsString(Map.of("keyPoints", List.of(points)));
 		}
 
 		private String extension(String filename) {

@@ -98,7 +98,7 @@ public class GeminiService {
 	private final ObjectMapper objectMapper = new ObjectMapper();
 	private final GeminiSmartRotationService rotationService;
 	private final PromptTemplateService promptTemplateService;
-	private final GeminiBudgetService geminiBudgetService;
+	private final GeminiRequestGovernor requestGovernor;
 	private final AudioProcessingGuardrailService guardrailService;
 
 	@Value("${gemini.rotation.max-cycles:2}")
@@ -106,12 +106,12 @@ public class GeminiService {
 
 	public GeminiService(RestTemplate restTemplate, KeyRotationManager keyRotationManager,
 			GeminiSmartRotationService rotationService, PromptTemplateService promptTemplateService,
-			GeminiBudgetService geminiBudgetService, AudioProcessingGuardrailService guardrailService) {
+			GeminiRequestGovernor requestGovernor, AudioProcessingGuardrailService guardrailService) {
 		this.restTemplate = restTemplate;
 		this.keyRotationManager = keyRotationManager;
 		this.rotationService = rotationService;
 		this.promptTemplateService = promptTemplateService;
-		this.geminiBudgetService = geminiBudgetService;
+		this.requestGovernor = requestGovernor;
 		this.guardrailService = guardrailService;
 	}
 
@@ -226,6 +226,11 @@ public class GeminiService {
 	 * Enhanced transcription API with fallback and retry
 	 */
 	public String callGeminiTranscriptionAPIWithFallback(Path audioFilePath, String fileName) throws IOException {
+		return callGeminiTranscriptionAPIWithFallback(audioFilePath, fileName, null);
+	}
+
+	public String callGeminiTranscriptionAPIWithFallback(Path audioFilePath, String fileName, String contextId)
+			throws IOException {
 		if (audioFilePath == null || !Files.exists(audioFilePath)) {
 			log.error("Audio file path is null or does not exist: {}", audioFilePath);
 			throw new IOException("Audio file path is null or does not exist: " + audioFilePath);
@@ -246,7 +251,8 @@ public class GeminiService {
 
 			String activeFileUri = fileUri;
 			String activeFileKey = uploadKey;
-			String result = transcribeActiveFile(activeFileUri, mimeType, activeFileKey, estimatedInputTokens);
+			String result = transcribeActiveFile(activeFileUri, mimeType, activeFileKey, estimatedInputTokens,
+					contextId);
 			keyRotationManager.reportSuccess(KeyProvider.GEMINI, activeFileKey);
 			return result;
 
@@ -273,8 +279,8 @@ public class GeminiService {
 		}
 	}
 
-	private String transcribeActiveFile(String fileUri, String mimeType, String apiKey, long estimatedInputTokens)
-			throws GeminiRateLimitException {
+	private String transcribeActiveFile(String fileUri, String mimeType, String apiKey, long estimatedInputTokens,
+			String contextId) throws GeminiRateLimitException {
 		GeminiRateLimitException lastRateLimit = null;
 		boolean attemptedModel = false;
 		for (int cycle = 1; cycle <= rotationMaxCycles; cycle++) {
@@ -284,7 +290,7 @@ public class GeminiService {
 					continue;
 				attemptedModel = true;
 				try {
-					reserveGemini("transcription.generateContent", estimatedInputTokens, null);
+					reserveGemini("transcription.generateContent", estimatedInputTokens, contextId);
 					return callGeminiTranscriptionAPISingleModel(fileUri, mimeType, normalizedModel, apiKey);
 				} catch (HttpClientErrorException e) {
 					int statusCode = e.getStatusCode().value();
@@ -671,7 +677,6 @@ public class GeminiService {
 
 	private String uploadFile(Path filePath, String mimeType, long fileSize, String displayName, String apiKey)
 			throws IOException, ApiException {
-		reserveGemini("files.upload", 0, null);
 		String initiateUrl = UriComponentsBuilder.fromUriString(FILES_API_BASE_URL + FILES_API_UPLOAD_PATH)
 				.queryParam("key", apiKey).toUriString();
 
@@ -799,7 +804,7 @@ public class GeminiService {
 	}
 
 	private void reserveGemini(String operation, long inputTokens, String contextId) {
-		geminiBudgetService.reserve(operation, inputTokens, null, contextId);
+		requestGovernor.acquire(operation, inputTokens, contextId);
 	}
 
 	public String callGeminiSummarizationAPI(String promptText, String transcriptText) {
@@ -1191,6 +1196,10 @@ public class GeminiService {
 	}
 
 	public String callSimpleTextAPI(String promptText) {
+		return callSimpleTextAPI(promptText, null, "simple-text.generateContent");
+	}
+
+	public String callSimpleTextAPI(String promptText, String contextId, String operation) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
 
@@ -1217,6 +1226,8 @@ public class GeminiService {
 					.queryParam("key", currentKey).buildAndExpand(TRANSCRIPTION_MODEL_NAME).toUriString();
 
 			try {
+				long estimatedInputTokens = guardrailService.validateSummaryInput(promptText, 0);
+				reserveGemini(operation, estimatedInputTokens, contextId);
 				ResponseEntity<String> response = restTemplate.exchange(simpleTextUrl, HttpMethod.POST, requestEntity,
 						String.class);
 				keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -1239,6 +1250,8 @@ public class GeminiService {
 				log.info("Successfully extracted simple text response (length: {}).", extractedText.length());
 				return extractedText;
 
+			} catch (GeminiBudgetExceededException e) {
+				throw e;
 			} catch (ApiException e) {
 				log.error("Gemini Simple Text API Error on attempt {}: {}", attempt, e.getMessage(), e);
 				return createErrorResponse("Simple Text API Error", e.getMessage());

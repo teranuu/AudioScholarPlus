@@ -8,7 +8,6 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.time.Instant;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -44,7 +43,7 @@ class GeminiServiceTest {
 	private GeminiSmartRotationService rotationService;
 
 	@Mock
-	private GeminiBudgetService geminiBudgetService;
+	private GeminiRequestGovernor requestGovernor;
 
 	@Mock
 	private AudioProcessingGuardrailService guardrailService;
@@ -69,10 +68,6 @@ class GeminiServiceTest {
 		lenient().when(guardrailService.validateSummaryInput(anyString(), anyLong())).thenReturn(100L);
 		lenient().when(guardrailService.validateAudioFile(any(Path.class), anyString()))
 				.thenReturn(new AudioProcessingGuardrailService.GuardrailResult(60, 1_920, "fingerprint", "audio"));
-		lenient()
-				.when(geminiBudgetService.reserve(anyString(), anyLong(), nullable(String.class),
-						nullable(String.class)))
-				.thenReturn(new GeminiBudgetService.Reservation("test", 0, Instant.now()));
 	}
 
 	// ==================== SUCCESS SCENARIOS (New Fallback Logic)
