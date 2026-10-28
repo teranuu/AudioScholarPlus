@@ -12,7 +12,7 @@ public class MultiSourceJobListener {
 	public MultiSourceJobListener(MultiSourceJobService jobs) {
 		this.jobs = jobs;
 	}
-	@RabbitListener(queues = RabbitMQConfig.MULTI_SOURCE_QUEUE_NAME, containerFactory = "defaultContainerFactory")
+	@RabbitListener(queues = RabbitMQConfig.MULTI_SOURCE_QUEUE_NAME, containerFactory = "multiSourceContainerFactory")
 	public void process(MultiSourceJobMessage message) throws Exception {
 		jobs.processQueuedJob(message.jobId());
 	}

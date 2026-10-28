@@ -1,6 +1,7 @@
 package edu.cit.audioscholar.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -24,6 +25,31 @@ import edu.cit.audioscholar.model.Summary;
 class SemanticEvidenceServiceTest {
 
 	@Test
+	void incompleteSemanticBatchFailsInsteadOfPublishingPartialDeduplication() throws Exception {
+		GeminiService gemini = mock(GeminiService.class);
+		FirebaseService firebase = mock(FirebaseService.class);
+		ValidationEventService events = mock(ValidationEventService.class);
+		SemanticEvidenceService service = new SemanticEvidenceService(gemini, firebase, new ObjectMapper(), events, .80,
+				"test-version", "summary-model-v1", "semantic-model-v1");
+		MultiSourceJob job = new MultiSourceJob();
+		job.setJobId("job-1");
+		SourceFile first = source("source-a", "A");
+		SourceFile second = source("source-b", "B");
+		job.setSourceFiles(List.of(first, second));
+		when(gemini.callSimpleTextAPI(anyString(), eq("job-1"), eq("multi-source.key-point-batch.generateContent")))
+				.thenReturn("{\"sources\":[{\"sourceFileId\":\"source-a\",\"keyPoints\":[\"claim A\"]},"
+						+ "{\"sourceFileId\":\"source-b\",\"keyPoints\":[\"claim B\"]}]}");
+		when(gemini.callSimpleTextAPI(anyString(), eq("job-1"), eq("multi-source.semantic-pair-batch.generateContent")))
+				.thenReturn("{\"pairs\":[]}");
+		when(firebase.queryCollection(eq("transcriptSegments"), eq("sourceFileId"), anyString())).thenReturn(List.of());
+
+		IllegalStateException failure = assertThrows(IllegalStateException.class,
+				() -> service.evaluate(job, new Summary("summary-1", "job-1", "merged")));
+
+		assertTrue(failure.getMessage().contains("omitted one or more pairs"));
+	}
+
+	@Test
 	void decisionsReferencePersistedMergedPointAndAttributionIsPerContributor() throws Exception {
 		GeminiService gemini = mock(GeminiService.class);
 		FirebaseService firebase = mock(FirebaseService.class);
@@ -38,8 +64,9 @@ class SemanticEvidenceServiceTest {
 		job.setSourceFiles(List.of(unresolved, resolved));
 		Summary summary = new Summary("summary-1", "job-1", "merged");
 
-		when(gemini.generateTranscriptOnlySummary(anyString(), anyString(), eq("NOTES")))
-				.thenReturn("{\"keyPoints\":[\"shared claim\"]}");
+		when(gemini.callSimpleTextAPI(anyString(), eq("job-1"), eq("multi-source.key-point-batch.generateContent")))
+				.thenReturn("{\"sources\":[{\"sourceFileId\":\"source-a\",\"keyPoints\":[\"shared claim\"]},"
+						+ "{\"sourceFileId\":\"source-b\",\"keyPoints\":[\"shared claim\"]}]}");
 		when(firebase.queryCollection("transcriptSegments", "sourceFileId", "source-a")).thenReturn(List.of());
 		when(firebase.queryCollection("transcriptSegments", "sourceFileId", "source-b"))
 				.thenReturn(List.of(Map.of("segmentId", "segment-b", "sourceFileId", "source-b", "text", "shared claim",

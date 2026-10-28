@@ -163,6 +163,17 @@ class MultiSourceJobServiceTest {
 	}
 
 	@Test
+	void defersJobWithoutClaimingWhenGlobalProcessingLeaseIsBusy() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.repository.tryAcquireProcessingLease(anyString(), any())).thenReturn(false);
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository, never()).claim(anyString());
+		verify(harness.repository, never()).releaseProcessingLease(anyString());
+	}
+
+	@Test
 	void terminalStateAndPendingEventArePersistedBeforePublishingCompletion() throws Exception {
 		ProcessingHarness harness = processingHarness(true);
 
@@ -213,6 +224,8 @@ class MultiSourceJobServiceTest {
 		MultiSourceJobRepository repository = mock(MultiSourceJobRepository.class);
 		ValidationEventService events = mock(ValidationEventService.class);
 		SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
+		GeminiRequestGovernor governor = governor();
+		when(repository.tryAcquireProcessingLease(anyString(), any())).thenReturn(true);
 		when(repository.claim("job-1")).thenReturn(true);
 		when(repository.findById("job-1"))
 				.thenReturn(Map.of("jobId", "job-1", "userId", "user-1", "title", "Title", "outputType", "NOTES",
@@ -234,7 +247,8 @@ class MultiSourceJobServiceTest {
 				mock(SourceTranscriptService.class), mock(DocumentTextExtractionService.class),
 				mock(MergedSummaryRepository.class), repository, mock(AudioProcessingGuardrailService.class),
 				tempDir.toString(), "500MB", mock(ConfirmedRabbitPublisher.class), events,
-				mock(TimedTranscriptSegmentService.class), semantic);
+				mock(TimedTranscriptSegmentService.class), semantic, governor, java.time.Duration.ofMinutes(35),
+				java.time.Duration.ofSeconds(15), "test-worker");
 		return new ProcessingHarness(service, repository, events, sourceFiles);
 	}
 
@@ -271,7 +285,8 @@ class MultiSourceJobServiceTest {
 				sourceFiles, mock(SourceTranscriptService.class), mock(DocumentTextExtractionService.class),
 				mock(MergedSummaryRepository.class), mock(MultiSourceJobRepository.class), guardrails,
 				tempDir.toString(), "500MB", mock(ConfirmedRabbitPublisher.class), mock(ValidationEventService.class),
-				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class));
+				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class), governor(),
+				java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
 	}
 
 	private MultiSourceJobService service() throws Exception {
@@ -285,7 +300,8 @@ class MultiSourceJobServiceTest {
 				mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class),
 				mock(MultiSourceJobRepository.class), guardrailService, tempDir.toString(), "500MB",
 				mock(ConfirmedRabbitPublisher.class), mock(ValidationEventService.class),
-				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class));
+				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class), governor(),
+				java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
 	}
 
 	private MultiSourceJobService serviceWithDeduplication() throws Exception {
@@ -295,7 +311,15 @@ class MultiSourceJobServiceTest {
 				mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class),
 				mock(MultiSourceJobRepository.class), mock(AudioProcessingGuardrailService.class), tempDir.toString(),
 				"500MB", mock(ConfirmedRabbitPublisher.class), mock(ValidationEventService.class),
-				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class));
+				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class), governor(),
+				java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
+	}
+
+	private GeminiRequestGovernor governor() {
+		GeminiRequestGovernor governor = mock(GeminiRequestGovernor.class);
+		when(governor.snapshot(anyString())).thenReturn(GeminiRequestGovernor.UsageSnapshot.empty());
+		when(governor.snapshotAndClear(anyString())).thenReturn(GeminiRequestGovernor.UsageSnapshot.empty());
+		return governor;
 	}
 
 	private MockMultipartFile media(String filename) {

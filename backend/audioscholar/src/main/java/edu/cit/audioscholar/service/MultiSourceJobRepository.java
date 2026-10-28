@@ -58,6 +58,14 @@ public class MultiSourceJobRepository {
 				leaseUntil);
 	}
 
+	public boolean tryAcquireProcessingLease(String owner, Date leaseUntil) {
+		return firebaseService.tryAcquireLease("systemMaintenanceLocks", "multiSourceProcessing", owner, leaseUntil);
+	}
+
+	public void releaseProcessingLease(String owner) {
+		firebaseService.releaseLease("systemMaintenanceLocks", "multiSourceProcessing", owner);
+	}
+
 	public boolean failIfNonterminalAndStale(String jobId, Date cutoff) {
 		return firebaseService.failJobIfNonterminalAndStale(COLLECTION_NAME, jobId, cutoff);
 	}

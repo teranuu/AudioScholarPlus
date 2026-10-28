@@ -290,6 +290,19 @@ class ValidationEvaluatorTest {
 		assertThat(metrics.path("8").path("status").asText()).isEqualTo("NOT_EVALUABLE");
 	}
 
+	@Test
+	void t11IncludesBatchedSemanticDecisions() throws Exception {
+		String export = manifest("semantic-batch") + row("semanticDecisions",
+				"{\"decisionId\":\"d1\",\"decisionMethod\":\"SEMANTIC_BATCH\",\"duplicate\":true}");
+		String truth = "{\"schemaVersion\":2,\"exportManifestHash\":\"semantic-batch\","
+				+ "\"duplicatePairs\":[{\"decisionId\":\"d1\",\"duplicate\":true}]}";
+
+		JsonNode metrics = evaluate(export, truth);
+
+		assertThat(metrics.path("11").path("denominator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("11").path("status").asText()).isEqualTo("PASS");
+	}
+
 	private String manifest(String hash) {
 		return row("manifest", "{\"exportBindingHash\":\"" + hash + "\"}");
 	}

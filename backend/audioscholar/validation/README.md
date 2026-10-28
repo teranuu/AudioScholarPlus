@@ -1,12 +1,23 @@
 # Validation export and evaluation
 
-This tooling measures T2–T14 for web workflows. Module 2 uses attempt-scoped reports, generated warning evidence, viewport receipts, and ground-truth schema v2. Set `VALIDATION_TELEMETRY_ENABLED=true` in the controlled-study environment. Events are retained for 180 days by default.
+This tooling exports raw evidence for T1–T14 for web workflows. Module 2 uses attempt-scoped reports, generated warning evidence, viewport receipts, and ground-truth schema v2. Set both `VALIDATION_TELEMETRY_ENABLED=true` and `VALIDATION_EXPORT_ENABLED=true` in the controlled-study environment. Events are retained for 180 days by default.
 
 Export as an administrator:
 
 ```text
 GET /api/admin/validation/export?from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z&clientSource=WEB&format=jsonl
 ```
+
+For manual reviewer assessment of generated output accuracy (Objective 1) or merged-summary completeness
+(Objective 10), request reviewer text explicitly:
+
+```text
+GET /api/admin/validation/export?from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z&clientSource=WEB&format=zip&includeText=true&objectiveCodes=1,10
+```
+
+The manifest contains `rawEvidenceCollectionsByObjective` for Objectives 1–14, identifies objectives that require
+manual review, and records whether reviewer text was included. Text remains redacted by default. Objective-filtered
+exports use objective-tagged workflow events to retain the associated raw Firestore evidence.
 
 Reviewers inspect each complete recording before seeing system flags, then fill in `reviewed-recordings.csv`, `problem-segments.csv`, and `warning-template-reviews.csv`. Convert and validate them:
 

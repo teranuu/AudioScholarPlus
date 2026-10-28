@@ -455,7 +455,8 @@ public final class ValidationEvaluator {
 		}
 		long denominator = 0, correct = 0, missing = 0;
 		for (JsonNode d : data("semanticDecisions")) {
-			if (!"SEMANTIC".equals(d.path("decisionMethod").asText()) || !d.path("duplicate").asBoolean())
+			if (!Set.of("SEMANTIC", "SEMANTIC_BATCH").contains(d.path("decisionMethod").asText())
+					|| !d.path("duplicate").asBoolean())
 				continue;
 			denominator++;
 			Boolean value = reviewed.get(d.path("decisionId").asText());

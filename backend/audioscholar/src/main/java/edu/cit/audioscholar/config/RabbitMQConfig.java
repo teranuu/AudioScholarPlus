@@ -85,6 +85,12 @@ public class RabbitMQConfig {
 	@Value("${audio.recommendation.worker-max-concurrency:${spring.rabbitmq.listener.simple.max-concurrency:1}}")
 	private int recommendationMaxConcurrency;
 
+	@Value("${multi-source.worker-concurrency:1}")
+	private int multiSourceConcurrency;
+
+	@Value("${multi-source.worker-max-concurrency:1}")
+	private int multiSourceMaxConcurrency;
+
 	@Bean
 	TopicExchange exchange() {
 		return new TopicExchange(PROCESSING_EXCHANGE_NAME, true, false);
@@ -242,6 +248,12 @@ public class RabbitMQConfig {
 			MessageConverter messageConverter) {
 		return listenerFactory(connectionFactory, messageConverter, recommendationConcurrency,
 				recommendationMaxConcurrency);
+	}
+
+	@Bean("multiSourceContainerFactory")
+	public SimpleRabbitListenerContainerFactory multiSourceContainerFactory(ConnectionFactory connectionFactory,
+			MessageConverter messageConverter) {
+		return listenerFactory(connectionFactory, messageConverter, multiSourceConcurrency, multiSourceMaxConcurrency);
 	}
 
 	@Bean("defaultContainerFactory")
