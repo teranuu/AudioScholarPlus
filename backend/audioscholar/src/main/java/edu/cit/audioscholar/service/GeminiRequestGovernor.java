@@ -42,11 +42,12 @@ public class GeminiRequestGovernor {
 					"Gemini pacing backlog exceeds the configured maximum wait for " + operation, scheduledAt);
 		}
 		waitForSlot(waitMillis);
-		budget.reserve(operation, inputTokens, null, contextId);
+		GeminiBudgetService.Reservation reservation = budget.reserve(operation, inputTokens, null, contextId);
 
 		Instant acquiredAt = Instant.now();
 		if (StringUtils.hasText(contextId)) {
-			usageByContext.computeIfAbsent(contextId, ignored -> new MutableUsage()).record(acquiredAt, waitMillis);
+			usageByContext.computeIfAbsent(contextId, ignored -> new MutableUsage()).record(acquiredAt, waitMillis,
+					operation, reservation.retryRequest());
 		}
 		log.info(
 				"Gemini request permit acquired operation={} contextId={} pacingWaitMs={} scheduledAt={} inputTokens={}",
@@ -91,20 +92,30 @@ public class GeminiRequestGovernor {
 		}
 	}
 
-	public record UsageSnapshot(int requestAttempts, long pacingWaitMs, Instant firstRequestAt, Instant lastRequestAt) {
+	public record UsageSnapshot(int requestAttempts, int retryRequests, String lastAttemptOperation, long pacingWaitMs,
+			Instant firstRequestAt, Instant lastRequestAt) {
+		public UsageSnapshot(int requestAttempts, long pacingWaitMs, Instant firstRequestAt, Instant lastRequestAt) {
+			this(requestAttempts, 0, null, pacingWaitMs, firstRequestAt, lastRequestAt);
+		}
+
 		static UsageSnapshot empty() {
-			return new UsageSnapshot(0, 0, null, null);
+			return new UsageSnapshot(0, 0, null, 0, null, null);
 		}
 	}
 
 	private static final class MutableUsage {
 		private int requestAttempts;
+		private int retryRequests;
+		private String lastAttemptOperation;
 		private long pacingWaitMs;
 		private Instant firstRequestAt;
 		private Instant lastRequestAt;
 
-		synchronized void record(Instant acquiredAt, long waitedMillis) {
+		synchronized void record(Instant acquiredAt, long waitedMillis, String operation, boolean retryRequest) {
 			requestAttempts++;
+			if (retryRequest)
+				retryRequests++;
+			lastAttemptOperation = operation;
 			pacingWaitMs += waitedMillis;
 			if (firstRequestAt == null) {
 				firstRequestAt = acquiredAt;
@@ -113,7 +124,8 @@ public class GeminiRequestGovernor {
 		}
 
 		synchronized UsageSnapshot snapshot() {
-			return new UsageSnapshot(requestAttempts, pacingWaitMs, firstRequestAt, lastRequestAt);
+			return new UsageSnapshot(requestAttempts, retryRequests, lastAttemptOperation, pacingWaitMs, firstRequestAt,
+					lastRequestAt);
 		}
 	}
 }

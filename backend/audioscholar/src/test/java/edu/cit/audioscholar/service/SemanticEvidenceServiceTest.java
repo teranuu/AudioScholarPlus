@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -89,6 +90,29 @@ class SemanticEvidenceServiceTest {
 		ArgumentCaptor<Map<String, Object>> lineage = ArgumentCaptor.forClass(Map.class);
 		verify(firebase).createEvidence(eq("mergedKeyPointLineage"), anyString(), lineage.capture());
 		assertEquals(1, ((List<?>) lineage.getValue().get("semanticDecisionIds")).size());
+	}
+
+	@Test
+	void retryReusesCompletedSourceKeyPointCheckpoint() throws Exception {
+		GeminiService gemini = mock(GeminiService.class);
+		FirebaseService firebase = mock(FirebaseService.class);
+		ValidationEventService events = mock(ValidationEventService.class);
+		SemanticEvidenceService service = new SemanticEvidenceService(gemini, firebase, new ObjectMapper(), events, .80,
+				"test-version", "summary-model-v1", "semantic-model-v1");
+		MultiSourceJob job = new MultiSourceJob();
+		job.setJobId("job-1");
+		job.setOutputType("NOTES");
+		job.setSourceFiles(List.of(source("source-a", "A"), source("source-b", "B")));
+		when(firebase.getData("multiSourceStageCheckpoints",
+				ValidationEventService.digest("job-1:source-key-point-checkpoint-v2")))
+				.thenReturn(Map.of("pointsBySource",
+						Map.of("source-a", List.of("shared claim"), "source-b", List.of("shared claim"))));
+		when(firebase.queryCollection(eq("transcriptSegments"), eq("sourceFileId"), anyString())).thenReturn(List.of());
+
+		service.evaluate(job, new Summary("summary-1", "job-1", "merged"));
+
+		verify(gemini, never()).callSimpleTextAPI(anyString(), eq("job-1"),
+				eq("multi-source.key-point-batch.generateContent"));
 	}
 
 	private SourceFile source(String id, String label) {

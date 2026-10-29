@@ -28,6 +28,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.dto.MultiSourceJobMessage;
+import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
+import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.exception.MultiSourceProcessingException;
 import edu.cit.audioscholar.exception.StorageRetrievalException;
 import edu.cit.audioscholar.model.Flashcard;
@@ -219,7 +221,7 @@ public class MultiSourceJobService {
 		if (!multiSourceJobRepository.tryAcquireProcessingLease(leaseOwner,
 				Date.from(Instant.now().plus(processingLeaseDuration)))) {
 			log.info("Deferring multi-source job because another job owns the global processing lease jobId={}", jobId);
-			publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY,
+			publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY,
 					new MultiSourceJobMessage(jobId), contentionRetryDelay);
 			return;
 		}
@@ -235,6 +237,11 @@ public class MultiSourceJobService {
 			return;
 		MultiSourceJob job = hydrateJob(multiSourceJobRepository.findById(jobId));
 		job.setStatus("PROCESSING");
+		job.setQuotaRetryAt(null);
+		job.setFailureReason(null);
+		job.setFailureStage(null);
+		job.setFailureCode(null);
+		job.setFailureDetail(null);
 		job.setProcessingStartedAt(new Date());
 		job.setProcessingAttempts(job.getProcessingAttempts() + 1);
 		if (!saveWorkerProgress(job))
@@ -308,8 +315,20 @@ public class MultiSourceJobService {
 			job.setUpdatedAt(new Date());
 			if (!saveWorkerProgress(job))
 				return;
-			Summary summary = parseMergedSummary(job, geminiService
-					.generateTranscriptOnlySummary(buildMergedTranscript(sources), jobId, job.getOutputType()));
+			Summary summary = job.getMergedSummary();
+			if (summary == null) {
+				summary = parseMergedSummary(job, geminiService
+						.generateTranscriptOnlySummary(buildMergedTranscript(sources), jobId, job.getOutputType()));
+				job.setMergedSummary(summary);
+				job.setUpdatedAt(new Date());
+				if (!saveWorkerProgress(job))
+					return;
+				event(job, "MERGE_SUMMARY_CHECKPOINTED", List.of(9, 12), summary.getSummaryId(),
+						Map.of("jobId", jobId, "summaryId", summary.getSummaryId()));
+			} else {
+				log.info("Resuming multi-source job from merged-summary checkpoint jobId={} summaryId={}", jobId,
+						summary.getSummaryId());
+			}
 			stage = "DEDUPLICATION";
 			List<SourceAttribution> attributions = semanticEvidence.evaluate(job, summary);
 			event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial", Map.of("jobId", jobId, "outputCount",
@@ -346,6 +365,23 @@ public class MultiSourceJobService {
 				semanticEvidence.persistFailedRun(job, stage, job.getFailureCode(), job.getProcessingAttempts());
 			} catch (RuntimeException evidenceFailure) {
 				job.setMeasurementIncomplete(true);
+			}
+			Instant quotaRetryAt = quotaRetryAt(e);
+			if (quotaRetryAt != null) {
+				applyGeminiUsage(job, false);
+				job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
+				job.setQuotaRetryAt(Date.from(quotaRetryAt));
+				job.setUpdatedAt(new Date());
+				if (saveWorkerProgress(job)) {
+					Duration delay = Duration.between(Instant.now(), quotaRetryAt);
+					if (delay.isNegative() || delay.isZero())
+						delay = Duration.ofSeconds(1);
+					publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY,
+							new MultiSourceJobMessage(jobId), delay);
+					event(job, "JOB_QUOTA_DEFERRED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(),
+							Map.of("jobId", jobId, "retryAt", quotaRetryAt.toString(), "failureStage", stage));
+				}
+				return;
 			}
 			boolean permanent = isPermanent(e);
 			if (!permanent && job.getProcessingAttempts() < 3) {
@@ -389,6 +425,8 @@ public class MultiSourceJobService {
 		if (usage.requestAttempts() == 0 && job.getActualGeminiRequests() != null)
 			return;
 		job.setActualGeminiRequests(usage.requestAttempts());
+		job.setRetryGeminiRequests(usage.retryRequests());
+		job.setLastGeminiAttemptOperation(usage.lastAttemptOperation());
 		job.setGeminiPacingWaitMs(usage.pacingWaitMs());
 		job.setGeminiFirstRequestAt(usage.firstRequestAt() == null ? null : Date.from(usage.firstRequestAt()));
 		job.setGeminiLastRequestAt(usage.lastRequestAt() == null ? null : Date.from(usage.lastRequestAt()));
@@ -399,6 +437,9 @@ public class MultiSourceJobService {
 		payload.put("jobId", job.getJobId());
 		payload.put("estimatedGeminiRequests", job.getEstimatedGeminiRequests());
 		payload.put("actualGeminiRequests", usage.requestAttempts());
+		payload.put("retryGeminiRequests", usage.retryRequests());
+		payload.put("lastAttemptOperation",
+				usage.lastAttemptOperation() == null ? "NONE" : usage.lastAttemptOperation());
 		payload.put("pacingWaitMs", usage.pacingWaitMs());
 		payload.put("requestWindowMs", requestWindowMs);
 		event(job, "GEMINI_USAGE_RECORDED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(), payload);
@@ -593,6 +634,7 @@ public class MultiSourceJobService {
 		job.setDescription((String) row.get("description"));
 		job.setOutputType((String) row.get("outputType"));
 		job.setStatus((String) row.get("status"));
+		job.setFailureReason((String) row.get("failureReason"));
 		job.setClientSource((String) row.getOrDefault("clientSource", "UNKNOWN"));
 		job.setSourceCount(row.get("sourceCount") instanceof Number n ? n.intValue() : 0);
 		job.setMeasurementIncomplete(Boolean.TRUE.equals(row.get("measurementIncomplete")));
@@ -603,10 +645,14 @@ public class MultiSourceJobService {
 			job.setEstimatedGeminiRequests(n.intValue());
 		if (row.get("actualGeminiRequests") instanceof Number n)
 			job.setActualGeminiRequests(n.intValue());
+		if (row.get("retryGeminiRequests") instanceof Number n)
+			job.setRetryGeminiRequests(n.intValue());
+		job.setLastGeminiAttemptOperation((String) row.get("lastGeminiAttemptOperation"));
 		if (row.get("geminiPacingWaitMs") instanceof Number n)
 			job.setGeminiPacingWaitMs(n.longValue());
 		job.setGeminiFirstRequestAt(date(row.get("geminiFirstRequestAt")));
 		job.setGeminiLastRequestAt(date(row.get("geminiLastRequestAt")));
+		job.setQuotaRetryAt(date(row.get("quotaRetryAt")));
 		job.setFailureStage((String) row.get("failureStage"));
 		job.setFailureCode((String) row.get("failureCode"));
 		job.setFailureDetail((String) row.get("failureDetail"));
@@ -619,6 +665,11 @@ public class MultiSourceJobService {
 					sources.add(hydrateSource(typed));
 				}
 			job.setSourceFiles(sources);
+		}
+		if (row.get("mergedSummary") instanceof Map<?, ?> rawSummary) {
+			Map<String, Object> summary = new HashMap<>();
+			rawSummary.forEach((key, value) -> summary.put(String.valueOf(key), value));
+			job.setMergedSummary(Summary.fromMap(summary));
 		}
 		job.setAcceptedAt(date(row.get("acceptedAt")));
 		job.setQueuedAt(date(row.get("queuedAt")));
@@ -691,6 +742,17 @@ public class MultiSourceJobService {
 		if (failure instanceof MultiSourceProcessingException processing)
 			return !processing.isRetryable();
 		return false;
+	}
+
+	private Instant quotaRetryAt(Throwable failure) {
+		if (failure == null)
+			return null;
+		if (failure instanceof GeminiBudgetExceededException exceeded)
+			return exceeded.getRetryAt();
+		if (failure instanceof GeminiRateLimitException rateLimited)
+			return rateLimited.getRetryAt();
+		Throwable cause = failure.getCause();
+		return cause == failure ? null : quotaRetryAt(cause);
 	}
 
 	private void validatePersistedSources(MultiSourceJob job, List<Map<String, Object>> sourceRows) {

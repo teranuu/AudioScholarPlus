@@ -26,6 +26,7 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.HttpStatusCodeException;
@@ -1220,7 +1221,9 @@ public class GeminiService {
 
 		log.info("Calling Gemini Simple Text API (Model: {})", TRANSCRIPTION_MODEL_NAME);
 
-		for (int attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+		int maxAttempts = StringUtils.hasText(contextId) && StringUtils.hasText(operation)
+				&& operation.startsWith("multi-source.") ? 1 : MAX_RETRIES;
+		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 			String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 			String simpleTextUrl = UriComponentsBuilder.fromUriString(API_BASE_URL + GENERATE_CONTENT_PATH)
 					.queryParam("key", currentKey).buildAndExpand(TRANSCRIPTION_MODEL_NAME).toUriString();
@@ -1238,9 +1241,9 @@ public class GeminiService {
 				if (responseBody == null || responseBody.isBlank()) {
 					log.warn("Gemini Simple Text API returned successful status ({}) but empty body.",
 							response.getStatusCode());
-					if (attempt == MAX_RETRIES) {
+					if (attempt == maxAttempts) {
 						return createErrorResponse("Empty Response",
-								"API returned success status but no content after retries.");
+								"API returned success status but no content after configured attempts.");
 					}
 					sleepForRetry(attempt);
 					continue;
@@ -1257,9 +1260,9 @@ public class GeminiService {
 				return createErrorResponse("Simple Text API Error", e.getMessage());
 			} catch (HttpServerErrorException | ResourceAccessException e) {
 				log.warn("Gemini Simple Text API call failed on attempt {}/{} with retryable error: {}. Retrying...",
-						attempt, MAX_RETRIES, e.getMessage());
-				if (attempt == MAX_RETRIES) {
-					log.error("Gemini Simple Text API call failed after {} attempts.", MAX_RETRIES, e);
+						attempt, maxAttempts, e.getMessage());
+				if (attempt == maxAttempts) {
+					log.error("Gemini Simple Text API call failed after {} attempts.", maxAttempts, e);
 					return createErrorResponse("API Request Failed (Server/Network)", e.getMessage());
 				}
 				sleepForRetry(attempt);

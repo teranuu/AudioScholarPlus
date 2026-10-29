@@ -326,6 +326,9 @@ public class SemanticEvidenceService {
 	}
 
 	private Map<String, List<String>> extractSourceKeyPoints(MultiSourceJob job) throws Exception {
+		Map<String, List<String>> checkpoint = loadSourceKeyPointCheckpoint(job);
+		if (checkpoint != null)
+			return checkpoint;
 		List<Map<String, Object>> sources = new ArrayList<>();
 		for (SourceFile source : job.getSourceFiles()) {
 			if (source.getTranscriptText() == null || source.getTranscriptText().isBlank())
@@ -365,11 +368,20 @@ public class SemanticEvidenceService {
 		}
 		if (!result.keySet().equals(expectedSourceIds))
 			throw new IllegalStateException("Batched source key-point extraction omitted one or more sources");
+		Map<String, Object> checkpointRow = new LinkedHashMap<>();
+		checkpointRow.put("jobId", job.getJobId());
+		checkpointRow.put("stage", "SOURCE_KEY_POINTS");
+		checkpointRow.put("pointsBySource", result);
+		checkpointRow.put("completedAt", Instant.now().toString());
+		firebase.saveData("multiSourceStageCheckpoints", sourceKeyPointCheckpointId(job.getJobId()), checkpointRow);
 		return result;
 	}
 
 	private Map<String, PairClassification> classifyBatch(MultiSourceJob job, List<PairCandidate> candidates)
 			throws Exception {
+		Map<String, PairClassification> checkpoint = loadPairClassificationCheckpoint(job, candidates);
+		if (checkpoint != null)
+			return checkpoint;
 		List<Map<String, Object>> pairs = candidates.stream()
 				.map(candidate -> Map.<String, Object>of("pairId", candidate.pairId, "leftText", candidate.a.text,
 						"rightText", candidate.b.text, "leftSourceFileId", candidate.a.sourceId, "rightSourceFileId",
@@ -399,7 +411,60 @@ public class SemanticEvidenceService {
 		}
 		if (!result.keySet().equals(expectedPairIds))
 			throw new IllegalStateException("Batched semantic classification omitted one or more pairs");
+		List<Map<String, Object>> checkpointPairs = result.entrySet().stream()
+				.map(entry -> Map.<String, Object>of("pairId", entry.getKey(), "duplicate", entry.getValue().duplicate,
+						"confidence", entry.getValue().confidence))
+				.toList();
+		firebase.saveData("multiSourceStageCheckpoints", pairClassificationCheckpointId(job.getJobId()),
+				Map.of("jobId", job.getJobId(), "stage", "SEMANTIC_PAIRS", "pairs", checkpointPairs, "completedAt",
+						Instant.now().toString()));
 		return result;
+	}
+
+	private Map<String, List<String>> loadSourceKeyPointCheckpoint(MultiSourceJob job) {
+		Map<String, Object> row = firebase.getData("multiSourceStageCheckpoints",
+				sourceKeyPointCheckpointId(job.getJobId()));
+		if (row == null || !(row.get("pointsBySource") instanceof Map<?, ?> raw))
+			return null;
+		Map<String, List<String>> result = new LinkedHashMap<>();
+		for (Map.Entry<?, ?> entry : raw.entrySet()) {
+			if (!(entry.getValue() instanceof List<?> values))
+				return null;
+			List<String> points = values.stream().filter(String.class::isInstance).map(String.class::cast).toList();
+			if (points.size() != values.size())
+				return null;
+			result.put(String.valueOf(entry.getKey()), points);
+		}
+		Set<String> expected = job.getSourceFiles().stream().map(SourceFile::getSourceFileId)
+				.collect(java.util.stream.Collectors.toSet());
+		return result.keySet().equals(expected) ? result : null;
+	}
+
+	private Map<String, PairClassification> loadPairClassificationCheckpoint(MultiSourceJob job,
+			List<PairCandidate> candidates) {
+		Map<String, Object> row = firebase.getData("multiSourceStageCheckpoints",
+				pairClassificationCheckpointId(job.getJobId()));
+		if (row == null || !(row.get("pairs") instanceof List<?> rawPairs))
+			return null;
+		Map<String, PairClassification> result = new HashMap<>();
+		for (Object raw : rawPairs) {
+			if (!(raw instanceof Map<?, ?> pair) || !(pair.get("pairId") instanceof String pairId)
+					|| !(pair.get("duplicate") instanceof Boolean duplicate)
+					|| !(pair.get("confidence") instanceof Number confidence))
+				return null;
+			result.put(pairId, new PairClassification(duplicate, confidence.doubleValue()));
+		}
+		Set<String> expected = candidates.stream().map(PairCandidate::pairId)
+				.collect(java.util.stream.Collectors.toSet());
+		return result.keySet().equals(expected) ? result : null;
+	}
+
+	private String sourceKeyPointCheckpointId(String jobId) {
+		return ValidationEventService.digest(jobId + ":source-key-point-checkpoint-v2");
+	}
+
+	private String pairClassificationCheckpointId(String jobId) {
+		return ValidationEventService.digest(jobId + ":semantic-pair-checkpoint-v2");
 	}
 
 	private String pairId(Point a, Point b) {
