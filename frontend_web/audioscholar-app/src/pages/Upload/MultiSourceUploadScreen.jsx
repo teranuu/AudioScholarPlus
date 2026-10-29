@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { FiCheckCircle, FiFile, FiFileText, FiLoader, FiUpload, FiXCircle } from 'react-icons/fi';
+import { FiCheckCircle, FiClock, FiFile, FiFileText, FiLoader, FiUpload, FiXCircle } from 'react-icons/fi';
 import { API_BASE_URL } from '../../services/authService';
 import { Header } from '../Home/HomePage';
 import ReactMarkdown from 'react-markdown';
@@ -79,13 +79,16 @@ const MultiSourceFilePicker = ({ label, supportedLabel, disabled, onPick, childr
   </div>
 );
 
-const UploadProgressIndicator = ({ loading }) => {
+const UploadProgressIndicator = ({ loading, job }) => {
   if (!loading) return null;
+  const accepted = Boolean(job?.jobId);
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex flex-col items-center justify-center">
       <FiLoader className="animate-spin h-10 w-10 text-white mb-3" />
-      <p className="text-white text-lg font-medium">Processing sources, please wait...</p>
-      <p className="text-gray-300 text-sm mt-1">Navigating away may interrupt the upload.</p>
+      <p className="text-white text-lg font-medium">{accepted ? 'Processing sources in the background...' : 'Uploading sources...'}</p>
+      <p className="text-gray-300 text-sm mt-1">
+        {accepted ? 'The job is saved. You may leave this page and check it later.' : 'Keep this page open until the upload is accepted.'}
+      </p>
     </div>
   );
 };
@@ -99,6 +102,17 @@ const SourceAttributionChip = ({ source }) => (
 const MergeStatusIndicator = ({ job }) => {
   if (!job || job.status !== 'COMPLETE' || !job.mergedSummary) return null;
   return <p className="text-sm text-green-600 dark:text-green-400 text-center flex items-center justify-center gap-1"><FiCheckCircle /> Merged summary generated.</p>;
+};
+
+const DeferredStatusIndicator = ({ job }) => {
+  if (!job || job.status !== 'PROCESSING_QUEUED' || !job.quotaRetryAt) return null;
+  const retryAt = new Date(job.quotaRetryAt);
+  const retryLabel = Number.isNaN(retryAt.getTime()) ? 'the next quota window' : retryAt.toLocaleString();
+  return (
+    <div className="text-sm text-amber-700 dark:text-amber-300 text-center flex items-center justify-center gap-1">
+      <FiClock /> Processing is paused for the daily Gemini limit and will resume automatically at {retryLabel}.
+    </div>
+  );
 };
 
 const MergedSummaryContentViewer = ({ summary }) => (
@@ -146,14 +160,14 @@ const MultiSourceUploadScreen = () => {
       return 'Upload in progress. Are you sure you want to leave?';
     };
 
-    if (loading) {
+    if (loading && !job?.jobId) {
       window.addEventListener('beforeunload', handleBeforeUnload);
     } else {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     }
 
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [loading]);
+  }, [loading, job?.jobId]);
 
   const addFiles = (event, kind) => {
     setFormError('');
@@ -261,11 +275,13 @@ const MultiSourceUploadScreen = () => {
         }
         throw new Error(data.message || `Upload failed with status ${response.status}`);
       }
+	  setJob(data);
 	  let current = data;
 	  let pollDelayMs = JOB_POLL_INITIAL_DELAY_MS;
 	  const pollingStartedAt = Date.now();
 	  const terminal = new Set(['COMPLETE', 'FAILED']);
 	  while (current.jobId && !terminal.has(current.status)) {
+		if (current.status === 'PROCESSING_QUEUED' && current.quotaRetryAt) break;
 		if (Date.now() - pollingStartedAt >= JOB_POLL_MAX_DURATION_MS) {
 		  throw new Error('Processing is taking longer than expected. It will continue in the background; check the recordings page later.');
 		}
@@ -276,6 +292,7 @@ const MultiSourceUploadScreen = () => {
 		if (!poll.ok) throw new Error(`Could not check processing status (${poll.status}).`);
 		current = await poll.json();
 		setJob(current);
+		if (current.status === 'PROCESSING_QUEUED' && current.quotaRetryAt) break;
 		pollDelayMs = Math.min(Math.ceil(pollDelayMs * 1.5), JOB_POLL_MAX_DELAY_MS);
 	  }
 	  if (current.status === 'FAILED') throw new Error(current.failureReason || 'Multi-source processing failed.');
@@ -289,7 +306,7 @@ const MultiSourceUploadScreen = () => {
 
   return (
     <div className="relative min-h-screen flex flex-col">
-      <UploadProgressIndicator loading={loading} />
+      <UploadProgressIndicator loading={loading} job={job} />
 
       <Header />
       <main className="flex-grow flex items-center justify-center py-12 bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
@@ -375,8 +392,9 @@ const MultiSourceUploadScreen = () => {
                 </div>
               </div>
 
-              <div className="h-6">
+              <div className="min-h-6">
                 {formError && <p className="text-sm text-red-600 dark:text-red-400 text-center">{formError}</p>}
+                <DeferredStatusIndicator job={job} />
                 <MergeStatusIndicator job={job} />
               </div>
 

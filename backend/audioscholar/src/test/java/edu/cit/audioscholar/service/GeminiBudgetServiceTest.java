@@ -22,6 +22,7 @@ import com.google.cloud.firestore.SetOptions;
 import com.google.cloud.firestore.Transaction;
 
 import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
+import edu.cit.audioscholar.exception.GeminiStageRequestLimitException;
 
 class GeminiBudgetServiceTest {
 	private final Map<String, DocumentReference> references = new HashMap<>();
@@ -67,12 +68,34 @@ class GeminiBudgetServiceTest {
 			sixth = service.reserve("transcription.generateContent", 100, null, "job-1");
 
 		Map<String, Object> admission = document("project-admission-");
-		assertThat(sixth.retryRequest()).isTrue();
+		assertThat(sixth.retryRequest()).isFalse();
+		assertThat(sixth.topUpRequest()).isTrue();
 		assertThat(admission).containsEntry("initialReservedRequests", 5L).containsEntry("reservedRequests", 6L)
 				.containsEntry("consumedRequests", 6L).containsEntry("actualRequests", 6L)
-				.containsEntry("retryRequests", 1L).containsEntry("remainingRequests", 0L)
+				.containsEntry("retryRequests", 0L).containsEntry("topUpRequests", 1L)
+				.containsEntry("remainingRequests", 0L)
 				.containsEntry("lastAttemptOperation", "transcription.generateContent");
 		assertThat(document("project-day-")).containsEntry("requests", 6L).containsEntry("admittedRequests", 0L);
+	}
+
+	@Test
+	void recordsRepeatedBoundedStageAsRetryAndFailsTerminallyAtStageLimit() {
+		GeminiBudgetService service = service(18);
+		service.requireDailyCapacity("multi-source.job-admission", 5, "job-1");
+
+		GeminiBudgetService.Reservation first = service.reserve("multi-source.key-point-batch.generateContent", 100,
+				null, "job-1");
+		GeminiBudgetService.Reservation second = service.reserve("multi-source.key-point-batch.generateContent", 100,
+				null, "job-1");
+
+		assertThat(first.retryRequest()).isFalse();
+		assertThat(second.retryRequest()).isTrue();
+		assertThat(second.topUpRequest()).isFalse();
+		assertThatThrownBy(() -> service.reserve("multi-source.key-point-batch.generateContent", 100, null, "job-1"))
+				.isInstanceOf(GeminiStageRequestLimitException.class)
+				.hasMessageContaining("multi-source.key-point-batch.generateContent");
+		assertThat(document("project-admission-")).containsEntry("actualRequests", 2L)
+				.containsEntry("retryRequests", 1L).containsEntry("topUpRequests", 0L);
 	}
 
 	@Test

@@ -30,6 +30,7 @@ import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.dto.MultiSourceJobMessage;
 import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
+import edu.cit.audioscholar.exception.GeminiStageRequestLimitException;
 import edu.cit.audioscholar.exception.MultiSourceProcessingException;
 import edu.cit.audioscholar.exception.StorageRetrievalException;
 import edu.cit.audioscholar.model.Flashcard;
@@ -257,17 +258,9 @@ public class MultiSourceJobService {
 				stage = "SOURCE_RETRIEVAL";
 				SourceFile source = hydrateSource(row);
 				if (source.getTranscriptionCompletedAt() != null && StringUtils.hasText(source.getTranscriptText())) {
-					sourceTranscriptService.saveTranscript(jobId, source);
-					timedSegments.persist(source);
 					sources.add(source);
-					event(job, "SOURCE_RETRIEVED", List.of(9), source.getSourceFileId(),
-							Map.of("jobId", jobId, "sourceFileId", source.getSourceFileId(), "storageObjectId",
-									source.getStorageObjectId(), "attempt", job.getProcessingAttempts()));
-					event(job, "SOURCE_TRANSCRIPTION_COMPLETED", List.of(12), source.getSourceFileId(),
-							Map.of("jobId", jobId, "sourceFileId", source.getSourceFileId()));
-					job.setUpdatedAt(new Date());
-					if (!saveWorkerProgress(job))
-						return;
+					log.info("Reusing completed source checkpoint jobId={} sourceFileId={}", jobId,
+							source.getSourceFileId());
 					continue;
 				}
 				Path local = downloadSource(source);
@@ -291,10 +284,12 @@ public class MultiSourceJobService {
 								source.getContentType());
 				rejectGeminiErrorTranscript(transcript);
 				source.setTranscriptText(transcript);
-				source.setTranscriptionCompletedAt(new Date());
-				sourceFileService.save(source);
 				sourceTranscriptService.saveTranscript(jobId, source);
 				timedSegments.persist(source);
+				// completedAt is the durable checkpoint: all derived transcript records must
+				// exist before a later attempt is allowed to skip this source.
+				source.setTranscriptionCompletedAt(new Date());
+				sourceFileService.save(source);
 				sources.add(source);
 				job.setUpdatedAt(new Date());
 				if (!saveWorkerProgress(job))
@@ -376,7 +371,7 @@ public class MultiSourceJobService {
 					Duration delay = Duration.between(Instant.now(), quotaRetryAt);
 					if (delay.isNegative() || delay.isZero())
 						delay = Duration.ofSeconds(1);
-					publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY,
+					publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY,
 							new MultiSourceJobMessage(jobId), delay);
 					event(job, "JOB_QUOTA_DEFERRED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(),
 							Map.of("jobId", jobId, "retryAt", quotaRetryAt.toString(), "failureStage", stage));
@@ -388,7 +383,7 @@ public class MultiSourceJobService {
 				applyGeminiUsage(job, false);
 				job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
 				if (saveWorkerProgress(job)) {
-					publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY,
+					publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY,
 							new MultiSourceJobMessage(jobId),
 							java.time.Duration.ofSeconds(job.getProcessingAttempts() * 5L));
 					event(job, "JOB_RETRY_QUEUED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(),
@@ -426,6 +421,7 @@ public class MultiSourceJobService {
 			return;
 		job.setActualGeminiRequests(usage.requestAttempts());
 		job.setRetryGeminiRequests(usage.retryRequests());
+		job.setTopUpGeminiRequests(usage.topUpRequests());
 		job.setLastGeminiAttemptOperation(usage.lastAttemptOperation());
 		job.setGeminiPacingWaitMs(usage.pacingWaitMs());
 		job.setGeminiFirstRequestAt(usage.firstRequestAt() == null ? null : Date.from(usage.firstRequestAt()));
@@ -438,6 +434,7 @@ public class MultiSourceJobService {
 		payload.put("estimatedGeminiRequests", job.getEstimatedGeminiRequests());
 		payload.put("actualGeminiRequests", usage.requestAttempts());
 		payload.put("retryGeminiRequests", usage.retryRequests());
+		payload.put("topUpGeminiRequests", usage.topUpRequests());
 		payload.put("lastAttemptOperation",
 				usage.lastAttemptOperation() == null ? "NONE" : usage.lastAttemptOperation());
 		payload.put("pacingWaitMs", usage.pacingWaitMs());
@@ -647,6 +644,8 @@ public class MultiSourceJobService {
 			job.setActualGeminiRequests(n.intValue());
 		if (row.get("retryGeminiRequests") instanceof Number n)
 			job.setRetryGeminiRequests(n.intValue());
+		if (row.get("topUpGeminiRequests") instanceof Number n)
+			job.setTopUpGeminiRequests(n.intValue());
 		job.setLastGeminiAttemptOperation((String) row.get("lastGeminiAttemptOperation"));
 		if (row.get("geminiPacingWaitMs") instanceof Number n)
 			job.setGeminiPacingWaitMs(n.longValue());
@@ -729,6 +728,8 @@ public class MultiSourceJobService {
 	}
 
 	private String failureCode(Exception failure) {
+		if (failure instanceof GeminiStageRequestLimitException)
+			return "GEMINI_STAGE_REQUEST_LIMIT";
 		if (failure instanceof StorageRetrievalException storage)
 			return storage.getFailureCode();
 		if (failure instanceof MultiSourceProcessingException processing)
@@ -737,6 +738,8 @@ public class MultiSourceJobService {
 	}
 
 	private boolean isPermanent(Exception failure) {
+		if (failure instanceof GeminiStageRequestLimitException)
+			return true;
 		if (failure instanceof StorageRetrievalException storage)
 			return !storage.isRetryable();
 		if (failure instanceof MultiSourceProcessingException processing)

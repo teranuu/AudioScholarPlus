@@ -1107,7 +1107,7 @@ public class GeminiService {
 
 		if (jsonNode.has("error")) {
 			String errorMessage = jsonNode.path("error").path("message").asText("Unknown API error");
-			log.error("Gemini API returned an error object: {}", rawResponse);
+			log.error("Gemini API returned an error object (messageLength={})", errorMessage.length());
 			throw new ApiException("Gemini API Error: " + errorMessage);
 		}
 
@@ -1140,31 +1140,31 @@ public class GeminiService {
 				JsonNode firstPart = firstCandidate.path("content").path("parts").get(0);
 				if (firstPart.has("text")) {
 					String jsonResponse = firstPart.path("text").asText();
-					String transcript = extractTranscriptFromJsonResponse(jsonResponse);
-					if (transcript != null) {
-						return transcript;
-					}
-
 					try {
 						JsonNode responseNode = objectMapper.readTree(jsonResponse);
+						if (responseNode.has("transcript"))
+							return responseNode.path("transcript").asText();
 						if (responseNode.has("summaryText")) {
 							log.info("Found valid summarization JSON structure with summaryText field");
 							return jsonResponse;
 						}
 					} catch (JsonProcessingException e) {
-						log.warn("Could not parse inner JSON response: {}", e.getMessage());
+						log.debug("Gemini candidate text is not bare JSON; returning it to the stage parser");
+						String partialTranscript = extractPartialTranscriptFromIncompleteJson(jsonResponse);
+						if (partialTranscript != null && !partialTranscript.isBlank())
+							return partialTranscript;
 					}
+					if (!jsonResponse.isBlank())
+						return jsonResponse;
 				}
 			} else {
-				log.warn(
-						"First candidate in Gemini response does not contain expected content/parts structure. Candidate: {}",
-						firstCandidate.toString());
+				log.warn("First Gemini candidate does not contain the expected content/parts structure");
 				throw new ApiException("Invalid response structure: Missing 'content' or 'parts' in candidate.");
 			}
 		}
 
-		log.warn("Could not extract text from Gemini standard response structure (no valid candidates found): {}",
-				rawResponse);
+		log.warn("Could not extract text from Gemini standard response structure (candidateCount={})",
+				jsonNode.path("candidates").isArray() ? jsonNode.path("candidates").size() : 0);
 		throw new ApiException("No valid candidates found in Gemini response.");
 	}
 
@@ -1210,8 +1210,12 @@ public class GeminiService {
 		List<Object> contents = List.of(content);
 
 		Map<String, Object> generationConfig = new HashMap<>();
-		generationConfig.put("temperature", 0.7);
+		boolean multiSourceOperation = StringUtils.hasText(contextId) && StringUtils.hasText(operation)
+				&& operation.startsWith("multi-source.");
+		generationConfig.put("temperature", multiSourceOperation ? 0.2 : 0.7);
 		generationConfig.put("maxOutputTokens", MAX_OUTPUT_TOKENS_TRANSCRIPTION);
+		if (multiSourceOperation)
+			generationConfig.put("response_mime_type", "application/json");
 
 		Map<String, Object> requestBody = new HashMap<>();
 		requestBody.put("contents", contents);
@@ -1221,8 +1225,7 @@ public class GeminiService {
 
 		log.info("Calling Gemini Simple Text API (Model: {})", TRANSCRIPTION_MODEL_NAME);
 
-		int maxAttempts = StringUtils.hasText(contextId) && StringUtils.hasText(operation)
-				&& operation.startsWith("multi-source.") ? 1 : MAX_RETRIES;
+		int maxAttempts = multiSourceOperation ? 1 : MAX_RETRIES;
 		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 			String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 			String simpleTextUrl = UriComponentsBuilder.fromUriString(API_BASE_URL + GENERATE_CONTENT_PATH)
@@ -1255,6 +1258,8 @@ public class GeminiService {
 
 			} catch (GeminiBudgetExceededException e) {
 				throw e;
+			} catch (NonRetryableTaskException e) {
+				throw e;
 			} catch (ApiException e) {
 				log.error("Gemini Simple Text API Error on attempt {}: {}", attempt, e.getMessage(), e);
 				return createErrorResponse("Simple Text API Error", e.getMessage());
@@ -1271,13 +1276,11 @@ public class GeminiService {
 				if (statusCode == 429 || statusCode == 403) {
 					keyRotationManager.reportError(KeyProvider.GEMINI, currentKey, statusCode);
 				}
-				log.error("Gemini Simple Text API client error: {} - {}", e.getStatusCode(),
-						e.getResponseBodyAsString(), e);
+				log.error("Gemini Simple Text API client error: status={}", e.getStatusCode(), e);
 				String details = parseErrorDetails(e);
 				return createErrorResponse("API Client Error: " + e.getStatusCode(), details);
 			} catch (RestClientResponseException e) {
-				log.error("Gemini Simple Text API REST client error: Status {}, Body: {}", e.getStatusCode(),
-						e.getResponseBodyAsString(), e);
+				log.error("Gemini Simple Text API REST client error: status={}", e.getStatusCode(), e);
 				return createErrorResponse("API Request Failed (REST Client)", e.getMessage());
 			} catch (JsonProcessingException e) {
 				log.error("Error parsing successful Gemini Simple Text response JSON on attempt {}: {}", attempt,
@@ -1363,6 +1366,8 @@ public class GeminiService {
 				}
 			}, rotationMaxCycles);
 		} catch (GeminiBudgetExceededException e) {
+			throw e;
+		} catch (NonRetryableTaskException e) {
 			throw e;
 		} catch (Exception e) {
 			log.error("[{}] Unexpected error during transcript-only summarization: {}", metadataId, e.getMessage(), e);

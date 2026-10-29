@@ -38,6 +38,7 @@ public class MultiSourceJob {
 	private Integer estimatedGeminiRequests;
 	private Integer actualGeminiRequests;
 	private Integer retryGeminiRequests;
+	private Integer topUpGeminiRequests;
 	private String lastGeminiAttemptOperation;
 	private Long geminiPacingWaitMs;
 	private Date geminiFirstRequestAt;
@@ -226,6 +227,12 @@ public class MultiSourceJob {
 	public void setRetryGeminiRequests(Integer value) {
 		retryGeminiRequests = value;
 	}
+	public Integer getTopUpGeminiRequests() {
+		return topUpGeminiRequests;
+	}
+	public void setTopUpGeminiRequests(Integer value) {
+		topUpGeminiRequests = value;
+	}
 	public String getLastGeminiAttemptOperation() {
 		return lastGeminiAttemptOperation;
 	}
@@ -289,6 +296,7 @@ public class MultiSourceJob {
 		map.put("estimatedGeminiRequests", estimatedGeminiRequests);
 		map.put("actualGeminiRequests", actualGeminiRequests);
 		map.put("retryGeminiRequests", retryGeminiRequests);
+		map.put("topUpGeminiRequests", topUpGeminiRequests);
 		map.put("lastGeminiAttemptOperation", lastGeminiAttemptOperation);
 		map.put("geminiPacingWaitMs", geminiPacingWaitMs);
 		map.put("geminiFirstRequestAt", geminiFirstRequestAt);

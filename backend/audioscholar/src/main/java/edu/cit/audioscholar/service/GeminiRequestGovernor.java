@@ -47,7 +47,7 @@ public class GeminiRequestGovernor {
 		Instant acquiredAt = Instant.now();
 		if (StringUtils.hasText(contextId)) {
 			usageByContext.computeIfAbsent(contextId, ignored -> new MutableUsage()).record(acquiredAt, waitMillis,
-					operation, reservation.retryRequest());
+					operation, reservation.retryRequest(), reservation.topUpRequest());
 		}
 		log.info(
 				"Gemini request permit acquired operation={} contextId={} pacingWaitMs={} scheduledAt={} inputTokens={}",
@@ -92,29 +92,38 @@ public class GeminiRequestGovernor {
 		}
 	}
 
-	public record UsageSnapshot(int requestAttempts, int retryRequests, String lastAttemptOperation, long pacingWaitMs,
-			Instant firstRequestAt, Instant lastRequestAt) {
+	public record UsageSnapshot(int requestAttempts, int retryRequests, int topUpRequests, String lastAttemptOperation,
+			long pacingWaitMs, Instant firstRequestAt, Instant lastRequestAt) {
 		public UsageSnapshot(int requestAttempts, long pacingWaitMs, Instant firstRequestAt, Instant lastRequestAt) {
-			this(requestAttempts, 0, null, pacingWaitMs, firstRequestAt, lastRequestAt);
+			this(requestAttempts, 0, 0, null, pacingWaitMs, firstRequestAt, lastRequestAt);
+		}
+
+		public UsageSnapshot(int requestAttempts, int retryRequests, String lastAttemptOperation, long pacingWaitMs,
+				Instant firstRequestAt, Instant lastRequestAt) {
+			this(requestAttempts, retryRequests, 0, lastAttemptOperation, pacingWaitMs, firstRequestAt, lastRequestAt);
 		}
 
 		static UsageSnapshot empty() {
-			return new UsageSnapshot(0, 0, null, 0, null, null);
+			return new UsageSnapshot(0, 0, 0, null, 0, null, null);
 		}
 	}
 
 	private static final class MutableUsage {
 		private int requestAttempts;
 		private int retryRequests;
+		private int topUpRequests;
 		private String lastAttemptOperation;
 		private long pacingWaitMs;
 		private Instant firstRequestAt;
 		private Instant lastRequestAt;
 
-		synchronized void record(Instant acquiredAt, long waitedMillis, String operation, boolean retryRequest) {
+		synchronized void record(Instant acquiredAt, long waitedMillis, String operation, boolean retryRequest,
+				boolean topUpRequest) {
 			requestAttempts++;
 			if (retryRequest)
 				retryRequests++;
+			if (topUpRequest)
+				topUpRequests++;
 			lastAttemptOperation = operation;
 			pacingWaitMs += waitedMillis;
 			if (firstRequestAt == null) {
@@ -124,8 +133,8 @@ public class GeminiRequestGovernor {
 		}
 
 		synchronized UsageSnapshot snapshot() {
-			return new UsageSnapshot(requestAttempts, retryRequests, lastAttemptOperation, pacingWaitMs, firstRequestAt,
-					lastRequestAt);
+			return new UsageSnapshot(requestAttempts, retryRequests, topUpRequests, lastAttemptOperation, pacingWaitMs,
+					firstRequestAt, lastRequestAt);
 		}
 	}
 }

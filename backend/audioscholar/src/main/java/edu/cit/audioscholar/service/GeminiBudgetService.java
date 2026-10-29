@@ -18,6 +18,7 @@ import com.google.cloud.firestore.Firestore;
 import com.google.cloud.firestore.SetOptions;
 
 import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
+import edu.cit.audioscholar.exception.GeminiStageRequestLimitException;
 
 @Service
 public class GeminiBudgetService {
@@ -143,6 +144,7 @@ public class GeminiBudgetService {
 				admission.put("consumedRequests", 0L);
 				admission.put("actualRequests", 0L);
 				admission.put("retryRequests", 0L);
+				admission.put("topUpRequests", 0L);
 				admission.put("operationRequests", Map.of());
 				admission.put("operation", operation);
 				admission.put("status", "ACTIVE");
@@ -236,10 +238,10 @@ public class GeminiBudgetService {
 				boolean consumesAdmission = sameDayAdmission && admission.remainingRequests > 0;
 				boolean requiresTopUp = admission.active() && !consumesAdmission;
 				long stageRequests = sameDayAdmission ? admission.operationRequests.getOrDefault(operation, 0L) : 0L;
+				boolean retryRequest = sameDayAdmission && isBoundedMultiSourceStage(operation) && stageRequests > 0;
 				if (sameDayAdmission && isBoundedMultiSourceStage(operation) && multiSourceStageMaxRequests > 0
 						&& stageRequests >= multiSourceStageMaxRequests) {
-					throw new GeminiBudgetExceededException(
-							"Gemini multi-source stage request limit exceeded for " + operation, nextQuotaDay(now));
+					throw new GeminiStageRequestLimitException(operation, multiSourceStageMaxRequests);
 				}
 
 				Instant retryAt = minute.plus(1, ChronoUnit.MINUTES);
@@ -279,7 +281,9 @@ public class GeminiBudgetService {
 					admissionUpdate.put("consumedRequests", sameDayAdmission ? admission.consumedRequests + 1 : 1L);
 					admissionUpdate.put("actualRequests", sameDayAdmission ? admission.actualRequests + 1 : 1L);
 					admissionUpdate.put("retryRequests",
-							sameDayAdmission ? admission.retryRequests + (requiresTopUp ? 1 : 0) : 1L);
+							sameDayAdmission ? admission.retryRequests + (retryRequest ? 1 : 0) : 0L);
+					admissionUpdate.put("topUpRequests",
+							sameDayAdmission ? admission.topUpRequests + (requiresTopUp ? 1 : 0) : 1L);
 					admissionUpdate.put("lastAttemptOperation", operation);
 					admissionUpdate.put("operationRequests", operationRequests);
 					admissionUpdate.put("status", "ACTIVE");
@@ -288,7 +292,7 @@ public class GeminiBudgetService {
 					admissionUpdate.put("updatedAt", Timestamp.now());
 					transaction.set(admissionRef, admissionUpdate, SetOptions.merge());
 				}
-				return new Reservation(operation, inputTokens, now, requiresTopUp);
+				return new Reservation(operation, inputTokens, now, retryRequest, requiresTopUp);
 			}).get();
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -297,6 +301,9 @@ public class GeminiBudgetService {
 			Throwable cause = e.getCause();
 			if (cause instanceof GeminiBudgetExceededException exceeded) {
 				throw exceeded;
+			}
+			if (cause instanceof GeminiStageRequestLimitException stageLimit) {
+				throw stageLimit;
 			}
 			throw new IllegalStateException("Could not reserve Gemini budget", cause);
 		}
@@ -314,7 +321,11 @@ public class GeminiBudgetService {
 				|| "multi-source.semantic-pair-batch.generateContent".equals(operation);
 	}
 
-	public record Reservation(String operation, long inputTokens, Instant reservedAt, boolean retryRequest) {
+	public record Reservation(String operation, long inputTokens, Instant reservedAt, boolean retryRequest,
+			boolean topUpRequest) {
+		public Reservation(String operation, long inputTokens, Instant reservedAt, boolean retryRequest) {
+			this(operation, inputTokens, reservedAt, retryRequest, false);
+		}
 	}
 
 	public record DailyCapacity(long usedRequests, long admittedRequests, long remainingRequests, long limit,
@@ -384,11 +395,11 @@ public class GeminiBudgetService {
 	}
 
 	private record Admission(String quotaDay, long initialReservedRequests, long reservedRequests,
-			long remainingRequests, long consumedRequests, long actualRequests, long retryRequests,
+			long remainingRequests, long consumedRequests, long actualRequests, long retryRequests, long topUpRequests,
 			Map<String, Long> operationRequests, String status) {
 		static Admission from(Map<String, Object> data) {
 			if (data == null) {
-				return new Admission(null, 0, 0, 0, 0, 0, 0, Map.of(), null);
+				return new Admission(null, 0, 0, 0, 0, 0, 0, 0, Map.of(), null);
 			}
 			long reserved = number(data.get("reservedRequests"));
 			long remaining = number(data.get("remainingRequests"));
@@ -402,11 +413,14 @@ public class GeminiBudgetService {
 			long retries = data.containsKey("retryRequests")
 					? number(data.get("retryRequests"))
 					: Math.max(0, actual - initial);
+			long topUps = data.containsKey("topUpRequests")
+					? number(data.get("topUpRequests"))
+					: Math.max(0, reserved - initial);
 			Map<String, Long> operations = new HashMap<>();
 			if (data.get("operationRequests") instanceof Map<?, ?> rawOperations)
 				rawOperations.forEach((key, value) -> operations.put(String.valueOf(key), number(value)));
 			return new Admission(String.valueOf(data.get("quotaDay")), initial, reserved, remaining, consumed, actual,
-					retries, operations, String.valueOf(data.get("status")));
+					retries, topUps, operations, String.valueOf(data.get("status")));
 		}
 
 		boolean active() {

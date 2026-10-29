@@ -29,9 +29,24 @@ class GeminiRequestGovernorTest {
 		verify(budget).reserve("semantic-batch", 120, null, "job-1");
 		assertThat(governor.snapshot("job-1").requestAttempts()).isEqualTo(1);
 		assertThat(governor.snapshot("job-1").retryRequests()).isZero();
+		assertThat(governor.snapshot("job-1").topUpRequests()).isZero();
 		assertThat(governor.snapshot("job-1").lastAttemptOperation()).isEqualTo("semantic-batch");
 		assertThat(governor.snapshotAndClear("job-1").requestAttempts()).isEqualTo(1);
 		assertThat(governor.snapshot("job-1").requestAttempts()).isZero();
+	}
+
+	@Test
+	void separatesStageRetriesFromAdmissionTopUps() {
+		GeminiBudgetService budget = mock(GeminiBudgetService.class);
+		when(budget.reservePacingSlot("semantic-batch", "job-1")).thenReturn(Instant.now());
+		when(budget.reserve("semantic-batch", 120, null, "job-1"))
+				.thenReturn(new GeminiBudgetService.Reservation("semantic-batch", 120, Instant.now(), true, true));
+		GeminiRequestGovernor governor = new GeminiRequestGovernor(budget, Duration.ofMinutes(5));
+
+		governor.acquire("semantic-batch", 120, "job-1");
+
+		assertThat(governor.snapshot("job-1").retryRequests()).isEqualTo(1);
+		assertThat(governor.snapshot("job-1").topUpRequests()).isEqualTo(1);
 	}
 
 	@Test
