@@ -1,6 +1,7 @@
 package edu.cit.audioscholar.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -9,6 +10,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
@@ -16,6 +18,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.security.core.Authentication;
 
+import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
 import edu.cit.audioscholar.model.MultiSourceJob;
 import edu.cit.audioscholar.service.MultiSourceJobService;
 
@@ -62,5 +65,35 @@ class MultiSourceControllerTest {
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
 		verify(service).createAndProcess(eq("user-1"), isNull(), anyList(), eq("Documents"), eq(null), eq("NOTES"),
 				eq("WEB"));
+	}
+
+	@Test
+	void quotaAdmissionFailureIsRethrownForTheGlobal429Handler() throws Exception {
+		MultiSourceJobService service = mock(MultiSourceJobService.class);
+		Authentication authentication = mock(Authentication.class);
+		when(authentication.getName()).thenReturn("user-1");
+		GeminiBudgetExceededException quota = new GeminiBudgetExceededException("daily admission rejected",
+				java.time.Instant.now().plusSeconds(3600));
+		when(service.createAndProcess(eq("user-1"), anyList(), isNull(), eq("Title"), isNull(), eq("NOTES"), eq("WEB")))
+				.thenThrow(quota);
+		MockMultipartFile first = new MockMultipartFile("mediaFiles", "a.mp3", "audio/mpeg", new byte[]{1});
+		MockMultipartFile second = new MockMultipartFile("mediaFiles", "b.mp3", "audio/mpeg", new byte[]{2});
+
+		assertThatThrownBy(() -> new MultiSourceController(service).createJob(List.of(first, second), null, "Title",
+				null, "NOTES", "WEB", authentication)).isSameAs(quota);
+	}
+
+	@Test
+	void checkpointedSummaryIsNotPublishedBeforeJobCompletes() {
+		MultiSourceJobService service = mock(MultiSourceJobService.class);
+		Authentication authentication = mock(Authentication.class);
+		when(authentication.getName()).thenReturn("user-1");
+		when(service.getJobMap("job-1")).thenReturn(
+				Map.of("userId", "user-1", "status", "SUMMARIZING", "mergedSummary", Map.of("summaryId", "summary-1")));
+
+		ResponseEntity<?> response = new MultiSourceController(service).getMergedSummary("job-1", authentication);
+
+		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+		assertThat(((Map<?, ?>) response.getBody()).get("status")).isEqualTo("SUMMARIZING");
 	}
 }

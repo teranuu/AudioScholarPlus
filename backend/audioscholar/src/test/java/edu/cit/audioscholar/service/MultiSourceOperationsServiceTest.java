@@ -16,6 +16,7 @@ class MultiSourceOperationsServiceTest {
 	private MultiSourceJobRepository jobs;
 	private ValidationEventService events;
 	private MultiSourceOperationsMetrics metrics;
+	private GeminiRequestGovernor requestGovernor;
 	private MultiSourceOperationsService service;
 
 	@BeforeEach
@@ -23,7 +24,8 @@ class MultiSourceOperationsServiceTest {
 		jobs = mock(MultiSourceJobRepository.class);
 		events = mock(ValidationEventService.class);
 		metrics = mock(MultiSourceOperationsMetrics.class);
-		service = new MultiSourceOperationsService(jobs, events, metrics, Duration.ofMinutes(30),
+		requestGovernor = mock(GeminiRequestGovernor.class);
+		service = new MultiSourceOperationsService(jobs, events, metrics, requestGovernor, Duration.ofMinutes(30),
 				Duration.ofMinutes(14), 25, "test-worker");
 		when(jobs.tryAcquireReconciliationLease(eq("test-worker"), any())).thenReturn(true);
 		when(jobs.findStaleNonterminal(anyList(), any(), eq(25))).thenReturn(List.of());
@@ -52,6 +54,7 @@ class MultiSourceOperationsServiceTest {
 		service.reconcile();
 
 		verify(jobs).failIfNonterminalAndStale(eq("job-1"), any());
+		verify(requestGovernor).releaseDailyAdmission("job-1");
 		verify(jobs).markTerminalEventPublished("job-1");
 		verify(metrics).recordRun(eq(1L), eq(1L), eq(0L), anyLong());
 	}
@@ -83,7 +86,7 @@ class MultiSourceOperationsServiceTest {
 
 	@Test
 	void configuredQueryLimitIsHardCappedAtFifty() {
-		MultiSourceOperationsService capped = new MultiSourceOperationsService(jobs, events, metrics,
+		MultiSourceOperationsService capped = new MultiSourceOperationsService(jobs, events, metrics, requestGovernor,
 				Duration.ofMinutes(30), Duration.ofMinutes(14), 500, "test-worker");
 
 		capped.reconcile();

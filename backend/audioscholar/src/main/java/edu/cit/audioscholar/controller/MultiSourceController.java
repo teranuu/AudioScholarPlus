@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.multipart.MultipartFile;
 
+import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
 import edu.cit.audioscholar.exception.ProcessingGuardrailException;
 import edu.cit.audioscholar.model.MultiSourceJob;
 import edu.cit.audioscholar.service.MultiSourceJobService;
@@ -45,6 +46,9 @@ public class MultiSourceController {
 			return ResponseEntity.status(HttpStatus.ACCEPTED).body(job.toMap());
 		} catch (IllegalArgumentException | ProcessingGuardrailException e) {
 			return ResponseEntity.badRequest().body(Map.of("status", "FAILED", "message", e.getMessage()));
+		} catch (GeminiBudgetExceededException e) {
+			// Preserve the centralized 429 response, Retry-After header, and retryAt body.
+			throw e;
 		} catch (Exception e) {
 			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
 					.body(Map.of("status", "FAILED", "message", "Multi-source processing failed: " + e.getMessage()));
@@ -75,7 +79,7 @@ public class MultiSourceController {
 			return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
 		}
 		Object summary = job.get("mergedSummary");
-		if (summary == null) {
+		if (!"COMPLETE".equals(job.get("status")) || summary == null) {
 			return ResponseEntity.status(HttpStatus.ACCEPTED)
 					.body(Map.of("status", job.getOrDefault("status", "PROCESSING")));
 		}

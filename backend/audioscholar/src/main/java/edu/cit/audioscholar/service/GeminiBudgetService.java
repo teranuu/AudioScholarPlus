@@ -28,6 +28,7 @@ public class GeminiBudgetService {
 	private final long projectRpd;
 	private final long userRpm;
 	private final long userInputTpm;
+	private final long multiSourceStageMaxRequests;
 	private final String collectionName;
 	private final ZoneId quotaZone;
 
@@ -37,6 +38,7 @@ public class GeminiBudgetService {
 			@Value("${gemini.guardrails.project-rpd:18}") long projectRpd,
 			@Value("${gemini.guardrails.user-rpm:0}") long userRpm,
 			@Value("${gemini.guardrails.user-input-tpm:0}") long userInputTpm,
+			@Value("${gemini.guardrails.multi-source-stage-max-requests:2}") long multiSourceStageMaxRequests,
 			@Value("${gemini.guardrails.budget-collection:gemini_usage_budgets}") String collectionName,
 			@Value("${gemini.guardrails.quota-zone:America/Los_Angeles}") String quotaZone) {
 		this.firestore = firestore;
@@ -46,6 +48,7 @@ public class GeminiBudgetService {
 		this.projectRpd = projectRpd;
 		this.userRpm = userRpm;
 		this.userInputTpm = userInputTpm;
+		this.multiSourceStageMaxRequests = multiSourceStageMaxRequests;
 		this.collectionName = collectionName;
 		this.quotaZone = ZoneId.of(quotaZone);
 	}
@@ -134,8 +137,13 @@ public class GeminiBudgetService {
 				Map<String, Object> admission = new HashMap<>();
 				admission.put("contextId", contextId);
 				admission.put("quotaDay", quotaDay);
+				admission.put("initialReservedRequests", requiredRequests);
 				admission.put("reservedRequests", requiredRequests);
 				admission.put("remainingRequests", requiredRequests);
+				admission.put("consumedRequests", 0L);
+				admission.put("actualRequests", 0L);
+				admission.put("retryRequests", 0L);
+				admission.put("operationRequests", Map.of());
 				admission.put("operation", operation);
 				admission.put("status", "ACTIVE");
 				admission.put("createdAt", Timestamp.now());
@@ -196,7 +204,7 @@ public class GeminiBudgetService {
 
 	public Reservation reserve(String operation, long inputTokens, String userId, String contextId) {
 		if (!enabled) {
-			return new Reservation(operation, inputTokens, Instant.now());
+			return new Reservation(operation, inputTokens, Instant.now(), false);
 		}
 
 		Instant now = Instant.now();
@@ -224,7 +232,15 @@ public class GeminiBudgetService {
 						: transaction.get(admissionRef).get().getData();
 				Admission admission = Admission.from(admissionData);
 				long admitted = number(projectDayData == null ? null : projectDayData.get("admittedRequests"));
-				boolean consumesAdmission = admission.activeFor(quotaDay) && admission.remainingRequests > 0;
+				boolean sameDayAdmission = admission.activeFor(quotaDay);
+				boolean consumesAdmission = sameDayAdmission && admission.remainingRequests > 0;
+				boolean requiresTopUp = admission.active() && !consumesAdmission;
+				long stageRequests = sameDayAdmission ? admission.operationRequests.getOrDefault(operation, 0L) : 0L;
+				if (sameDayAdmission && isBoundedMultiSourceStage(operation) && multiSourceStageMaxRequests > 0
+						&& stageRequests >= multiSourceStageMaxRequests) {
+					throw new GeminiBudgetExceededException(
+							"Gemini multi-source stage request limit exceeded for " + operation, nextQuotaDay(now));
+				}
 
 				Instant retryAt = minute.plus(1, ChronoUnit.MINUTES);
 				checkLimit(projectMinute.requests + 1, projectRpm, retryAt, "Gemini project RPM budget exceeded");
@@ -248,15 +264,31 @@ public class GeminiBudgetService {
 					transaction.set(userMinuteRef,
 							userMinute.add(1, inputTokens).toMap("minute", minute, operation, contextId));
 				}
-				if (consumesAdmission) {
+				if (admission.active()) {
 					Map<String, Object> admissionUpdate = new HashMap<>();
-					admissionUpdate.put("remainingRequests", admission.remainingRequests - 1);
-					admissionUpdate.put("consumedRequests",
-							admission.reservedRequests - admission.remainingRequests + 1);
+					Map<String, Long> operationRequests = sameDayAdmission
+							? new HashMap<>(admission.operationRequests)
+							: new HashMap<>();
+					operationRequests.put(operation, stageRequests + 1);
+					admissionUpdate.put("quotaDay", quotaDay);
+					admissionUpdate.put("initialReservedRequests",
+							sameDayAdmission ? admission.initialReservedRequests : 0L);
+					admissionUpdate.put("reservedRequests",
+							sameDayAdmission ? admission.reservedRequests + (requiresTopUp ? 1 : 0) : 1L);
+					admissionUpdate.put("remainingRequests", consumesAdmission ? admission.remainingRequests - 1 : 0L);
+					admissionUpdate.put("consumedRequests", sameDayAdmission ? admission.consumedRequests + 1 : 1L);
+					admissionUpdate.put("actualRequests", sameDayAdmission ? admission.actualRequests + 1 : 1L);
+					admissionUpdate.put("retryRequests",
+							sameDayAdmission ? admission.retryRequests + (requiresTopUp ? 1 : 0) : 1L);
+					admissionUpdate.put("lastAttemptOperation", operation);
+					admissionUpdate.put("operationRequests", operationRequests);
+					admissionUpdate.put("status", "ACTIVE");
+					if (!sameDayAdmission)
+						admissionUpdate.put("createdAt", Timestamp.now());
 					admissionUpdate.put("updatedAt", Timestamp.now());
 					transaction.set(admissionRef, admissionUpdate, SetOptions.merge());
 				}
-				return new Reservation(operation, inputTokens, now);
+				return new Reservation(operation, inputTokens, now, requiresTopUp);
 			}).get();
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
@@ -276,7 +308,13 @@ public class GeminiBudgetService {
 		}
 	}
 
-	public record Reservation(String operation, long inputTokens, Instant reservedAt) {
+	private boolean isBoundedMultiSourceStage(String operation) {
+		return "transcript-summary.generateContent".equals(operation)
+				|| "multi-source.key-point-batch.generateContent".equals(operation)
+				|| "multi-source.semantic-pair-batch.generateContent".equals(operation);
+	}
+
+	public record Reservation(String operation, long inputTokens, Instant reservedAt, boolean retryRequest) {
 	}
 
 	public record DailyCapacity(long usedRequests, long admittedRequests, long remainingRequests, long limit,
@@ -345,13 +383,30 @@ public class GeminiBudgetService {
 
 	}
 
-	private record Admission(String quotaDay, long reservedRequests, long remainingRequests, String status) {
+	private record Admission(String quotaDay, long initialReservedRequests, long reservedRequests,
+			long remainingRequests, long consumedRequests, long actualRequests, long retryRequests,
+			Map<String, Long> operationRequests, String status) {
 		static Admission from(Map<String, Object> data) {
 			if (data == null) {
-				return new Admission(null, 0, 0, null);
+				return new Admission(null, 0, 0, 0, 0, 0, 0, Map.of(), null);
 			}
-			return new Admission(String.valueOf(data.get("quotaDay")), number(data.get("reservedRequests")),
-					number(data.get("remainingRequests")), String.valueOf(data.get("status")));
+			long reserved = number(data.get("reservedRequests"));
+			long remaining = number(data.get("remainingRequests"));
+			long initial = data.containsKey("initialReservedRequests")
+					? number(data.get("initialReservedRequests"))
+					: reserved;
+			long consumed = data.containsKey("consumedRequests")
+					? number(data.get("consumedRequests"))
+					: Math.max(0, reserved - remaining);
+			long actual = data.containsKey("actualRequests") ? number(data.get("actualRequests")) : consumed;
+			long retries = data.containsKey("retryRequests")
+					? number(data.get("retryRequests"))
+					: Math.max(0, actual - initial);
+			Map<String, Long> operations = new HashMap<>();
+			if (data.get("operationRequests") instanceof Map<?, ?> rawOperations)
+				rawOperations.forEach((key, value) -> operations.put(String.valueOf(key), number(value)));
+			return new Admission(String.valueOf(data.get("quotaDay")), initial, reserved, remaining, consumed, actual,
+					retries, operations, String.valueOf(data.get("status")));
 		}
 
 		boolean active() {

@@ -97,7 +97,7 @@ const SourceAttributionChip = ({ source }) => (
 );
 
 const MergeStatusIndicator = ({ job }) => {
-  if (!job) return null;
+  if (!job || job.status !== 'COMPLETE' || !job.mergedSummary) return null;
   return <p className="text-sm text-green-600 dark:text-green-400 text-center flex items-center justify-center gap-1"><FiCheckCircle /> Merged summary generated.</p>;
 };
 
@@ -108,7 +108,7 @@ const MergedSummaryContentViewer = ({ summary }) => (
 );
 
 const MergedSummaryScreen = ({ job }) => {
-  if (!job) return null;
+  if (!job || job.status !== 'COMPLETE' || !job.mergedSummary) return null;
   return (
     <div className="mt-8 border-t border-gray-200 dark:border-gray-700 pt-6">
       <div className="flex flex-wrap gap-2 mb-4">

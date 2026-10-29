@@ -92,7 +92,7 @@ public class AuthController {
 
 	@PostMapping("/register")
 	public ResponseEntity<?> registerUser(@Valid @RequestBody RegistrationRequest registrationRequest) {
-		log.info("Received registration request for email: {}", registrationRequest.getEmail());
+		log.info("Received registration request.");
 		try {
 			User registeredUser = userService.registerNewUser(registrationRequest);
 			String customToken = firebaseService.createCustomToken(registeredUser.getUserId());
@@ -100,8 +100,7 @@ public class AuthController {
 			response.setCustomToken(customToken);
 			return ResponseEntity.status(HttpStatus.CREATED).body(response);
 		} catch (FirebaseAuthException e) {
-			log.error("Firebase Auth error during registration for {}: {}", registrationRequest.getEmail(),
-					e.getMessage());
+			log.error("Firebase Auth error during registration: {}", e.getMessage());
 			if (AuthErrorCode.EMAIL_ALREADY_EXISTS.equals(e.getAuthErrorCode())) {
 				return ResponseEntity.status(HttpStatus.CONFLICT)
 						.body(new AuthResponse(false, "Email address is already in use."));
@@ -109,19 +108,16 @@ public class AuthController {
 			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
 					.body(new AuthResponse(false, "Registration failed due to an authentication service error."));
 		} catch (FirestoreInteractionException e) {
-			log.error("Firestore error during registration for {}: {}", registrationRequest.getEmail(), e.getMessage(),
-					e);
+			log.error("Firestore error during registration: {}", e.getMessage(), e);
 			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
 					.body(new AuthResponse(false, "Registration failed due to a database error."));
 		} catch (ExecutionException | InterruptedException e) {
 			Thread.currentThread().interrupt();
-			log.error("Concurrency error during registration for {}: {}", registrationRequest.getEmail(),
-					e.getMessage(), e);
+			log.error("Concurrency error during registration: {}", e.getMessage(), e);
 			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
 					.body(new AuthResponse(false, "Registration process was interrupted."));
 		} catch (Exception e) {
-			log.error("Unexpected error during registration for {}: {}", registrationRequest.getEmail(), e.getMessage(),
-					e);
+			log.error("Unexpected error during registration: {}", e.getMessage(), e);
 			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
 					.body(new AuthResponse(false, "An unexpected error occurred during registration."));
 		}
@@ -157,8 +153,7 @@ public class AuthController {
 			log.info("Firebase token verified for UID: {}. Now fetching full UserRecord.", uid);
 
 			UserRecord userRecord = FirebaseAuth.getInstance(firebaseService.getFirebaseApp()).getUser(uid);
-			log.info("Fetched UserRecord - UID: {}, Email: {}, DisplayName: {}, PhotoURL: {}", userRecord.getUid(),
-					userRecord.getEmail(), userRecord.getDisplayName(), userRecord.getPhotoUrl());
+			log.info("Fetched Firebase UserRecord for UID: {}", userRecord.getUid());
 
 			String email = null;
 
@@ -189,21 +184,18 @@ public class AuthController {
 
 			if (claims != null && "google.com".equals(provider) && claims.containsKey("email")) {
 				email = (String) claims.get("email");
-				log.info("Extracted email from Google provider token claim: {}", email);
+				log.debug("Extracted email from Google provider token claim for UID: {}", uid);
 			}
 
 			if (email == null) {
 				email = userRecord.getEmail();
-				log.info("Using email from UserRecord (either fallback or non-Google provider): {}", email);
+				log.debug("Using email from Firebase UserRecord fallback for UID: {}", uid);
 			}
 
 			String name = userRecord.getDisplayName();
 			String photoUrl = userRecord.getPhotoUrl();
 
-			log.info("Using Email: {} for UID: {}. Provider: {}, ProviderId: {}. Finding or creating user profile.",
-					email, uid, provider, providerId);
-			log.debug("UserRecord Display Name: {}", name);
-			log.debug("UserRecord Photo URL: {}", photoUrl);
+			log.info("Finding or creating user profile for UID: {} using provider: {}", uid, provider);
 
 			User user = userService.findOrCreateUserByFirebaseDetails(uid, email, name, provider, providerId, photoUrl);
 
@@ -218,7 +210,7 @@ public class AuthController {
 			Authentication authentication = new UsernamePasswordAuthenticationToken(uid, null, authorities);
 			String jwt = jwtTokenProvider.generateToken(authentication);
 
-			log.info("Generated API JWT for user UID {}: {}", uid, jwt);
+			log.info("Generated API JWT for user UID {}", uid);
 
 			AuthResponse response = new AuthResponse(true, "Firebase token verified successfully.");
 			response.setToken(jwt);
@@ -272,13 +264,12 @@ public class AuthController {
 						.body(new AuthResponse(false, "Email is required from Google profile."));
 			}
 
-			log.info("Google ID token verified for Google User ID (sub): {}, Email: {}", googleUserId, email);
-			log.debug("Extracted Picture URL from Google Token: {}", pictureUrl);
+			log.info("Google ID token verified for subject: {}", googleUserId);
 
 			UserRecord firebaseUserRecord;
 			try {
 				firebaseUserRecord = FirebaseAuth.getInstance(firebaseService.getFirebaseApp()).getUserByEmail(email);
-				log.info("Found existing Firebase user by email {} with UID: {}", email, firebaseUserRecord.getUid());
+				log.info("Found existing Firebase user with UID: {}", firebaseUserRecord.getUid());
 
 				boolean needsFirebaseUpdate = false;
 				UserRecord.UpdateRequest updateRequest = new UserRecord.UpdateRequest(firebaseUserRecord.getUid());
@@ -302,7 +293,7 @@ public class AuthController {
 
 			} catch (FirebaseAuthException e) {
 				if (AuthErrorCode.USER_NOT_FOUND.equals(e.getAuthErrorCode())) {
-					log.info("No existing Firebase user found for email {}. Creating new Firebase user.", email);
+					log.info("No existing Firebase user found; creating a new user.");
 					UserRecord.CreateRequest createRequest = new UserRecord.CreateRequest().setEmail(email)
 							.setEmailVerified(emailVerified).setDisplayName(name != null ? name : "")
 							.setDisabled(false);
@@ -311,10 +302,9 @@ public class AuthController {
 					}
 					firebaseUserRecord = FirebaseAuth.getInstance(firebaseService.getFirebaseApp())
 							.createUser(createRequest);
-					log.info("Created new Firebase user for email {} with UID: {}", email, firebaseUserRecord.getUid());
+					log.info("Created new Firebase user with UID: {}", firebaseUserRecord.getUid());
 				} else {
-					log.error("FirebaseAuthException while finding/creating user for email {}: {}", email,
-							e.getMessage(), e);
+					log.error("FirebaseAuthException while finding/creating Google user: {}", e.getMessage(), e);
 					throw e;
 				}
 			}
@@ -411,14 +401,14 @@ public class AuthController {
 					return Mono.error(new RuntimeException(
 							"Primary verified email not found or not accessible for this GitHub user. Please ensure your primary email on GitHub is verified and public, or grant the 'user:email' scope."));
 				}
-				log.info("Primary GitHub email obtained: {}", primaryEmail);
+				log.info("Primary verified GitHub email obtained.");
 
 				Instant firebaseAuthStart = Instant.now();
 				return findOrCreateFirebaseUser(primaryEmail, githubUser.nameOrLogin(), githubUser.avatarUrl())
 						.flatMap(firebaseUserRecord -> {
 							Instant firebaseAuthEnd = Instant.now();
-							log.info("Firebase Auth find/create successful for email {}. UID: {}. Duration: {}ms",
-									primaryEmail, firebaseUserRecord.getUid(),
+							log.info("Firebase Auth find/create successful for UID: {}. Duration: {}ms",
+									firebaseUserRecord.getUid(),
 									Duration.between(firebaseAuthStart, firebaseAuthEnd).toMillis());
 
 							String firebaseUid = firebaseUserRecord.getUid();
@@ -480,7 +470,7 @@ public class AuthController {
 						});
 			});
 		}).onErrorResume(WebClientResponseException.class, e -> {
-			log.error("GitHub API call failed: Status {}, Body {}", e.getStatusCode(), e.getResponseBodyAsString(), e);
+			log.error("GitHub API call failed with status {}", e.getStatusCode(), e);
 			String message = "GitHub API interaction failed.";
 			if (e.getStatusCode().is4xxClientError()) {
 				message = "Invalid request or code provided to GitHub.";
@@ -526,10 +516,10 @@ public class AuthController {
 		Instant start = Instant.now();
 		return Mono.fromCallable(() -> {
 			try {
-				log.debug("Attempting to find Firebase user by email: {}", email);
+				log.debug("Attempting to find Firebase user by verified email.");
 				UserRecord existingUser = FirebaseAuth.getInstance(firebaseService.getFirebaseApp())
 						.getUserByEmail(email);
-				log.info("Found existing Firebase user by email {} with UID: {}", email, existingUser.getUid());
+				log.info("Found existing Firebase user with UID: {}", existingUser.getUid());
 
 				boolean needsFirebaseUpdate = false;
 				UserRecord.UpdateRequest updateRequest = new UserRecord.UpdateRequest(existingUser.getUid());
@@ -546,7 +536,7 @@ public class AuthController {
 
 				if (needsFirebaseUpdate) {
 					FirebaseAuth.getInstance(firebaseService.getFirebaseApp()).updateUser(updateRequest);
-					log.info("Firebase Auth user updated for email {}.", email);
+					log.info("Firebase Auth user profile updated for UID: {}", existingUser.getUid());
 					return FirebaseAuth.getInstance(firebaseService.getFirebaseApp()).getUser(existingUser.getUid());
 				} else {
 					return existingUser;
@@ -554,7 +544,7 @@ public class AuthController {
 
 			} catch (FirebaseAuthException e) {
 				if (AuthErrorCode.USER_NOT_FOUND.equals(e.getAuthErrorCode())) {
-					log.info("No existing Firebase user found for email {}. Creating new Firebase user.", email);
+					log.info("No existing Firebase user found; creating a new user.");
 					UserRecord.CreateRequest createRequest = new UserRecord.CreateRequest().setEmail(email)
 							.setEmailVerified(true).setDisplayName(name != null ? name : "").setDisabled(false);
 					if (pictureUrl != null && !pictureUrl.isEmpty()) {
@@ -563,26 +553,24 @@ public class AuthController {
 					try {
 						UserRecord newUser = FirebaseAuth.getInstance(firebaseService.getFirebaseApp())
 								.createUser(createRequest);
-						log.info("Successfully created Firebase user for email {} with UID: {}", email,
-								newUser.getUid());
+						log.info("Successfully created Firebase user with UID: {}", newUser.getUid());
 						return newUser;
 					} catch (FirebaseAuthException createEx) {
-						log.error("Failed to create Firebase user for email {}: {}", email, createEx.getMessage(),
-								createEx);
+						log.error("Failed to create Firebase user: {}", createEx.getMessage(), createEx);
 						throw new RuntimeException("Firebase user creation failed: " + createEx.getMessage(), createEx);
 					}
 				} else {
-					log.error("FirebaseAuthException while finding user for email {}: {}", email, e.getMessage(), e);
+					log.error("FirebaseAuthException while finding Firebase user: {}", e.getMessage(), e);
 					throw new RuntimeException("Firebase user lookup failed: " + e.getMessage(), e);
 				}
 			}
 		}).doOnSuccess(ur -> {
 			Instant end = Instant.now();
-			log.info("Firebase Auth find/create call completed for email {}. Duration: {}ms", email,
+			log.info("Firebase Auth find/create call completed. Duration: {}ms",
 					Duration.between(start, end).toMillis());
 		}).doOnError(e -> {
 			Instant end = Instant.now();
-			log.error("Firebase Auth find/create call failed for email {}. Duration: {}ms. Error: {}", email,
+			log.error("Firebase Auth find/create call failed. Duration: {}ms. Error: {}",
 					Duration.between(start, end).toMillis(), e.getMessage());
 		}).onErrorMap(ex -> {
 			if (ex instanceof RuntimeException && ex.getCause() instanceof FirebaseAuthException) {

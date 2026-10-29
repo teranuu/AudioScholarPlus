@@ -7,6 +7,7 @@ import static org.mockito.Mockito.*;
 
 import java.lang.reflect.Method;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -16,6 +17,9 @@ import org.junit.jupiter.api.io.TempDir;
 import org.springframework.mock.web.MockMultipartFile;
 import org.springframework.web.multipart.MultipartFile;
 
+import edu.cit.audioscholar.config.RabbitMQConfig;
+import edu.cit.audioscholar.dto.MultiSourceJobMessage;
+import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
 import edu.cit.audioscholar.model.MultiSourceJob;
 import edu.cit.audioscholar.model.SourceFile;
 import edu.cit.audioscholar.model.SourceKind;
@@ -217,6 +221,25 @@ class MultiSourceJobServiceTest {
 				anyMap());
 	}
 
+	@Test
+	void dailyQuotaExhaustionIsDeferredUntilRetryAtInsteadOfImmediatelyRetried() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		Instant retryAt = Instant.now().plusSeconds(3600);
+		when(harness.gemini.generateTranscriptOnlySummary(anyString(), eq("job-1"), eq("NOTES")))
+				.thenThrow(new GeminiBudgetExceededException("daily budget exhausted", retryAt));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.publisher).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY),
+				any(MultiSourceJobMessage.class), argThat(delay -> !delay.isNegative() && delay.toMinutes() >= 59));
+		verify(harness.publisher, never()).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY),
+				any(MultiSourceJobMessage.class), any(java.time.Duration.class));
+		verify(harness.repository, atLeastOnce()).saveIfNonterminal(
+				argThat(job -> "PROCESSING_QUEUED".equals(job.getStatus()) && job.getQuotaRetryAt() != null
+						&& !job.getQuotaRetryAt().toInstant().isBefore(retryAt.minusSeconds(1))));
+		verify(harness.repository, never()).transitionTerminal(any(), anyString(), anyString(), anyList(), anyMap());
+	}
+
 	private ProcessingHarness processingHarness(boolean terminalTransitionWins) throws Exception {
 		GeminiService gemini = mock(GeminiService.class);
 		DeduplicationService deduplication = mock(DeduplicationService.class);
@@ -225,6 +248,7 @@ class MultiSourceJobServiceTest {
 		ValidationEventService events = mock(ValidationEventService.class);
 		SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
 		GeminiRequestGovernor governor = governor();
+		ConfirmedRabbitPublisher publisher = mock(ConfirmedRabbitPublisher.class);
 		when(repository.tryAcquireProcessingLease(anyString(), any())).thenReturn(true);
 		when(repository.claim("job-1")).thenReturn(true);
 		when(repository.findById("job-1"))
@@ -246,14 +270,14 @@ class MultiSourceJobServiceTest {
 				mock(SummaryService.class), deduplication, mock(SourceAttributionService.class), sourceFiles,
 				mock(SourceTranscriptService.class), mock(DocumentTextExtractionService.class),
 				mock(MergedSummaryRepository.class), repository, mock(AudioProcessingGuardrailService.class),
-				tempDir.toString(), "500MB", mock(ConfirmedRabbitPublisher.class), events,
-				mock(TimedTranscriptSegmentService.class), semantic, governor, java.time.Duration.ofMinutes(35),
-				java.time.Duration.ofSeconds(15), "test-worker");
-		return new ProcessingHarness(service, repository, events, sourceFiles);
+				tempDir.toString(), "500MB", publisher, events, mock(TimedTranscriptSegmentService.class), semantic,
+				governor, java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
+		return new ProcessingHarness(service, repository, events, sourceFiles, gemini, publisher);
 	}
 
 	private record ProcessingHarness(MultiSourceJobService service, MultiSourceJobRepository repository,
-			ValidationEventService events, SourceFileService sourceFiles) {
+			ValidationEventService events, SourceFileService sourceFiles, GeminiService gemini,
+			ConfirmedRabbitPublisher publisher) {
 	}
 
 	private Map<String, Object> completedSource(String sourceFileId, String label) {

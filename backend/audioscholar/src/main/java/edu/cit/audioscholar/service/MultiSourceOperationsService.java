@@ -23,19 +23,22 @@ public class MultiSourceOperationsService {
 	private final MultiSourceJobRepository jobs;
 	private final ValidationEventService events;
 	private final MultiSourceOperationsMetrics metrics;
+	private final GeminiRequestGovernor requestGovernor;
 	private final Duration timeout;
 	private final Duration leaseDuration;
 	private final int maxJobsPerRun;
 	private final String workerIdentity;
 
 	public MultiSourceOperationsService(MultiSourceJobRepository jobs, ValidationEventService events,
-			MultiSourceOperationsMetrics metrics, @Value("${multi-source.processing-timeout:30m}") Duration timeout,
+			MultiSourceOperationsMetrics metrics, GeminiRequestGovernor requestGovernor,
+			@Value("${multi-source.processing-timeout:30m}") Duration timeout,
 			@Value("${multi-source.reconciliation-lease-duration:14m}") Duration leaseDuration,
 			@Value("${multi-source.reconciliation-max-jobs-per-run:25}") int maxJobsPerRun,
 			@Value("${multi-source.worker-identity:multi-source-worker}") String workerIdentity) {
 		this.jobs = jobs;
 		this.events = events;
 		this.metrics = metrics;
+		this.requestGovernor = requestGovernor;
 		this.timeout = timeout;
 		this.leaseDuration = leaseDuration;
 		this.maxJobsPerRun = Math.max(1, Math.min(maxJobsPerRun, 50));
@@ -74,6 +77,12 @@ public class MultiSourceOperationsService {
 				continue;
 			}
 			timedOut++;
+			try {
+				requestGovernor.releaseDailyAdmission(jobId);
+			} catch (RuntimeException releaseFailure) {
+				log.error("Could not release Gemini admission for reconciled multi-source job jobId={}", jobId,
+						releaseFailure);
+			}
 			boolean emitted = events
 					.emit(jobId, "MULTI_SOURCE", String.valueOf(job.getOrDefault("clientSource", "UNKNOWN")),
 							"JOB_FAILED", List.of(9, 12), "initial", Map.of("jobId", jobId, "outcome", "FAILED",
