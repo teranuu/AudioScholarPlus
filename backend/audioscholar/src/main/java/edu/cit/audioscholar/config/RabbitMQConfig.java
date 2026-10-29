@@ -50,6 +50,8 @@ public class RabbitMQConfig {
 	public static final String MULTI_SOURCE_ROUTING_KEY = "multi.source.process.key";
 	public static final String MULTI_SOURCE_RETRY_QUEUE_NAME = "multi.source.processing.retry.queue";
 	public static final String MULTI_SOURCE_RETRY_ROUTING_KEY = "multi.source.process.retry.key";
+	public static final String MULTI_SOURCE_QUOTA_RETRY_QUEUE_NAME = "multi.source.processing.quota.retry.queue";
+	public static final String MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY = "multi.source.process.quota.retry.key";
 
 	@Value("${spring.rabbitmq.listener.simple.concurrency:1}")
 	private int concurrency;
@@ -155,6 +157,12 @@ public class RabbitMQConfig {
 				.deadLetterRoutingKey(MULTI_SOURCE_ROUTING_KEY).build();
 	}
 
+	@Bean("multiSourceQuotaRetryQueue")
+	Queue multiSourceQuotaRetryQueue() {
+		return QueueBuilder.durable(MULTI_SOURCE_QUOTA_RETRY_QUEUE_NAME).deadLetterExchange(PROCESSING_EXCHANGE_NAME)
+				.deadLetterRoutingKey(MULTI_SOURCE_ROUTING_KEY).build();
+	}
+
 	@Bean
 	Binding processingBinding(@Qualifier("processingQueue") Queue queue, TopicExchange exchange) {
 		return BindingBuilder.bind(queue).to(exchange).with(PROCESSING_ROUTING_KEY);
@@ -198,6 +206,11 @@ public class RabbitMQConfig {
 	@Bean
 	Binding multiSourceRetryBinding(@Qualifier("multiSourceRetryQueue") Queue queue, TopicExchange exchange) {
 		return BindingBuilder.bind(queue).to(exchange).with(MULTI_SOURCE_RETRY_ROUTING_KEY);
+	}
+
+	@Bean
+	Binding multiSourceQuotaRetryBinding(@Qualifier("multiSourceQuotaRetryQueue") Queue queue, TopicExchange exchange) {
+		return BindingBuilder.bind(queue).to(exchange).with(MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY);
 	}
 
 	@Bean

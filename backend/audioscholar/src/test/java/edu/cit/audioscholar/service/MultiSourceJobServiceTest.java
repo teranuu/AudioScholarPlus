@@ -20,6 +20,7 @@ import org.springframework.web.multipart.MultipartFile;
 import edu.cit.audioscholar.config.RabbitMQConfig;
 import edu.cit.audioscholar.dto.MultiSourceJobMessage;
 import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
+import edu.cit.audioscholar.exception.GeminiStageRequestLimitException;
 import edu.cit.audioscholar.model.MultiSourceJob;
 import edu.cit.audioscholar.model.SourceFile;
 import edu.cit.audioscholar.model.SourceKind;
@@ -219,6 +220,8 @@ class MultiSourceJobServiceTest {
 				anyList(), anyMap());
 		verify(harness.repository, never()).transitionTerminal(any(), eq("JOB_FAILED"), anyString(), anyList(),
 				anyMap());
+		verify(harness.transcripts, never()).saveTranscript(anyString(), any(SourceFile.class));
+		verify(harness.segments, never()).persist(any(SourceFile.class));
 	}
 
 	@Test
@@ -230,7 +233,7 @@ class MultiSourceJobServiceTest {
 
 		harness.service.processQueuedJob("job-1");
 
-		verify(harness.publisher).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY),
+		verify(harness.publisher).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY),
 				any(MultiSourceJobMessage.class), argThat(delay -> !delay.isNegative() && delay.toMinutes() >= 59));
 		verify(harness.publisher, never()).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY),
 				any(MultiSourceJobMessage.class), any(java.time.Duration.class));
@@ -240,6 +243,36 @@ class MultiSourceJobServiceTest {
 		verify(harness.repository, never()).transitionTerminal(any(), anyString(), anyString(), anyList(), anyMap());
 	}
 
+	@Test
+	void ordinaryFailureUsesTheShortDelayQueueInsteadOfTheActiveQueue() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.gemini.generateTranscriptOnlySummary(anyString(), eq("job-1"), eq("NOTES")))
+				.thenThrow(new IllegalStateException("temporary parser failure"));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.publisher).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY),
+				any(MultiSourceJobMessage.class), eq(java.time.Duration.ofSeconds(5)));
+		verify(harness.publisher, never()).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY),
+				any(MultiSourceJobMessage.class), any(java.time.Duration.class));
+	}
+
+	@Test
+	void stageAttemptLimitFailsTerminallyInsteadOfBeingDeferredToQuotaReset() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.gemini.generateTranscriptOnlySummary(anyString(), eq("job-1"), eq("NOTES")))
+				.thenThrow(new GeminiStageRequestLimitException("transcript-summary.generateContent", 2));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository).transitionTerminal(
+				argThat(job -> "FAILED".equals(job.getStatus())
+						&& "GEMINI_STAGE_REQUEST_LIMIT".equals(job.getFailureCode()) && job.getQuotaRetryAt() == null),
+				eq("JOB_FAILED"), eq("initial"), anyList(), anyMap());
+		verify(harness.publisher, never()).publishToProcessingExchange(anyString(), any(),
+				any(java.time.Duration.class));
+	}
+
 	private ProcessingHarness processingHarness(boolean terminalTransitionWins) throws Exception {
 		GeminiService gemini = mock(GeminiService.class);
 		DeduplicationService deduplication = mock(DeduplicationService.class);
@@ -247,6 +280,8 @@ class MultiSourceJobServiceTest {
 		MultiSourceJobRepository repository = mock(MultiSourceJobRepository.class);
 		ValidationEventService events = mock(ValidationEventService.class);
 		SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
+		SourceTranscriptService transcripts = mock(SourceTranscriptService.class);
+		TimedTranscriptSegmentService segments = mock(TimedTranscriptSegmentService.class);
 		GeminiRequestGovernor governor = governor();
 		ConfirmedRabbitPublisher publisher = mock(ConfirmedRabbitPublisher.class);
 		when(repository.tryAcquireProcessingLease(anyString(), any())).thenReturn(true);
@@ -268,16 +303,17 @@ class MultiSourceJobServiceTest {
 				anyString())).thenReturn(true);
 		MultiSourceJobService service = new MultiSourceJobService(gemini, mock(QualityReportService.class),
 				mock(SummaryService.class), deduplication, mock(SourceAttributionService.class), sourceFiles,
-				mock(SourceTranscriptService.class), mock(DocumentTextExtractionService.class),
-				mock(MergedSummaryRepository.class), repository, mock(AudioProcessingGuardrailService.class),
-				tempDir.toString(), "500MB", publisher, events, mock(TimedTranscriptSegmentService.class), semantic,
-				governor, java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
-		return new ProcessingHarness(service, repository, events, sourceFiles, gemini, publisher);
+				transcripts, mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class), repository,
+				mock(AudioProcessingGuardrailService.class), tempDir.toString(), "500MB", publisher, events, segments,
+				semantic, governor, java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
+		return new ProcessingHarness(service, repository, events, sourceFiles, gemini, publisher, transcripts,
+				segments);
 	}
 
 	private record ProcessingHarness(MultiSourceJobService service, MultiSourceJobRepository repository,
 			ValidationEventService events, SourceFileService sourceFiles, GeminiService gemini,
-			ConfirmedRabbitPublisher publisher) {
+			ConfirmedRabbitPublisher publisher, SourceTranscriptService transcripts,
+			TimedTranscriptSegmentService segments) {
 	}
 
 	private Map<String, Object> completedSource(String sourceFileId, String label) {

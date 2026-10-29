@@ -87,33 +87,25 @@ public class SecurityConfig {
 	JwtAuthenticationConverter jwtAuthenticationConverter() {
 		JwtAuthenticationConverter jwtAuthenticationConverter = new JwtAuthenticationConverter();
 		jwtAuthenticationConverter.setJwtGrantedAuthoritiesConverter(jwt -> {
-			String subject = jwt.getSubject();
-			log.debug("Processing JWT for subject: {}", subject);
-
 			// Try retrieving as a List (standard for JSON arrays in JWT)
 			List<String> rolesList = jwt.getClaimAsStringList("roles");
 			if (rolesList != null && !rolesList.isEmpty()) {
-				log.debug("JWT roles claim parsed as List for user {}: {} (count: {})", subject, rolesList,
-						rolesList.size());
 				Collection<GrantedAuthority> authorities = rolesList.stream()
 						.map(role -> (GrantedAuthority) new SimpleGrantedAuthority(role)).collect(Collectors.toList());
-				log.info("Extracted {} authorities from JWT (List format) for user {}: {}", authorities.size(), subject,
-						authorities.stream().map(GrantedAuthority::getAuthority).collect(Collectors.toList()));
+				log.debug("Extracted {} authorities from JWT list claim", authorities.size());
 				return authorities;
 			}
 
 			// Fallback: Try retrieving as a comma-separated String (legacy token support)
 			String roles = jwt.getClaimAsString("roles");
 			if (roles == null || roles.isEmpty()) {
-				log.warn("No roles found in JWT for user {}. Token may need refresh.", subject);
+				log.debug("No roles found in JWT; token may need refresh");
 				return Collections.emptyList();
 			}
-			log.debug("JWT roles claim parsed as String (legacy format) for user {}: '{}'", subject, roles);
 			Collection<GrantedAuthority> authorities = Arrays.stream(roles.split(",")).map(String::trim)
 					.filter(role -> !role.isEmpty()).map(role -> (GrantedAuthority) new SimpleGrantedAuthority(role))
 					.collect(Collectors.toList());
-			log.info("Extracted {} authorities from JWT (String format) for user {}: {}", authorities.size(), subject,
-					authorities.stream().map(GrantedAuthority::getAuthority).collect(Collectors.toList()));
+			log.debug("Extracted {} authorities from legacy JWT string claim", authorities.size());
 			return authorities;
 		});
 		return jwtAuthenticationConverter;

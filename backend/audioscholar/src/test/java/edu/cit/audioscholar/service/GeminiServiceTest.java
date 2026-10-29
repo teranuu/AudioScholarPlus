@@ -8,6 +8,8 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Function;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -27,7 +29,10 @@ import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
+import edu.cit.audioscholar.exception.GeminiStageRequestLimitException;
 import edu.cit.audioscholar.model.KeyProvider;
 
 @ExtendWith(MockitoExtension.class)
@@ -72,6 +77,40 @@ class GeminiServiceTest {
 
 	// ==================== SUCCESS SCENARIOS (New Fallback Logic)
 	// ====================
+
+	@Test
+	void callSimpleTextApiAcceptsFencedMultiSourceJsonAndRequestsJsonOutput() throws Exception {
+		when(keyRotationManager.getKey(KeyProvider.GEMINI)).thenReturn(API_KEY);
+		String candidateText = "```json\n{\"sources\":[{\"sourceFileId\":\"a\",\"keyPoints\":[\"point\"]}]}\n```";
+		String providerResponse = new ObjectMapper().writeValueAsString(Map.of("candidates", List.of(
+				Map.of("finishReason", "STOP", "content", Map.of("parts", List.of(Map.of("text", candidateText)))))));
+		ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.class);
+		when(restTemplate.exchange(contains(":generateContent"), eq(HttpMethod.POST), entityCaptor.capture(),
+				eq(String.class))).thenReturn(new ResponseEntity<>(providerResponse, HttpStatus.OK));
+
+		String result = geminiService.callSimpleTextAPI("extract key points", "job-1",
+				"multi-source.key-point-batch.generateContent");
+
+		assertEquals(candidateText, result);
+		@SuppressWarnings("unchecked")
+		Map<String, Object> body = (Map<String, Object>) entityCaptor.getValue().getBody();
+		@SuppressWarnings("unchecked")
+		Map<String, Object> config = (Map<String, Object>) body.get("generationConfig");
+		assertEquals("application/json", config.get("response_mime_type"));
+		assertEquals(0.2, config.get("temperature"));
+		verify(requestGovernor).acquire("multi-source.key-point-batch.generateContent", 100L, "job-1");
+	}
+
+	@Test
+	void callSimpleTextApiPropagatesStageLimitWithoutTurningItIntoProviderJson() {
+		when(keyRotationManager.getKey(KeyProvider.GEMINI)).thenReturn(API_KEY);
+		doThrow(new GeminiStageRequestLimitException("multi-source.key-point-batch.generateContent", 2))
+				.when(requestGovernor).acquire("multi-source.key-point-batch.generateContent", 100L, "job-1");
+
+		assertThrows(GeminiStageRequestLimitException.class, () -> geminiService.callSimpleTextAPI("extract key points",
+				"job-1", "multi-source.key-point-batch.generateContent"));
+		verifyNoInteractions(restTemplate);
+	}
 
 	@Test
 	void testCallGeminiTranscriptionAPIWithFallback_VerifyPrompt() throws Exception {
