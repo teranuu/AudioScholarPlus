@@ -53,4 +53,23 @@ public class SourceFileService {
 	public void retrieveToPath(String storageObjectId, Path targetPath) throws IOException {
 		storageService.retrieveSourceFile(storageObjectId, targetPath);
 	}
+
+	public void delete(SourceFile sourceFile) {
+		RuntimeException failure = null;
+		try {
+			storageService.deleteSourceFile(sourceFile.getStorageObjectId());
+		} catch (RuntimeException e) {
+			failure = e;
+		}
+		try {
+			sourceFileRepository.delete(sourceFile.getSourceFileId());
+		} catch (RuntimeException e) {
+			if (failure == null)
+				failure = e;
+			else
+				failure.addSuppressed(e);
+		}
+		if (failure != null)
+			throw failure;
+	}
 }

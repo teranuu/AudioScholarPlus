@@ -31,18 +31,18 @@ class MultiSourceControllerTest {
 		MultiSourceJob queued = new MultiSourceJob();
 		queued.setJobId("job-1");
 		queued.setStatus("PROCESSING_QUEUED");
-		when(service.createAndProcess(eq("user-1"), anyList(), eq(null), eq("Title"), eq(null), eq("NOTES"), eq("WEB")))
-				.thenReturn(queued);
+		when(service.createAndProcess(eq("user-1"), anyList(), eq(null), eq("Title"), eq(null), eq("NOTES"), eq("WEB"),
+				isNull())).thenReturn(queued);
 		MockMultipartFile first = new MockMultipartFile("mediaFiles", "a.mp3", "audio/mpeg", new byte[]{1});
 		MockMultipartFile second = new MockMultipartFile("mediaFiles", "b.mp3", "audio/mpeg", new byte[]{2});
 
 		ResponseEntity<?> response = new MultiSourceController(service).createJob(List.of(first, second), null, "Title",
-				null, "NOTES", "WEB", authentication);
+				null, "NOTES", "WEB", null, authentication);
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
 		assertThat(((java.util.Map<?, ?>) response.getBody()).get("status")).isEqualTo("PROCESSING_QUEUED");
 		verify(service).createAndProcess(eq("user-1"), anyList(), eq(null), eq("Title"), eq(null), eq("NOTES"),
-				eq("WEB"));
+				eq("WEB"), isNull());
 	}
 
 	@Test
@@ -54,17 +54,17 @@ class MultiSourceControllerTest {
 		queued.setJobId("job-2");
 		queued.setStatus("PROCESSING_QUEUED");
 		when(service.createAndProcess(eq("user-1"), isNull(), anyList(), eq("Documents"), eq(null), eq("NOTES"),
-				eq("WEB"))).thenReturn(queued);
+				eq("WEB"), isNull())).thenReturn(queued);
 		MockMultipartFile first = new MockMultipartFile("documentFiles", "a.pdf", "application/pdf", new byte[]{1});
 		MockMultipartFile second = new MockMultipartFile("documentFiles", "b.pptx",
 				"application/vnd.openxmlformats-officedocument.presentationml.presentation", new byte[]{2});
 
 		ResponseEntity<?> response = new MultiSourceController(service).createJob(null, List.of(first, second),
-				"Documents", null, "NOTES", "WEB", authentication);
+				"Documents", null, "NOTES", "WEB", null, authentication);
 
 		assertThat(response.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
 		verify(service).createAndProcess(eq("user-1"), isNull(), anyList(), eq("Documents"), eq(null), eq("NOTES"),
-				eq("WEB"));
+				eq("WEB"), isNull());
 	}
 
 	@Test
@@ -74,13 +74,13 @@ class MultiSourceControllerTest {
 		when(authentication.getName()).thenReturn("user-1");
 		GeminiBudgetExceededException quota = new GeminiBudgetExceededException("daily admission rejected",
 				java.time.Instant.now().plusSeconds(3600));
-		when(service.createAndProcess(eq("user-1"), anyList(), isNull(), eq("Title"), isNull(), eq("NOTES"), eq("WEB")))
-				.thenThrow(quota);
+		when(service.createAndProcess(eq("user-1"), anyList(), isNull(), eq("Title"), isNull(), eq("NOTES"), eq("WEB"),
+				isNull())).thenThrow(quota);
 		MockMultipartFile first = new MockMultipartFile("mediaFiles", "a.mp3", "audio/mpeg", new byte[]{1});
 		MockMultipartFile second = new MockMultipartFile("mediaFiles", "b.mp3", "audio/mpeg", new byte[]{2});
 
 		assertThatThrownBy(() -> new MultiSourceController(service).createJob(List.of(first, second), null, "Title",
-				null, "NOTES", "WEB", authentication)).isSameAs(quota);
+				null, "NOTES", "WEB", null, authentication)).isSameAs(quota);
 	}
 
 	@Test
@@ -88,7 +88,7 @@ class MultiSourceControllerTest {
 		MultiSourceJobService service = mock(MultiSourceJobService.class);
 		Authentication authentication = mock(Authentication.class);
 		when(authentication.getName()).thenReturn("user-1");
-		when(service.getJobMap("job-1")).thenReturn(
+		when(service.getJobMapForClient("job-1")).thenReturn(
 				Map.of("userId", "user-1", "status", "SUMMARIZING", "mergedSummary", Map.of("summaryId", "summary-1")));
 
 		ResponseEntity<?> response = new MultiSourceController(service).getMergedSummary("job-1", authentication);

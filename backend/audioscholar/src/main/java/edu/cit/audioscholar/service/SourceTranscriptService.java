@@ -1,6 +1,7 @@
 package edu.cit.audioscholar.service;
 
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.stereotype.Service;
 
@@ -29,6 +30,17 @@ public class SourceTranscriptService {
 		transcript.setStatus("COMPLETE");
 		firebaseService.saveData(COLLECTION_NAME, transcript.getTranscriptId(), transcript.toMap());
 		return transcript;
+	}
+
+	public String findTranscriptText(String jobId, String sourceFileId) {
+		String transcriptId = ValidationEventService.digest(jobId + ":" + sourceFileId);
+		Map<String, Object> row = firebaseService.getData(COLLECTION_NAME, transcriptId);
+		if (row == null)
+			return null;
+		Object value = row.get("transcriptContent");
+		if (value == null)
+			value = row.get("transcriptText");
+		return value instanceof String text ? text : null;
 	}
 
 	public List<SourceTranscript> getTranscriptsByJob(List<SourceFile> sourceFiles) {

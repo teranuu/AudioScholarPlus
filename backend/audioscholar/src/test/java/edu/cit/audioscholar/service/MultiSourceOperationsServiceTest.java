@@ -60,6 +60,20 @@ class MultiSourceOperationsServiceTest {
 	}
 
 	@Test
+	void futureQuotaDeferredJobIsNotReconciledAsTimedOut() {
+		Map<String, Object> deferred = Map.of("jobId", "job-quota", "status", "PROCESSING_QUEUED", "clientSource",
+				"WEB", "updatedAt", Date.from(Instant.now().minus(Duration.ofHours(1))), "quotaRetryAt",
+				Date.from(Instant.now().plus(Duration.ofHours(3))));
+		when(jobs.findStaleNonterminal(anyList(), any(), eq(25))).thenReturn(List.of(deferred));
+
+		service.reconcile();
+
+		verify(jobs, never()).failIfNonterminalAndStale(anyString(), any());
+		verify(requestGovernor, never()).releaseDailyAdmission(anyString());
+		verify(metrics).recordRun(eq(1L), eq(0L), eq(0L), anyLong());
+	}
+
+	@Test
 	void pendingTerminalEventIsRepublishedWithoutScanningHistoricalCollections() {
 		Map<String, Object> pending = Map.of("jobId", "job-2", "status", "COMPLETE", "clientSource", "WEB",
 				"terminalEventPending", true);

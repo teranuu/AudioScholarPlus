@@ -96,7 +96,7 @@ class GeminiServiceTest {
 		Map<String, Object> body = (Map<String, Object>) entityCaptor.getValue().getBody();
 		@SuppressWarnings("unchecked")
 		Map<String, Object> config = (Map<String, Object>) body.get("generationConfig");
-		assertEquals("application/json", config.get("response_mime_type"));
+		assertEquals("application/json", config.get("responseMimeType"));
 		assertEquals(0.2, config.get("temperature"));
 		verify(requestGovernor).acquire("multi-source.key-point-batch.generateContent", 100L, "job-1");
 	}

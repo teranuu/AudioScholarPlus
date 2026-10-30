@@ -48,10 +48,14 @@ public class RabbitMQConfig {
 	public static final String RECOMMENDATIONS_ROUTING_KEY = "recommendations.process.key";
 	public static final String MULTI_SOURCE_QUEUE_NAME = "multi.source.processing.queue";
 	public static final String MULTI_SOURCE_ROUTING_KEY = "multi.source.process.key";
-	public static final String MULTI_SOURCE_RETRY_QUEUE_NAME = "multi.source.processing.retry.queue";
-	public static final String MULTI_SOURCE_RETRY_ROUTING_KEY = "multi.source.process.retry.key";
-	public static final String MULTI_SOURCE_QUOTA_RETRY_QUEUE_NAME = "multi.source.processing.quota.retry.queue";
-	public static final String MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY = "multi.source.process.quota.retry.key";
+	// New fixed-TTL buckets bypass legacy durable queues and keep expiration order
+	// aligned with enqueue order, preventing per-message TTL head-of-line blocking.
+	public static final String MULTI_SOURCE_RETRY_QUEUE_NAME = "multi.source.processing.retry.v3.queue";
+	public static final String MULTI_SOURCE_RETRY_ROUTING_KEY = "multi.source.process.retry.v3.key";
+	public static final String MULTI_SOURCE_QUOTA_RETRY_QUEUE_NAME = "multi.source.processing.quota.retry.v2.queue";
+	public static final String MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY = "multi.source.process.quota.retry.v2.key";
+	public static final int MULTI_SOURCE_RETRY_TTL_MS = 15_000;
+	public static final int MULTI_SOURCE_QUOTA_RETRY_TTL_MS = 15 * 60_000;
 
 	@Value("${spring.rabbitmq.listener.simple.concurrency:1}")
 	private int concurrency;
@@ -154,13 +158,13 @@ public class RabbitMQConfig {
 	@Bean("multiSourceRetryQueue")
 	Queue multiSourceRetryQueue() {
 		return QueueBuilder.durable(MULTI_SOURCE_RETRY_QUEUE_NAME).deadLetterExchange(PROCESSING_EXCHANGE_NAME)
-				.deadLetterRoutingKey(MULTI_SOURCE_ROUTING_KEY).build();
+				.deadLetterRoutingKey(MULTI_SOURCE_ROUTING_KEY).ttl(MULTI_SOURCE_RETRY_TTL_MS).build();
 	}
 
 	@Bean("multiSourceQuotaRetryQueue")
 	Queue multiSourceQuotaRetryQueue() {
 		return QueueBuilder.durable(MULTI_SOURCE_QUOTA_RETRY_QUEUE_NAME).deadLetterExchange(PROCESSING_EXCHANGE_NAME)
-				.deadLetterRoutingKey(MULTI_SOURCE_ROUTING_KEY).build();
+				.deadLetterRoutingKey(MULTI_SOURCE_ROUTING_KEY).ttl(MULTI_SOURCE_QUOTA_RETRY_TTL_MS).build();
 	}
 
 	@Bean

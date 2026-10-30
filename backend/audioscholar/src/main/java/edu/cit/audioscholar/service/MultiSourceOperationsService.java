@@ -6,12 +6,16 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
+import javax.annotation.PostConstruct;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+
+import com.google.cloud.Timestamp;
 
 @Service
 @ConditionalOnProperty(name = "multi-source.reconciliation.enabled", havingValue = "true", matchIfMissing = false)
@@ -45,6 +49,12 @@ public class MultiSourceOperationsService {
 		this.workerIdentity = workerIdentity;
 	}
 
+	@PostConstruct
+	void logConfiguration() {
+		log.info("Multi-source reconciliation enabled intervalTimeout={} leaseDuration={} maxJobsPerRun={}", timeout,
+				leaseDuration, maxJobsPerRun);
+	}
+
 	@Scheduled(fixedDelayString = "${multi-source.reconciliation-interval-ms:900000}")
 	public void reconcile() {
 		long startedAt = System.nanoTime();
@@ -73,6 +83,11 @@ public class MultiSourceOperationsService {
 		int timedOut = 0;
 		for (Map<String, Object> job : staleJobs) {
 			String jobId = string(job.get("jobId"));
+			if (isFutureQuotaDeferred(job, Instant.now())) {
+				log.debug("Skipping quota-deferred multi-source job jobId={} retryAt={}", jobId,
+						job.get("quotaRetryAt"));
+				continue;
+			}
 			if (jobId == null || !jobs.failIfNonterminalAndStale(jobId, cutoff)) {
 				continue;
 			}
@@ -94,6 +109,23 @@ public class MultiSourceOperationsService {
 			log.warn("Reconciled stale multi-source job jobId={} failureCode=PROCESSING_TIMEOUT", jobId);
 		}
 		return timedOut;
+	}
+
+	private boolean isFutureQuotaDeferred(Map<String, Object> job, Instant now) {
+		if (!"PROCESSING_QUEUED".equals(job.get("status")))
+			return false;
+		Object value = job.get("quotaRetryAt");
+		if (value instanceof Date date)
+			return date.toInstant().isAfter(now);
+		if (value instanceof Timestamp timestamp)
+			return timestamp.toDate().toInstant().isAfter(now);
+		if (value instanceof String text)
+			try {
+				return Instant.parse(text).isAfter(now);
+			} catch (RuntimeException ignored) {
+				return false;
+			}
+		return false;
 	}
 
 	private int republishTerminalEvents(List<Map<String, Object>> pendingJobs) {

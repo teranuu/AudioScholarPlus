@@ -19,9 +19,11 @@ class RabbitMQConfigTest {
 		assertThat(shortRetry.getName()).isNotEqualTo(quotaRetry.getName());
 		assertThat(shortRetry.getArguments())
 				.containsEntry("x-dead-letter-exchange", RabbitMQConfig.PROCESSING_EXCHANGE_NAME)
-				.containsEntry("x-dead-letter-routing-key", RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY);
+				.containsEntry("x-dead-letter-routing-key", RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY)
+				.containsEntry("x-message-ttl", RabbitMQConfig.MULTI_SOURCE_RETRY_TTL_MS);
 		assertThat(quotaRetry.getArguments())
 				.containsEntry("x-dead-letter-exchange", RabbitMQConfig.PROCESSING_EXCHANGE_NAME)
-				.containsEntry("x-dead-letter-routing-key", RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY);
+				.containsEntry("x-dead-letter-routing-key", RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY)
+				.containsEntry("x-message-ttl", RabbitMQConfig.MULTI_SOURCE_QUOTA_RETRY_TTL_MS);
 	}
 }

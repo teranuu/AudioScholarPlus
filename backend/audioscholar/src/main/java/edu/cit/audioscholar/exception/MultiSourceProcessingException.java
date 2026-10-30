@@ -10,6 +10,12 @@ public class MultiSourceProcessingException extends RuntimeException {
 		this.retryable = retryable;
 	}
 
+	public MultiSourceProcessingException(String message, String failureCode, boolean retryable, Throwable cause) {
+		super(message, cause);
+		this.failureCode = failureCode;
+		this.retryable = retryable;
+	}
+
 	public String getFailureCode() {
 		return failureCode;
 	}

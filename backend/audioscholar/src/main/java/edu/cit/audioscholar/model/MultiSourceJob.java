@@ -44,6 +44,8 @@ public class MultiSourceJob {
 	private Date geminiFirstRequestAt;
 	private Date geminiLastRequestAt;
 	private Date quotaRetryAt;
+	private String semanticEnrichmentStatus;
+	private String semanticEnrichmentFailure;
 
 	public String getJobId() {
 		return jobId;
@@ -263,6 +265,18 @@ public class MultiSourceJob {
 	public void setQuotaRetryAt(Date value) {
 		quotaRetryAt = value;
 	}
+	public String getSemanticEnrichmentStatus() {
+		return semanticEnrichmentStatus;
+	}
+	public void setSemanticEnrichmentStatus(String value) {
+		semanticEnrichmentStatus = value;
+	}
+	public String getSemanticEnrichmentFailure() {
+		return semanticEnrichmentFailure;
+	}
+	public void setSemanticEnrichmentFailure(String value) {
+		semanticEnrichmentFailure = value;
+	}
 
 	public Map<String, Object> toMap() {
 		Map<String, Object> map = new HashMap<>();
@@ -278,7 +292,7 @@ public class MultiSourceJob {
 		map.put("failureDetail", failureDetail);
 		map.put("failedAt", failedAt);
 		map.put("sourceCount", sourceCount != null ? sourceCount : sourceFiles.size());
-		map.put("sourceFiles", sourceFiles.stream().map(SourceFile::toMap).toList());
+		map.put("sourceFiles", sourceFiles.stream().map(SourceFile::toJobReferenceMap).toList());
 		map.put("mergedSummary", mergedSummary != null ? mergedSummary.toMap() : null);
 		map.put("createdAt", createdAt);
 		map.put("updatedAt", updatedAt);
@@ -302,6 +316,8 @@ public class MultiSourceJob {
 		map.put("geminiFirstRequestAt", geminiFirstRequestAt);
 		map.put("geminiLastRequestAt", geminiLastRequestAt);
 		map.put("quotaRetryAt", quotaRetryAt);
+		map.put("semanticEnrichmentStatus", semanticEnrichmentStatus);
+		map.put("semanticEnrichmentFailure", semanticEnrichmentFailure);
 		return map;
 	}
 }

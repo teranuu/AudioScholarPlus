@@ -98,8 +98,9 @@ public class SourceTranscript {
 		map.put("sourceFileId", sourceFileId);
 		map.put("jobId", jobId);
 		map.put("sourceLabel", sourceLabel);
+		// Persist one canonical copy; legacy readers may still hydrate transcriptText
+		// through SourceTranscript#setTranscriptContent.
 		map.put("transcriptContent", transcriptContent != null ? transcriptContent : transcriptText);
-		map.put("transcriptText", transcriptText);
 		map.put("status", status);
 		map.put("createdAt", createdAt);
 		return map;

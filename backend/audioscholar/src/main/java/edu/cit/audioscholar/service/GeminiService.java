@@ -1201,6 +1201,11 @@ public class GeminiService {
 	}
 
 	public String callSimpleTextAPI(String promptText, String contextId, String operation) {
+		return callSimpleTextAPI(promptText, contextId, operation, null);
+	}
+
+	public String callSimpleTextAPI(String promptText, String contextId, String operation,
+			Map<String, Object> responseSchema) {
 		HttpHeaders headers = new HttpHeaders();
 		headers.setContentType(MediaType.APPLICATION_JSON);
 
@@ -1214,8 +1219,11 @@ public class GeminiService {
 				&& operation.startsWith("multi-source.");
 		generationConfig.put("temperature", multiSourceOperation ? 0.2 : 0.7);
 		generationConfig.put("maxOutputTokens", MAX_OUTPUT_TOKENS_TRANSCRIPTION);
-		if (multiSourceOperation)
-			generationConfig.put("response_mime_type", "application/json");
+		if (multiSourceOperation) {
+			generationConfig.put("responseMimeType", "application/json");
+			if (responseSchema != null && !responseSchema.isEmpty())
+				generationConfig.put("responseSchema", responseSchema);
+		}
 
 		Map<String, Object> requestBody = new HashMap<>();
 		requestBody.put("contents", contents);

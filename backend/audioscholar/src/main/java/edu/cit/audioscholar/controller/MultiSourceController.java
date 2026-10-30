@@ -39,26 +39,30 @@ public class MultiSourceController {
 			@RequestParam(value = "description", required = false) String description,
 			@RequestParam(value = "outputType", required = false) String outputType,
 			@RequestHeader(value = "X-AudioScholar-Client", required = false) String clientHeader,
+			@RequestHeader(value = "X-Idempotency-Key", required = false) String idempotencyKey,
 			Authentication authentication) {
 		try {
 			MultiSourceJob job = multiSourceJobService.createAndProcess(authentication.getName(), mediaFiles,
-					documentFiles, title, description, outputType, clientHeader);
-			return ResponseEntity.status(HttpStatus.ACCEPTED).body(job.toMap());
+					documentFiles, title, description, outputType, clientHeader, idempotencyKey);
+			Map<String, Object> clientJob = multiSourceJobService.getJobMapForClient(job.getJobId());
+			return ResponseEntity.status(HttpStatus.ACCEPTED)
+					.body(clientJob != null && !clientJob.isEmpty() ? clientJob : job.toMap());
 		} catch (IllegalArgumentException | ProcessingGuardrailException e) {
-			return ResponseEntity.badRequest().body(Map.of("status", "FAILED", "message", e.getMessage()));
+			return ResponseEntity.badRequest().body(Map.of("status", "FAILED", "message",
+					e.getMessage() == null ? "Invalid multi-source upload." : e.getMessage()));
 		} catch (GeminiBudgetExceededException e) {
 			// Preserve the centralized 429 response, Retry-After header, and retryAt body.
 			throw e;
 		} catch (Exception e) {
-			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
-					.body(Map.of("status", "FAILED", "message", "Multi-source processing failed: " + e.getMessage()));
+			return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of("status", "FAILED", "message",
+					"Multi-source processing failed: " + (e.getMessage() == null ? "unknown error" : e.getMessage())));
 		}
 	}
 
 	@GetMapping("/{jobId}")
 	@PreAuthorize("isAuthenticated()")
 	public ResponseEntity<?> getJob(@PathVariable String jobId, Authentication authentication) {
-		Map<String, Object> job = multiSourceJobService.getJobMap(jobId);
+		Map<String, Object> job = multiSourceJobService.getJobMapForClient(jobId);
 		if (job == null) {
 			return ResponseEntity.notFound().build();
 		}
@@ -68,10 +72,16 @@ public class MultiSourceController {
 		return ResponseEntity.ok(job);
 	}
 
+	@GetMapping
+	@PreAuthorize("isAuthenticated()")
+	public ResponseEntity<?> listJobs(Authentication authentication) {
+		return ResponseEntity.ok(multiSourceJobService.getJobsForUser(authentication.getName()));
+	}
+
 	@GetMapping("/{jobId}/summary")
 	@PreAuthorize("isAuthenticated()")
 	public ResponseEntity<?> getMergedSummary(@PathVariable String jobId, Authentication authentication) {
-		Map<String, Object> job = multiSourceJobService.getJobMap(jobId);
+		Map<String, Object> job = multiSourceJobService.getJobMapForClient(jobId);
 		if (job == null) {
 			return ResponseEntity.notFound().build();
 		}
@@ -79,6 +89,14 @@ public class MultiSourceController {
 			return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
 		}
 		Object summary = job.get("mergedSummary");
+		if ("FAILED".equals(job.get("status"))) {
+			Object failureReason = job.get("failureReason");
+			String message = failureReason instanceof String text && !text.isBlank()
+					? text
+					: "Multi-source processing failed.";
+			return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY)
+					.body(Map.of("status", "FAILED", "message", message));
+		}
 		if (!"COMPLETE".equals(job.get("status")) || summary == null) {
 			return ResponseEntity.status(HttpStatus.ACCEPTED)
 					.body(Map.of("status", job.getOrDefault("status", "PROCESSING")));

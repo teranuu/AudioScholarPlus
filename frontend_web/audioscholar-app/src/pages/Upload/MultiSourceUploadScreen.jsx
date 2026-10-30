@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { FiCheckCircle, FiClock, FiFile, FiFileText, FiLoader, FiUpload, FiXCircle } from 'react-icons/fi';
 import { API_BASE_URL } from '../../services/authService';
@@ -33,6 +33,9 @@ const MAX_TOTAL_SOURCES = 5;
 const JOB_POLL_INITIAL_DELAY_MS = 2000;
 const JOB_POLL_MAX_DELAY_MS = 15000;
 const JOB_POLL_MAX_DURATION_MS = 30 * 60 * 1000;
+const ACTIVE_JOB_STORAGE_KEY = 'AudioScholar.activeMultiSourceJobId';
+const SUBMISSION_KEY_STORAGE_KEY = 'AudioScholar.multiSourceSubmissionKey';
+const TERMINAL_JOB_STATUSES = new Set(['COMPLETE', 'FAILED']);
 
 const sourceLabel = (index) => `Source ${String.fromCharCode(65 + index)}`;
 const extensionOf = (file) => file.name.split('.').pop().toLowerCase();
@@ -101,7 +104,13 @@ const SourceAttributionChip = ({ source }) => (
 
 const MergeStatusIndicator = ({ job }) => {
   if (!job || job.status !== 'COMPLETE' || !job.mergedSummary) return null;
-  return <p className="text-sm text-green-600 dark:text-green-400 text-center flex items-center justify-center gap-1"><FiCheckCircle /> Merged summary generated.</p>;
+  const degraded = job.semanticEnrichmentStatus === 'DEGRADED';
+  return (
+    <div className="text-center">
+      <p className="text-sm text-green-600 dark:text-green-400 flex items-center justify-center gap-1"><FiCheckCircle /> Merged summary generated.</p>
+      {degraded && <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">Source attribution is incomplete, but the merged summary is available.</p>}
+    </div>
+  );
 };
 
 const DeferredStatusIndicator = ({ job }) => {
@@ -145,13 +154,126 @@ const MultiSourceUploadScreen = () => {
   const [documentError, setDocumentError] = useState('');
   const [formError, setFormError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [polling, setPolling] = useState(false);
   const [job, setJob] = useState(null);
+  const [recentJobs, setRecentJobs] = useState([]);
   const mediaInputRef = useRef(null);
   const documentInputRef = useRef(null);
+  const pollAbortRef = useRef(null);
   const navigate = useNavigate();
 
   const sourceCount = mediaFiles.length + documentFiles.length;
   const remainingSlots = MAX_TOTAL_SOURCES - sourceCount;
+  const hasActiveJob = Boolean(job?.jobId && !TERMINAL_JOB_STATUSES.has(job.status));
+
+  const handleUnauthorized = useCallback(() => {
+    localStorage.removeItem('AuthToken');
+    localStorage.removeItem('userId');
+    navigate('/signin');
+  }, [navigate]);
+
+  const mergeRecentJob = useCallback((updatedJob) => {
+    if (!updatedJob?.jobId) return;
+    setRecentJobs((current) => [updatedJob, ...current.filter((item) => item.jobId !== updatedJob.jobId)].slice(0, 10));
+  }, []);
+
+  const pollJob = useCallback(async (jobId, token) => {
+    pollAbortRef.current?.abort();
+    const controller = new AbortController();
+    pollAbortRef.current = controller;
+    setPolling(true);
+    let pollDelayMs = 0;
+    let transientFailures = 0;
+    const pollingStartedAt = Date.now();
+    try {
+      while (!controller.signal.aborted) {
+        if (pollDelayMs > 0) {
+          await new Promise((resolve, reject) => {
+            const timeout = window.setTimeout(resolve, pollDelayMs);
+            controller.signal.addEventListener('abort', () => {
+              window.clearTimeout(timeout);
+              reject(new DOMException('Polling cancelled', 'AbortError'));
+            }, { once: true });
+          });
+        }
+        let response;
+        try {
+          response = await fetch(`${API_BASE_URL}api/audio/multi-source/${jobId}`, {
+            headers: { Authorization: `Bearer ${token}`, 'X-AudioScholar-Client': 'WEB' },
+            signal: controller.signal,
+          });
+        } catch (error) {
+          if (error.name === 'AbortError') throw error;
+          transientFailures += 1;
+          if (transientFailures > 3) throw new Error('The status service is temporarily unavailable. The job will continue in the background.');
+          pollDelayMs = Math.min(Math.max(JOB_POLL_INITIAL_DELAY_MS, pollDelayMs * 2), JOB_POLL_MAX_DELAY_MS);
+          continue;
+        }
+        if (response.status === 401) {
+          handleUnauthorized();
+          return;
+        }
+        if (!response.ok) {
+          transientFailures += 1;
+          if (transientFailures > 3) throw new Error(`Could not check processing status (${response.status}). The job will continue in the background.`);
+          pollDelayMs = Math.min(Math.max(JOB_POLL_INITIAL_DELAY_MS, pollDelayMs * 2), JOB_POLL_MAX_DELAY_MS);
+          continue;
+        }
+        transientFailures = 0;
+        const current = await response.json();
+        setJob(current);
+        mergeRecentJob(current);
+        if (TERMINAL_JOB_STATUSES.has(current.status)) {
+          localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+          if (current.status === 'FAILED') setFormError(current.failureReason || 'Multi-source processing failed.');
+          return;
+        }
+        if (current.status === 'PROCESSING_QUEUED' && current.quotaRetryAt) return;
+        if (Date.now() - pollingStartedAt >= JOB_POLL_MAX_DURATION_MS) {
+          setFormError('Processing is taking longer than expected. It is still running in the background and can be resumed from Recent jobs.');
+          return;
+        }
+        pollDelayMs = Math.min(Math.ceil(Math.max(JOB_POLL_INITIAL_DELAY_MS, pollDelayMs) * 1.5), JOB_POLL_MAX_DELAY_MS);
+      }
+    } catch (error) {
+      if (error.name !== 'AbortError') setFormError(error.message);
+    } finally {
+      if (pollAbortRef.current === controller) {
+        pollAbortRef.current = null;
+        setPolling(false);
+      }
+    }
+  }, [handleUnauthorized, mergeRecentJob]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('AuthToken');
+    if (!token) return undefined;
+    let cancelled = false;
+    const restore = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}api/audio/multi-source`, {
+          headers: { Authorization: `Bearer ${token}`, 'X-AudioScholar-Client': 'WEB' },
+        });
+        if (response.status === 401) {
+          handleUnauthorized();
+          return;
+        }
+        if (response.ok) {
+          const jobs = await response.json();
+          if (!cancelled) setRecentJobs(jobs);
+        }
+      } catch {
+        // Recovery is best-effort; a new upload remains available when the API is offline.
+      }
+      const activeJobId = localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
+      if (activeJobId && !cancelled) await pollJob(activeJobId, token);
+    };
+    restore();
+    return () => {
+      cancelled = true;
+      pollAbortRef.current?.abort();
+    };
+  }, [handleUnauthorized, pollJob]);
 
   useEffect(() => {
     const handleBeforeUnload = (event) => {
@@ -214,6 +336,19 @@ const MultiSourceUploadScreen = () => {
     setJob(null);
   };
 
+  const openRecentJob = (selectedJob) => {
+    setFormError('');
+    setJob(selectedJob);
+    const token = localStorage.getItem('AuthToken');
+    if (!token) {
+      handleUnauthorized();
+      return;
+    }
+    if (!TERMINAL_JOB_STATUSES.has(selectedJob.status))
+      localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, selectedJob.jobId);
+    pollJob(selectedJob.jobId, token);
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     setMediaError('');
@@ -250,9 +385,18 @@ const MultiSourceUploadScreen = () => {
 
     setLoading(true);
     try {
+      let submissionKey = localStorage.getItem(SUBMISSION_KEY_STORAGE_KEY);
+      if (!submissionKey) {
+        submissionKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        localStorage.setItem(SUBMISSION_KEY_STORAGE_KEY, submissionKey);
+      }
       const response = await fetch(`${API_BASE_URL}api/audio/multi-source`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${token}`, 'X-AudioScholar-Client': 'WEB' },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'X-AudioScholar-Client': 'WEB',
+          'X-Idempotency-Key': submissionKey,
+        },
         body: formData,
       });
       const responseForTextFallback = response.clone();
@@ -269,34 +413,20 @@ const MultiSourceUploadScreen = () => {
       }
       if (!response.ok) {
         if (response.status === 401) {
-          localStorage.removeItem('AuthToken');
-          localStorage.removeItem('userId');
-          navigate('/signin');
+          handleUnauthorized();
         }
         throw new Error(data.message || `Upload failed with status ${response.status}`);
       }
-	  setJob(data);
-	  let current = data;
-	  let pollDelayMs = JOB_POLL_INITIAL_DELAY_MS;
-	  const pollingStartedAt = Date.now();
-	  const terminal = new Set(['COMPLETE', 'FAILED']);
-	  while (current.jobId && !terminal.has(current.status)) {
-		if (current.status === 'PROCESSING_QUEUED' && current.quotaRetryAt) break;
-		if (Date.now() - pollingStartedAt >= JOB_POLL_MAX_DURATION_MS) {
-		  throw new Error('Processing is taking longer than expected. It will continue in the background; check the recordings page later.');
-		}
-		await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
-		const poll = await fetch(`${API_BASE_URL}api/audio/multi-source/${current.jobId}`, {
-		  headers: { Authorization: `Bearer ${token}`, 'X-AudioScholar-Client': 'WEB' },
-		});
-		if (!poll.ok) throw new Error(`Could not check processing status (${poll.status}).`);
-		current = await poll.json();
-		setJob(current);
-		if (current.status === 'PROCESSING_QUEUED' && current.quotaRetryAt) break;
-		pollDelayMs = Math.min(Math.ceil(pollDelayMs * 1.5), JOB_POLL_MAX_DELAY_MS);
-	  }
-	  if (current.status === 'FAILED') throw new Error(current.failureReason || 'Multi-source processing failed.');
-	  setJob(current);
+      localStorage.removeItem(SUBMISSION_KEY_STORAGE_KEY);
+      localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, data.jobId);
+      setJob(data);
+      mergeRecentJob(data);
+      setLoading(false);
+      if (TERMINAL_JOB_STATUSES.has(data.status)) {
+        localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+      } else {
+        await pollJob(data.jobId, token);
+      }
     } catch (err) {
       setFormError(err.message);
     } finally {
@@ -329,7 +459,7 @@ const MultiSourceUploadScreen = () => {
               className="hidden"
               accept={MEDIA_ACCEPT}
               onChange={(event) => addFiles(event, 'media')}
-              disabled={loading}
+              disabled={loading || hasActiveJob}
             />
             <input
               ref={documentInputRef}
@@ -338,7 +468,7 @@ const MultiSourceUploadScreen = () => {
               className="hidden"
               accept={DOCUMENT_ACCEPT}
               onChange={(event) => addFiles(event, 'document')}
-              disabled={loading}
+              disabled={loading || hasActiveJob}
             />
 
             <div className="mb-4">
@@ -346,10 +476,10 @@ const MultiSourceUploadScreen = () => {
               <MultiSourceFilePicker
                 label="Click to select audio or video files"
                 supportedLabel={MEDIA_LABEL}
-                disabled={loading || remainingSlots <= 0}
-                onPick={() => !loading && remainingSlots > 0 && mediaInputRef.current?.click()}
+				disabled={loading || hasActiveJob || remainingSlots <= 0}
+				onPick={() => !loading && !hasActiveJob && remainingSlots > 0 && mediaInputRef.current?.click()}
               />
-              {mediaFiles.length > 0 && <SourceFileList files={mediaFiles} kind="media" loading={loading} onRemove={removeMediaFile} />}
+              {mediaFiles.length > 0 && <SourceFileList files={mediaFiles} kind="media" loading={loading || hasActiveJob} onRemove={removeMediaFile} />}
               {mediaError && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{mediaError}</p>}
             </div>
 
@@ -358,17 +488,17 @@ const MultiSourceUploadScreen = () => {
               <MultiSourceFilePicker
                 label="Click to select document files"
                 supportedLabel={DOCUMENT_LABEL}
-                disabled={loading || remainingSlots <= 0}
-                onPick={() => !loading && remainingSlots > 0 && documentInputRef.current?.click()}
+				disabled={loading || hasActiveJob || remainingSlots <= 0}
+				onPick={() => !loading && !hasActiveJob && remainingSlots > 0 && documentInputRef.current?.click()}
               />
-              {documentFiles.length > 0 && <SourceFileList files={documentFiles} kind="document" offset={mediaFiles.length} loading={loading} onRemove={removeDocumentFile} />}
+              {documentFiles.length > 0 && <SourceFileList files={documentFiles} kind="document" offset={mediaFiles.length} loading={loading || hasActiveJob} onRemove={removeDocumentFile} />}
               {documentError && <p className="mt-2 text-sm text-red-600 dark:text-red-400">{documentError}</p>}
             </div>
 
             <form onSubmit={submit} className="space-y-6 border-t border-gray-200 dark:border-gray-700 pt-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <input className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white" placeholder="Merged summary title" value={title} onChange={(e) => setTitle(e.target.value)} disabled={loading} />
-                <input className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white" placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} disabled={loading} />
+                <input className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white" placeholder="Merged summary title" value={title} onChange={(e) => setTitle(e.target.value)} disabled={loading || hasActiveJob} />
+                <input className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg dark:bg-gray-700 dark:text-white" placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} disabled={loading || hasActiveJob} />
               </div>
 
               <div>
@@ -383,7 +513,7 @@ const MultiSourceUploadScreen = () => {
                       type="button"
                       onClick={() => setOutputType(option.value)}
                       className={`text-left border rounded-lg p-4 transition ${outputType === option.value ? 'border-teal-500 bg-teal-50 dark:bg-teal-900/20 ring-2 ring-teal-200' : 'border-gray-200 dark:border-gray-600 hover:border-teal-300'}`}
-                      disabled={loading}
+                      disabled={loading || hasActiveJob}
                     >
                       <div className="font-semibold text-gray-900 dark:text-white">{option.title}</div>
                       <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">{option.description}</p>
@@ -396,14 +526,39 @@ const MultiSourceUploadScreen = () => {
                 {formError && <p className="text-sm text-red-600 dark:text-red-400 text-center">{formError}</p>}
                 <DeferredStatusIndicator job={job} />
                 <MergeStatusIndicator job={job} />
+				{polling && <p className="text-sm text-teal-700 dark:text-teal-300 text-center flex items-center justify-center gap-1"><FiLoader className="animate-spin" /> Checking processing status...</p>}
               </div>
 
-              <button type="submit" disabled={loading || sourceCount < 2 || !title.trim() || !outputType} className="w-full bg-[#2D8A8A] text-white py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 disabled:opacity-50">
+			  <button type="submit" disabled={loading || hasActiveJob || sourceCount < 2 || !title.trim() || !outputType} className="w-full bg-[#2D8A8A] text-white py-3 px-4 rounded-lg font-medium flex items-center justify-center gap-2 disabled:opacity-50">
                 {loading ? <><FiLoader className="animate-spin" /> Processing sources...</> : <><FiUpload /> Upload and Merge</>}
               </button>
             </form>
 
             <MergedSummaryScreen job={job} />
+
+            {recentJobs.length > 0 && (
+              <section className="mt-8 border-t border-gray-200 dark:border-gray-700 pt-6">
+                <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-3">Recent multi-source jobs</h2>
+                <div className="space-y-2">
+                  {recentJobs.slice(0, 10).map((recentJob) => (
+                    <button
+                      key={recentJob.jobId}
+                      type="button"
+                      onClick={() => openRecentJob(recentJob)}
+                      className="w-full flex items-center justify-between gap-4 text-left border border-gray-200 dark:border-gray-700 rounded-lg px-4 py-3 hover:border-teal-400"
+                    >
+                      <span className="min-w-0">
+                        <span className="block font-medium text-gray-900 dark:text-white truncate">{recentJob.title || 'Merged Lecture Summary'}</span>
+                        <span className="block text-xs text-gray-500 dark:text-gray-400">{recentJob.sourceCount || recentJob.sourceFiles?.length || 0} sources</span>
+                      </span>
+                      <span className={`shrink-0 text-xs font-semibold ${recentJob.status === 'FAILED' ? 'text-red-600' : recentJob.status === 'COMPLETE' ? 'text-green-600' : 'text-amber-600'}`}>
+                        {recentJob.status}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         </div>
       </main>

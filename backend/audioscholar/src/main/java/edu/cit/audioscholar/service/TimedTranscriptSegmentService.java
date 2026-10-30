@@ -31,6 +31,7 @@ public class TimedTranscriptSegmentService {
 				? source.getDurationSeconds() * 1000
 				: Math.max(1000, transcript.split("\\s+").length * 400L);
 		List<Map<String, Object>> result = new ArrayList<>();
+		Map<String, Map<String, Object>> pending = new LinkedHashMap<>();
 		for (int index = 0; index < chunks.size(); index++) {
 			long start = durationMs * index / chunks.size();
 			long end = durationMs * (index + 1) / chunks.size();
@@ -46,9 +47,14 @@ public class TimedTranscriptSegmentService {
 			row.put("textArtifactRef", "transcriptSegments/" + id);
 			row.put("text", text);
 			row.put("algorithmVersion", "proportional-sentence-timing-v1");
-			firebase.saveData("transcriptSegments", id, row);
+			pending.put(id, row);
 			result.add(row);
+			if (pending.size() == 450) {
+				firebase.saveDataBatch("transcriptSegments", pending);
+				pending = new LinkedHashMap<>();
+			}
 		}
+		firebase.saveDataBatch("transcriptSegments", pending);
 		return result;
 	}
 }

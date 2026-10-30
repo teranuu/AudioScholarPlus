@@ -123,12 +123,16 @@ class Module3InstrumentValiditySmokeTest {
 			assertThat(source.get("storageObjectId")).isNotNull();
 			assertThat(source.get("retrievedAt")).isNotNull();
 			assertThat(source.get("transcriptionCompletedAt")).isNotNull();
-			assertThat(source.get("transcriptText")).isInstanceOf(String.class);
+			assertThat(source).doesNotContainKey("transcriptText");
 		});
+		List<Map<String, Object>> transcriptRows = harness.rows("sourceTranscripts");
+		assertThat(transcriptRows).hasSize(sourceCount)
+				.allSatisfy(transcript -> assertThat(transcript.get("transcriptContent")).isInstanceOf(String.class));
 		if (sourceCount >= 3)
-			assertThat(transcriptFor(sourceRows, "lecture.pdf")).contains("PDF evidence covers chlorophyll absorption");
+			assertThat(transcriptFor(sourceRows, transcriptRows, "lecture.pdf"))
+					.contains("PDF evidence covers chlorophyll absorption");
 		if (sourceCount == 5)
-			assertThat(transcriptFor(sourceRows, "lecture.pptx"))
+			assertThat(transcriptFor(sourceRows, transcriptRows, "lecture.pptx"))
 					.contains("PPT evidence explains quantum energy levels");
 
 		List<Map<String, Object>> events = harness.rows("validationEvents");
@@ -152,9 +156,10 @@ class Module3InstrumentValiditySmokeTest {
 		assertThat(harness.rows("multiSourceStageRuns")).extracting(row -> row.get("stage"))
 				.containsExactlyInAnyOrder("SOURCE_KEY_POINT_EXTRACTION", "DEDUPLICATION", "ATTRIBUTION", "ALIGNMENT");
 		org.mockito.Mockito.verify(harness.gemini, org.mockito.Mockito.times(1)).callSimpleTextAPI(anyString(),
-				anyString(), org.mockito.ArgumentMatchers.eq("multi-source.key-point-batch.generateContent"));
+				anyString(), org.mockito.ArgumentMatchers.eq("multi-source.key-point-batch.generateContent"), anyMap());
 		org.mockito.Mockito.verify(harness.gemini, org.mockito.Mockito.times(1)).callSimpleTextAPI(anyString(),
-				anyString(), org.mockito.ArgumentMatchers.eq("multi-source.semantic-pair-batch.generateContent"));
+				anyString(), org.mockito.ArgumentMatchers.eq("multi-source.semantic-pair-batch.generateContent"),
+				anyMap());
 
 		JsonNode manifest = harness.exportManifest();
 		assertThat(manifest.path("integrityIssues")).isEmpty();
@@ -170,9 +175,12 @@ class Module3InstrumentValiditySmokeTest {
 		assertThat(manifest.path("sha256").size()).isGreaterThan(10);
 	}
 
-	private String transcriptFor(List<Map<String, Object>> rows, String filename) {
-		return rows.stream().filter(row -> filename.equals(row.get("fileName")))
-				.map(row -> (String) row.get("transcriptText")).findFirst().orElseThrow();
+	private String transcriptFor(List<Map<String, Object>> sources, List<Map<String, Object>> transcripts,
+			String filename) {
+		String sourceFileId = sources.stream().filter(row -> filename.equals(row.get("fileName")))
+				.map(row -> (String) row.get("sourceFileId")).findFirst().orElseThrow();
+		return transcripts.stream().filter(row -> sourceFileId.equals(row.get("sourceFileId")))
+				.map(row -> (String) row.get("transcriptContent")).findFirst().orElseThrow();
 	}
 
 	private List<String> eventTypes(List<Map<String, Object>> events) {
@@ -240,6 +248,12 @@ class Module3InstrumentValiditySmokeTest {
 				put(invocation.getArgument(0), invocation.getArgument(1), map(invocation.getArgument(2)));
 				return "stored";
 			});
+			doAnswer(invocation -> {
+				String collection = invocation.getArgument(0);
+				Map<String, ?> documents = invocation.getArgument(1);
+				documents.forEach((id, document) -> put(collection, id, map(document)));
+				return null;
+			}).when(firebase).saveDataBatch(anyString(), anyMap());
 			doAnswer(invocation -> {
 				put(invocation.getArgument(0), invocation.getArgument(1), invocation.getArgument(2));
 				return null;
@@ -363,10 +377,10 @@ class Module3InstrumentValiditySmokeTest {
 			when(gemini.generateTranscriptOnlySummary(anyString(), anyString(), anyString())).thenReturn(
 					"{\"summaryText\":\"Controlled merged summary\",\"keyPoints\":[],\"topics\":[],\"glossary\":[],\"flashcards\":[]}");
 			when(gemini.callSimpleTextAPI(anyString(), anyString(),
-					org.mockito.ArgumentMatchers.eq("multi-source.key-point-batch.generateContent")))
+					org.mockito.ArgumentMatchers.eq("multi-source.key-point-batch.generateContent"), anyMap()))
 					.thenReturn(batchPoints());
 			when(gemini.callSimpleTextAPI(anyString(), anyString(),
-					org.mockito.ArgumentMatchers.eq("multi-source.semantic-pair-batch.generateContent")))
+					org.mockito.ArgumentMatchers.eq("multi-source.semantic-pair-batch.generateContent"), anyMap()))
 					.thenAnswer(invocation -> batchClassifications(invocation.getArgument(0)));
 		}
 
