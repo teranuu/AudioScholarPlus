@@ -9,7 +9,7 @@ services:
       - key: SPRING_PROFILES_ACTIVE
         value: production
       - key: APP_CORS_ALLOWED_ORIGINS
-        value: https://audioscholar.vercel.app
+        value: https://audioscholar.vercel.app,https://audio-scholar-plus-kappa.vercel.app
       - key: FIREBASE_SERVICE_ACCOUNT_BASE64
         sync: false
       - key: MULTI_SOURCE_RECONCILIATION_ENABLED
