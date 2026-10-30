@@ -80,6 +80,8 @@ class GeminiServiceTest {
 
 	@Test
 	void callSimpleTextApiAcceptsFencedMultiSourceJsonAndRequestsJsonOutput() throws Exception {
+		doAnswer(invocation -> invocation.<Function<String, String>>getArgument(0).apply("gemini-2.5-flash"))
+				.when(rotationService).executeWithRotation(any(), anyInt());
 		when(keyRotationManager.getKey(KeyProvider.GEMINI)).thenReturn(API_KEY);
 		String candidateText = "```json\n{\"sources\":[{\"sourceFileId\":\"a\",\"keyPoints\":[\"point\"]}]}\n```";
 		String providerResponse = new ObjectMapper().writeValueAsString(Map.of("candidates", List.of(
@@ -98,14 +100,18 @@ class GeminiServiceTest {
 		Map<String, Object> config = (Map<String, Object>) body.get("generationConfig");
 		assertEquals("application/json", config.get("responseMimeType"));
 		assertEquals(0.2, config.get("temperature"));
-		verify(requestGovernor).acquire("multi-source.key-point-batch.generateContent", 100L, "job-1");
+		verify(requestGovernor).acquire("multi-source.key-point-batch.generateContent", 100L, "job-1",
+				"gemini-2.5-flash");
 	}
 
 	@Test
 	void callSimpleTextApiPropagatesStageLimitWithoutTurningItIntoProviderJson() {
+		doAnswer(invocation -> invocation.<Function<String, String>>getArgument(0).apply("gemini-2.5-flash"))
+				.when(rotationService).executeWithRotation(any(), anyInt());
 		when(keyRotationManager.getKey(KeyProvider.GEMINI)).thenReturn(API_KEY);
 		doThrow(new GeminiStageRequestLimitException("multi-source.key-point-batch.generateContent", 2))
-				.when(requestGovernor).acquire("multi-source.key-point-batch.generateContent", 100L, "job-1");
+				.when(requestGovernor)
+				.acquire("multi-source.key-point-batch.generateContent", 100L, "job-1", "gemini-2.5-flash");
 
 		assertThrows(GeminiStageRequestLimitException.class, () -> geminiService.callSimpleTextAPI("extract key points",
 				"job-1", "multi-source.key-point-batch.generateContent"));

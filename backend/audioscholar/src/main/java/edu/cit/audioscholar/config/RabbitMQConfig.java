@@ -52,10 +52,13 @@ public class RabbitMQConfig {
 	// aligned with enqueue order, preventing per-message TTL head-of-line blocking.
 	public static final String MULTI_SOURCE_RETRY_QUEUE_NAME = "multi.source.processing.retry.v3.queue";
 	public static final String MULTI_SOURCE_RETRY_ROUTING_KEY = "multi.source.process.retry.v3.key";
-	public static final String MULTI_SOURCE_QUOTA_RETRY_QUEUE_NAME = "multi.source.processing.quota.retry.v2.queue";
-	public static final String MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY = "multi.source.process.quota.retry.v2.key";
+	public static final String MULTI_SOURCE_QUOTA_RETRY_QUEUE_NAME = "multi.source.processing.quota.retry.v3.queue";
+	public static final String MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY = "multi.source.process.quota.retry.v3.key";
 	public static final int MULTI_SOURCE_RETRY_TTL_MS = 15_000;
-	public static final int MULTI_SOURCE_QUOTA_RETRY_TTL_MS = 15 * 60_000;
+	// One-minute polling resumes RPM-blocked jobs promptly and also wakes RPD jobs
+	// within one minute of the provider reset without per-message TTL ordering
+	// bugs.
+	public static final int MULTI_SOURCE_QUOTA_RETRY_TTL_MS = 60_000;
 
 	@Value("${spring.rabbitmq.listener.simple.concurrency:1}")
 	private int concurrency;

@@ -51,6 +51,19 @@ class MultiSourceJobServiceTest {
 	}
 
 	@Test
+	void acceptsAndQueuesUploadEvenWhenLegacyDailyAdmissionWouldRejectIt() throws Exception {
+		GeminiRequestGovernor governor = governor();
+		doThrow(new GeminiBudgetExceededException("legacy global cap exhausted", Instant.now().plusSeconds(3600)))
+				.when(governor).requireDailyCapacity(anyString(), anyLong(), anyString());
+
+		MultiSourceJob job = submissionService(governor).createAndProcess("user-1",
+				List.of(media("a.mp3"), media("b.mp3")), List.of(), "Title", null, "NOTES");
+
+		assertEquals("PROCESSING_QUEUED", job.getStatus());
+		verify(governor, never()).requireDailyCapacity(anyString(), anyLong(), anyString());
+	}
+
+	@Test
 	void rejectsFewerThanTwoTotalSources() throws Exception {
 		MultiSourceJobService service = service();
 
@@ -273,6 +286,24 @@ class MultiSourceJobServiceTest {
 	}
 
 	@Test
+	void semanticQuotaExhaustionDefersDurableJobInsteadOfCompletingDegraded() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		Instant retryAt = Instant.now().plusSeconds(90);
+		when(harness.semantic.evaluate(any(), any()))
+				.thenThrow(new GeminiBudgetExceededException("semantic RPM exhausted", retryAt));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.publisher).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY),
+				any(MultiSourceJobMessage.class));
+		verify(harness.repository, atLeastOnce()).saveIfNonterminal(
+				argThat(job -> "PROCESSING_QUEUED".equals(job.getStatus()) && job.getQuotaRetryAt() != null
+						&& !job.getQuotaRetryAt().toInstant().isBefore(retryAt.minusSeconds(1))));
+		verify(harness.repository, never()).transitionTerminal(any(), eq("JOB_COMPLETED"), anyString(), anyList(),
+				anyMap());
+	}
+
+	@Test
 	void ordinaryFailureUsesTheShortDelayQueueInsteadOfTheActiveQueue() throws Exception {
 		ProcessingHarness harness = processingHarness(true);
 		when(harness.gemini.generateTranscriptOnlySummary(anyString(), eq("job-1"), eq("NOTES")))
@@ -356,6 +387,10 @@ class MultiSourceJobServiceTest {
 	}
 
 	private MultiSourceJobService submissionService() throws Exception {
+		return submissionService(governor());
+	}
+
+	private MultiSourceJobService submissionService(GeminiRequestGovernor governor) throws Exception {
 		SourceFileService sourceFiles = mock(SourceFileService.class);
 		when(sourceFiles.createSourceFile(anyString(), anyString(), any(SourceKind.class), any(MultipartFile.class),
 				any(Path.class))).thenAnswer(invocation -> {
@@ -374,7 +409,7 @@ class MultiSourceJobServiceTest {
 				sourceFiles, mock(SourceTranscriptService.class), mock(DocumentTextExtractionService.class),
 				mock(MergedSummaryRepository.class), mock(MultiSourceJobRepository.class), guardrails,
 				tempDir.toString(), "500MB", mock(ConfirmedRabbitPublisher.class), mock(ValidationEventService.class),
-				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class), governor(),
+				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class), governor,
 				java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
 	}
 

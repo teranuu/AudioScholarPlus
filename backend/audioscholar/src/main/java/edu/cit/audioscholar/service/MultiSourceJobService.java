@@ -169,7 +169,6 @@ public class MultiSourceJobService {
 		job.setSemanticEnrichmentStatus("PENDING");
 		job.setSourceCount(normalizedMediaFiles.size() + normalizedDocumentFiles.size());
 		int estimatedGeminiRequests = normalizedMediaFiles.size() + 3;
-		requestGovernor.requireDailyCapacity("multi-source.job-admission", estimatedGeminiRequests, job.getJobId());
 		job.setEstimatedGeminiRequests(estimatedGeminiRequests);
 		job.setClientSource(ValidationEventService.clientSource(clientHeader));
 		job.setAcceptedAt(new Date());
@@ -396,6 +395,10 @@ public class MultiSourceJobService {
 				event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial", Map.of("jobId", jobId, "outputCount",
 						summary.getKeyPoints().size(), "algorithmVersion", "semantic-clustering-batch-v2"));
 			} catch (Exception enrichmentFailure) {
+				// Quota failures are resumable job state, not degraded semantic output. Let
+				// the outer handler persist quotaRetryAt and requeue the durable job.
+				if (quotaRetryAt(enrichmentFailure) != null)
+					throw enrichmentFailure;
 				// The user-facing merged summary is already durable. Attribution is useful
 				// evidence, but it must not discard an otherwise valid result.
 				attributions = List.of();

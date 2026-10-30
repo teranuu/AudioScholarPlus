@@ -37,21 +37,44 @@ public class GeminiRequestGovernor {
 		Instant requestedAt = Instant.now();
 		Instant scheduledAt = budget.reservePacingSlot(operation, contextId);
 		long waitMillis = Math.max(0, Duration.between(requestedAt, scheduledAt).toMillis());
+		if (waitMillis > maxPacingWait.toMillis())
+			throw new GeminiBudgetExceededException(
+					"Gemini pacing backlog exceeds the configured maximum wait for " + operation, scheduledAt);
+		waitForSlot(waitMillis);
+		GeminiBudgetService.Reservation reservation = budget.reserve(operation, inputTokens, null, contextId);
+		recordUsage(operation, contextId, requestedAt, scheduledAt, waitMillis, reservation);
+	}
+
+	public void acquire(String operation, long inputTokens, String contextId, String model) {
+		Instant requestedAt = Instant.now();
+		Instant scheduledAt = budget.reserveModelPacingSlot(model, operation, contextId);
+		long waitMillis = Math.max(0, Duration.between(requestedAt, scheduledAt).toMillis());
 		if (waitMillis > maxPacingWait.toMillis()) {
 			throw new GeminiBudgetExceededException(
 					"Gemini pacing backlog exceeds the configured maximum wait for " + operation, scheduledAt);
 		}
 		waitForSlot(waitMillis);
-		GeminiBudgetService.Reservation reservation = budget.reserve(operation, inputTokens, null, contextId);
+		GeminiBudgetService.Reservation reservation = budget.reserveModel(model, operation, inputTokens, contextId);
 
+		recordUsage(operation, contextId, requestedAt, scheduledAt, waitMillis, reservation);
+		log.info(
+				"Gemini request permit acquired model={} operation={} contextId={} pacingWaitMs={} scheduledAt={} inputTokens={}",
+				model, operation, contextId, waitMillis, scheduledAt, inputTokens);
+	}
+
+	private void recordUsage(String operation, String contextId, Instant requestedAt, Instant scheduledAt,
+			long waitMillis, GeminiBudgetService.Reservation reservation) {
 		Instant acquiredAt = Instant.now();
-		if (StringUtils.hasText(contextId)) {
+		if (StringUtils.hasText(contextId))
 			usageByContext.computeIfAbsent(contextId, ignored -> new MutableUsage()).record(acquiredAt, waitMillis,
 					operation, reservation.retryRequest(), reservation.topUpRequest());
-		}
-		log.info(
-				"Gemini request permit acquired operation={} contextId={} pacingWaitMs={} scheduledAt={} inputTokens={}",
-				operation, contextId, waitMillis, scheduledAt, inputTokens);
+	}
+
+	public void recordProviderRateLimit(String model, GeminiQuotaDimension dimension, Instant retryAt, Long quotaLimit,
+			String detail) {
+		budget.recordProviderRateLimit(model, dimension, retryAt, quotaLimit, detail);
+		log.warn("Gemini provider quota recorded model={} dimension={} retryAt={} quotaLimit={}", model, dimension,
+				retryAt, quotaLimit);
 	}
 
 	public GeminiBudgetService.DailyCapacity requireDailyCapacity(String operation, long requiredRequests,
