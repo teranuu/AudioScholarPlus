@@ -30,10 +30,9 @@ public class WebConfig implements WebMvcConfigurer {
 	@Override
 	public void addCorsMappings(CorsRegistry registry) {
 		registry.addMapping("/**").allowedOrigins(parseAllowedOrigins())
-				.allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")
-				.allowedHeaders("Authorization", "Cache-Control", "Content-Type", "X-Requested-With", "Accept",
-						"X-CSRF-TOKEN", "X-AudioScholar-Client")
-				.allowCredentials(true).exposedHeaders("Authorization").maxAge(3600);
+				.allowedMethods(CorsPolicy.ALLOWED_METHODS.toArray(String[]::new))
+				.allowedHeaders(CorsPolicy.ALLOWED_HEADERS.toArray(String[]::new)).allowCredentials(true)
+				.exposedHeaders(CorsPolicy.EXPOSED_HEADERS.toArray(String[]::new)).maxAge(3600);
 	}
 
 	private String[] parseAllowedOrigins() {

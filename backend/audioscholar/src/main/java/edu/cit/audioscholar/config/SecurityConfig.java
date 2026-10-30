@@ -152,11 +152,10 @@ public class SecurityConfig {
 	CorsConfigurationSource corsConfigurationSource() {
 		CorsConfiguration configuration = new CorsConfiguration();
 		configuration.setAllowedOrigins(parseAllowedOrigins());
-		configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"));
-		configuration.setAllowedHeaders(Arrays.asList("Authorization", "Cache-Control", "Content-Type",
-				"X-Requested-With", "Accept", "X-CSRF-TOKEN", "X-AudioScholar-Client"));
+		configuration.setAllowedMethods(CorsPolicy.ALLOWED_METHODS);
+		configuration.setAllowedHeaders(CorsPolicy.ALLOWED_HEADERS);
 		configuration.setAllowCredentials(true);
-		configuration.setExposedHeaders(List.of("Authorization"));
+		configuration.setExposedHeaders(CorsPolicy.EXPOSED_HEADERS);
 		configuration.setMaxAge(3600L);
 
 		UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
