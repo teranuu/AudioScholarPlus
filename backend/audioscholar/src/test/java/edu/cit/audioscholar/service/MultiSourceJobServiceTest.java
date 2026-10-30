@@ -179,6 +179,35 @@ class MultiSourceJobServiceTest {
 	}
 
 	@Test
+	void futureQuotaWindowIsRebucketedWithoutClaimingOrTakingTheGlobalLease() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.repository.findById("job-1")).thenReturn(Map.of("jobId", "job-1", "status", "PROCESSING_QUEUED",
+				"quotaRetryAt", Date.from(Instant.now().plusSeconds(3600))));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.publisher).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY),
+				any(MultiSourceJobMessage.class));
+		verify(harness.repository, never()).claim(anyString());
+		verify(harness.repository, never()).tryAcquireProcessingLease(anyString(), any());
+	}
+
+	@Test
+	void semanticEnrichmentFailureCompletesWithDegradedResult() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.semantic.evaluate(any(), any())).thenThrow(new IllegalStateException("provider unavailable"));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository).transitionTerminal(
+				argThat(job -> "COMPLETE".equals(job.getStatus())
+						&& "DEGRADED".equals(job.getSemanticEnrichmentStatus()) && job.isMeasurementIncomplete()),
+				eq("JOB_COMPLETED"), eq("initial"), anyList(), anyMap());
+		verify(harness.repository, never()).transitionTerminal(any(), eq("JOB_FAILED"), anyString(), anyList(),
+				anyMap());
+	}
+
+	@Test
 	void terminalStateAndPendingEventArePersistedBeforePublishingCompletion() throws Exception {
 		ProcessingHarness harness = processingHarness(true);
 
@@ -234,7 +263,7 @@ class MultiSourceJobServiceTest {
 		harness.service.processQueuedJob("job-1");
 
 		verify(harness.publisher).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY),
-				any(MultiSourceJobMessage.class), argThat(delay -> !delay.isNegative() && delay.toMinutes() >= 59));
+				any(MultiSourceJobMessage.class));
 		verify(harness.publisher, never()).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY),
 				any(MultiSourceJobMessage.class), any(java.time.Duration.class));
 		verify(harness.repository, atLeastOnce()).saveIfNonterminal(
@@ -252,7 +281,7 @@ class MultiSourceJobServiceTest {
 		harness.service.processQueuedJob("job-1");
 
 		verify(harness.publisher).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY),
-				any(MultiSourceJobMessage.class), eq(java.time.Duration.ofSeconds(5)));
+				any(MultiSourceJobMessage.class));
 		verify(harness.publisher, never()).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_ROUTING_KEY),
 				any(MultiSourceJobMessage.class), any(java.time.Duration.class));
 	}
@@ -306,14 +335,14 @@ class MultiSourceJobServiceTest {
 				transcripts, mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class), repository,
 				mock(AudioProcessingGuardrailService.class), tempDir.toString(), "500MB", publisher, events, segments,
 				semantic, governor, java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
-		return new ProcessingHarness(service, repository, events, sourceFiles, gemini, publisher, transcripts,
-				segments);
+		return new ProcessingHarness(service, repository, events, sourceFiles, gemini, publisher, transcripts, segments,
+				semantic);
 	}
 
 	private record ProcessingHarness(MultiSourceJobService service, MultiSourceJobRepository repository,
 			ValidationEventService events, SourceFileService sourceFiles, GeminiService gemini,
 			ConfirmedRabbitPublisher publisher, SourceTranscriptService transcripts,
-			TimedTranscriptSegmentService segments) {
+			TimedTranscriptSegmentService segments, SemanticEvidenceService semantic) {
 	}
 
 	private Map<String, Object> completedSource(String sourceFileId, String label) {

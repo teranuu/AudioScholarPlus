@@ -2,11 +2,13 @@ package edu.cit.audioscholar.service;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -32,6 +34,7 @@ import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
 import edu.cit.audioscholar.exception.GeminiRateLimitException;
 import edu.cit.audioscholar.exception.GeminiStageRequestLimitException;
 import edu.cit.audioscholar.exception.MultiSourceProcessingException;
+import edu.cit.audioscholar.exception.ProcessingGuardrailException;
 import edu.cit.audioscholar.exception.StorageRetrievalException;
 import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.KeyPoint;
@@ -39,6 +42,7 @@ import edu.cit.audioscholar.model.MergedSummary;
 import edu.cit.audioscholar.model.MultiSourceJob;
 import edu.cit.audioscholar.model.OutputType;
 import edu.cit.audioscholar.model.ProcessingStatus;
+import edu.cit.audioscholar.model.QualityReport;
 import edu.cit.audioscholar.model.SourceAttribution;
 import edu.cit.audioscholar.model.SourceFile;
 import edu.cit.audioscholar.model.SourceKind;
@@ -127,6 +131,13 @@ public class MultiSourceJobService {
 	public MultiSourceJob createAndProcess(String userId, List<MultipartFile> mediaFiles,
 			List<MultipartFile> documentFiles, String title, String description, String outputTypeValue,
 			String clientHeader) throws Exception {
+		return createAndProcess(userId, mediaFiles, documentFiles, title, description, outputTypeValue, clientHeader,
+				null);
+	}
+
+	public MultiSourceJob createAndProcess(String userId, List<MultipartFile> mediaFiles,
+			List<MultipartFile> documentFiles, String title, String description, String outputTypeValue,
+			String clientHeader, String idempotencyKey) throws Exception {
 		OutputType outputType = OutputType.fromValue(outputTypeValue);
 		List<MultipartFile> normalizedMediaFiles = normalizeFiles(mediaFiles);
 		List<MultipartFile> normalizedDocumentFiles = normalizeFiles(documentFiles);
@@ -135,11 +146,27 @@ public class MultiSourceJobService {
 		guardrailService.validateUploadBytes(normalizedMediaFiles, normalizedDocumentFiles);
 
 		MultiSourceJob job = new MultiSourceJob();
+		if (StringUtils.hasText(idempotencyKey)) {
+			if (idempotencyKey.length() > 128)
+				throw new IllegalArgumentException("Idempotency key must not exceed 128 characters.");
+			String deterministicJobId = UUID
+					.nameUUIDFromBytes(
+							("multi-source:" + userId + ":" + idempotencyKey).getBytes(StandardCharsets.UTF_8))
+					.toString();
+			Map<String, Object> existing = multiSourceJobRepository.findById(deterministicJobId);
+			if (existing != null) {
+				if (!userId.equals(existing.get("userId")))
+					throw new IllegalArgumentException("Idempotency key does not belong to this user.");
+				return hydrateJob(existing);
+			}
+			job.setJobId(deterministicJobId);
+		}
 		job.setUserId(userId);
 		job.setTitle(StringUtils.hasText(title) ? title : "Merged Lecture Summary");
 		job.setDescription(description);
 		job.setOutputType(outputType.name());
 		job.setStatus(ProcessingStatus.ACCEPTED.name());
+		job.setSemanticEnrichmentStatus("PENDING");
 		job.setSourceCount(normalizedMediaFiles.size() + normalizedDocumentFiles.size());
 		int estimatedGeminiRequests = normalizedMediaFiles.size() + 3;
 		requestGovernor.requireDailyCapacity("multi-source.job-admission", estimatedGeminiRequests, job.getJobId());
@@ -147,6 +174,7 @@ public class MultiSourceJobService {
 		job.setClientSource(ValidationEventService.clientSource(clientHeader));
 		job.setAcceptedAt(new Date());
 		List<Path> tempFiles = new ArrayList<>();
+		List<SourceFile> uploadedSources = new ArrayList<>();
 		try {
 			save(job);
 			event(job, "BATCH_SUBMITTED", List.of(9), "initial",
@@ -164,11 +192,14 @@ public class MultiSourceJobService {
 				tempFiles.add(tempFile);
 				SourceKind sourceKind = i < normalizedMediaFiles.size() ? SourceKind.MEDIA : SourceKind.DOCUMENT;
 
-				SourceFile sourceFile = sourceFileService.createSourceFile(job.getJobId(), sourceLabel, sourceKind,
-						file, tempFile);
 				AudioProcessingGuardrailService.GuardrailResult guardrail = null;
 				if (SourceKind.MEDIA == sourceKind) {
 					guardrail = guardrailService.validateAudioFile(tempFile, file.getOriginalFilename());
+				}
+				SourceFile sourceFile = sourceFileService.createSourceFile(job.getJobId(), sourceLabel, sourceKind,
+						file, tempFile);
+				uploadedSources.add(sourceFile);
+				if (guardrail != null) {
 					sourceFile.setDurationSeconds(guardrail.durationSeconds());
 					sourceFile.setEstimatedGeminiAudioTokens(guardrail.estimatedAudioTokens());
 					sourceFile.setAudioFingerprint(guardrail.fingerprint());
@@ -192,6 +223,15 @@ public class MultiSourceJobService {
 			event(job, "JOB_QUEUED", List.of(9), "initial", Map.of("jobId", job.getJobId()));
 			return job;
 		} catch (Exception e) {
+			for (SourceFile uploadedSource : uploadedSources) {
+				try {
+					sourceFileService.delete(uploadedSource);
+				} catch (RuntimeException cleanupFailure) {
+					log.error(
+							"Could not clean up source after rejected multi-source submission jobId={} sourceFileId={}",
+							job.getJobId(), uploadedSource.getSourceFileId(), cleanupFailure);
+				}
+			}
 			job.setStatus(ProcessingStatus.FAILED.name());
 			job.setFailureReason(sanitizeFailure(e.getMessage()));
 			job.setFailureStage("SUBMISSION");
@@ -218,12 +258,16 @@ public class MultiSourceJobService {
 	}
 
 	public void processQueuedJob(String jobId) throws Exception {
+		if (deferUntilQuotaWindow(jobId))
+			return;
 		String leaseOwner = workerIdentity + ":" + jobId + ":" + UUID.randomUUID();
 		if (!multiSourceJobRepository.tryAcquireProcessingLease(leaseOwner,
 				Date.from(Instant.now().plus(processingLeaseDuration)))) {
-			log.info("Deferring multi-source job because another job owns the global processing lease jobId={}", jobId);
+			log.info(
+					"Deferring multi-source job because another job owns the global processing lease jobId={} configuredDelay={} fixedBucketDelayMs={}",
+					jobId, contentionRetryDelay, RabbitMQConfig.MULTI_SOURCE_RETRY_TTL_MS);
 			publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY,
-					new MultiSourceJobMessage(jobId), contentionRetryDelay);
+					new MultiSourceJobMessage(jobId));
 			return;
 		}
 		try {
@@ -231,6 +275,20 @@ public class MultiSourceJobService {
 		} finally {
 			multiSourceJobRepository.releaseProcessingLease(leaseOwner);
 		}
+	}
+
+	private boolean deferUntilQuotaWindow(String jobId) {
+		Map<String, Object> row = multiSourceJobRepository.findById(jobId);
+		if (row == null || !ProcessingStatus.PROCESSING_QUEUED.name().equals(row.get("status")))
+			return false;
+		Date retryAt = date(row.get("quotaRetryAt"));
+		if (retryAt == null || !retryAt.toInstant().isAfter(Instant.now()))
+			return false;
+		publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY,
+				new MultiSourceJobMessage(jobId));
+		log.info("Keeping quota-deferred multi-source job in fixed retry bucket jobId={} retryAt={}", jobId,
+				retryAt.toInstant());
+		return true;
 	}
 
 	private void processQueuedJobUnderLease(String jobId) throws Exception {
@@ -257,6 +315,11 @@ public class MultiSourceJobService {
 			for (Map<String, Object> row : sourceRows) {
 				stage = "SOURCE_RETRIEVAL";
 				SourceFile source = hydrateSource(row);
+				if (source.getTranscriptionCompletedAt() != null) {
+					String checkpoint = sourceTranscriptService.findTranscriptText(jobId, source.getSourceFileId());
+					if (StringUtils.hasText(checkpoint))
+						source.setTranscriptText(checkpoint);
+				}
 				if (source.getTranscriptionCompletedAt() != null && StringUtils.hasText(source.getTranscriptText())) {
 					sources.add(source);
 					log.info("Reusing completed source checkpoint jobId={} sourceFileId={}", jobId,
@@ -280,9 +343,9 @@ public class MultiSourceJobService {
 							"MULTI_SOURCE", job.getClientSource(), "multiSourceJobs"));
 				String transcript = kind == SourceKind.MEDIA
 						? geminiService.callGeminiTranscriptionAPIWithFallback(local, source.getFileName(), jobId)
-						: documentTextExtractionService.extractText(local, source.getFileName(),
-								source.getContentType());
+						: extractDocumentText(local, source);
 				rejectGeminiErrorTranscript(transcript);
+				guardrailService.validateSummaryInput(transcript, 0);
 				source.setTranscriptText(transcript);
 				sourceTranscriptService.saveTranscript(jobId, source);
 				timedSegments.persist(source);
@@ -325,9 +388,31 @@ public class MultiSourceJobService {
 						summary.getSummaryId());
 			}
 			stage = "DEDUPLICATION";
-			List<SourceAttribution> attributions = semanticEvidence.evaluate(job, summary);
-			event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial", Map.of("jobId", jobId, "outputCount",
-					summary.getKeyPoints().size(), "algorithmVersion", "semantic-clustering-batch-v2"));
+			List<SourceAttribution> attributions;
+			try {
+				attributions = semanticEvidence.evaluate(job, summary);
+				job.setSemanticEnrichmentStatus("COMPLETE");
+				job.setSemanticEnrichmentFailure(null);
+				event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial", Map.of("jobId", jobId, "outputCount",
+						summary.getKeyPoints().size(), "algorithmVersion", "semantic-clustering-batch-v2"));
+			} catch (Exception enrichmentFailure) {
+				// The user-facing merged summary is already durable. Attribution is useful
+				// evidence, but it must not discard an otherwise valid result.
+				attributions = List.of();
+				job.setMeasurementIncomplete(true);
+				job.setSemanticEnrichmentStatus("DEGRADED");
+				job.setSemanticEnrichmentFailure(sanitizeFailure(enrichmentFailure.getMessage()));
+				try {
+					semanticEvidence.persistFailedRun(job, stage, failureCode(enrichmentFailure),
+							job.getProcessingAttempts());
+				} catch (RuntimeException evidenceFailure) {
+					log.warn("Could not persist degraded semantic evidence jobId={}", jobId, evidenceFailure);
+				}
+				log.warn("Completing multi-source job with degraded semantic enrichment jobId={} reason={}", jobId,
+						job.getSemanticEnrichmentFailure());
+				event(job, "SEMANTIC_ENRICHMENT_DEGRADED", List.of(10, 11, 12), "initial",
+						Map.of("jobId", jobId, "failureCode", failureCode(enrichmentFailure)));
+			}
 			summaryService.createSummary(summary);
 			event(job, "OUTPUT_GENERATED", List.of(1), summary.getSummaryId(),
 					Map.of("jobId", jobId, "summaryId", summary.getSummaryId(), "outputType", summary.getOutputType(),
@@ -368,11 +453,8 @@ public class MultiSourceJobService {
 				job.setQuotaRetryAt(Date.from(quotaRetryAt));
 				job.setUpdatedAt(new Date());
 				if (saveWorkerProgress(job)) {
-					Duration delay = Duration.between(Instant.now(), quotaRetryAt);
-					if (delay.isNegative() || delay.isZero())
-						delay = Duration.ofSeconds(1);
 					publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_QUOTA_RETRY_ROUTING_KEY,
-							new MultiSourceJobMessage(jobId), delay);
+							new MultiSourceJobMessage(jobId));
 					event(job, "JOB_QUOTA_DEFERRED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(),
 							Map.of("jobId", jobId, "retryAt", quotaRetryAt.toString(), "failureStage", stage));
 				}
@@ -384,8 +466,7 @@ public class MultiSourceJobService {
 				job.setStatus(ProcessingStatus.PROCESSING_QUEUED.name());
 				if (saveWorkerProgress(job)) {
 					publisher.publishToProcessingExchange(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY,
-							new MultiSourceJobMessage(jobId),
-							java.time.Duration.ofSeconds(job.getProcessingAttempts() * 5L));
+							new MultiSourceJobMessage(jobId));
 					event(job, "JOB_RETRY_QUEUED", List.of(9, 12), "attempt-" + job.getProcessingAttempts(),
 							Map.of("jobId", jobId, "outcome", "RETRY_QUEUED", "attempt", job.getProcessingAttempts()));
 				}
@@ -450,9 +531,63 @@ public class MultiSourceJobService {
 		return multiSourceJobRepository.findById(jobId);
 	}
 
+	public Map<String, Object> getJobMapForClient(String jobId) {
+		return clientView(multiSourceJobRepository.findById(jobId));
+	}
+
+	public List<Map<String, Object>> getJobsForUser(String userId) {
+		return multiSourceJobRepository.findByUserId(userId).stream().map(this::clientView)
+				.sorted(Comparator.comparingLong(this::jobTimestamp).reversed()).limit(25).map(this::listView).toList();
+	}
+
+	private Map<String, Object> listView(Map<String, Object> job) {
+		Map<String, Object> result = new HashMap<>(job);
+		result.remove("mergedSummary");
+		result.remove("sourceFiles");
+		return result;
+	}
+
+	private long jobTimestamp(Map<String, Object> job) {
+		Date value = date(job.get("updatedAt"));
+		if (value == null)
+			value = date(job.get("acceptedAt"));
+		return value == null ? 0L : value.getTime();
+	}
+
+	private Map<String, Object> clientView(Map<String, Object> row) {
+		if (row == null)
+			return null;
+		Map<String, Object> result = new HashMap<>(row);
+		result.remove("failureDetail");
+		if (row.get("sourceFiles") instanceof List<?> rawSources) {
+			List<Map<String, Object>> compact = new ArrayList<>();
+			for (Object raw : rawSources) {
+				if (!(raw instanceof Map<?, ?> source))
+					continue;
+				Map<String, Object> item = new HashMap<>();
+				for (String key : List.of("sourceFileId", "sourceLabel", "sourceKind", "fileName", "contentType",
+						"fileSize", "durationSeconds", "uploadStatus", "uploadCompletedAt", "transcriptionCompletedAt"))
+					if (source.containsKey(key))
+						item.put(key, source.get(key));
+				compact.add(item);
+			}
+			result.put("sourceFiles", compact);
+		}
+		return result;
+	}
+
+	private String extractDocumentText(Path local, SourceFile source) {
+		try {
+			return documentTextExtractionService.extractText(local, source.getFileName(), source.getContentType());
+		} catch (IOException | IllegalArgumentException e) {
+			throw new MultiSourceProcessingException("Document text extraction failed for " + source.getFileName(),
+					"DOCUMENT_EXTRACTION_FAILED", false, e);
+		}
+	}
+
 	private void rejectGeminiErrorTranscript(String transcript) throws IOException {
 		if (!StringUtils.hasText(transcript)) {
-			return;
+			throw new IOException("Gemini transcription returned no text");
 		}
 		try {
 			JsonNode root = OBJECT_MAPPER.readTree(transcript);
@@ -652,6 +787,10 @@ public class MultiSourceJobService {
 		job.setGeminiFirstRequestAt(date(row.get("geminiFirstRequestAt")));
 		job.setGeminiLastRequestAt(date(row.get("geminiLastRequestAt")));
 		job.setQuotaRetryAt(date(row.get("quotaRetryAt")));
+		job.setCreatedAt(date(row.get("createdAt")));
+		job.setUpdatedAt(date(row.get("updatedAt")));
+		job.setSemanticEnrichmentStatus((String) row.get("semanticEnrichmentStatus"));
+		job.setSemanticEnrichmentFailure((String) row.get("semanticEnrichmentFailure"));
 		job.setFailureStage((String) row.get("failureStage"));
 		job.setFailureCode((String) row.get("failureCode"));
 		job.setFailureDetail((String) row.get("failureDetail"));
@@ -695,8 +834,19 @@ public class MultiSourceJobService {
 		source.setFileType((String) row.get("fileType"));
 		source.setUploadStatus((String) row.get("uploadStatus"));
 		source.setTranscriptText((String) row.get("transcriptText"));
+		if (row.get("fileSize") instanceof Number n)
+			source.setFileSize(n.longValue());
 		if (row.get("durationSeconds") instanceof Number n)
 			source.setDurationSeconds(n.longValue());
+		if (row.get("estimatedGeminiAudioTokens") instanceof Number n)
+			source.setEstimatedGeminiAudioTokens(n.longValue());
+		source.setAudioFingerprint((String) row.get("audioFingerprint"));
+		if (row.get("qualityReport") instanceof Map<?, ?> rawQuality) {
+			Map<String, Object> quality = new HashMap<>();
+			rawQuality.forEach((key, value) -> quality.put(String.valueOf(key), value));
+			source.setQualityReport(QualityReport.fromMap(quality));
+		}
+		source.setCreatedAt(date(row.get("createdAt")));
 		source.setUploadCompletedAt(date(row.get("uploadCompletedAt")));
 		source.setRetrievedAt(date(row.get("retrievedAt")));
 		source.setTranscriptionCompletedAt(date(row.get("transcriptionCompletedAt")));
@@ -739,6 +889,8 @@ public class MultiSourceJobService {
 
 	private boolean isPermanent(Exception failure) {
 		if (failure instanceof GeminiStageRequestLimitException)
+			return true;
+		if (failure instanceof ProcessingGuardrailException || failure instanceof IllegalArgumentException)
 			return true;
 		if (failure instanceof StorageRetrievalException storage)
 			return !storage.isRetryable();

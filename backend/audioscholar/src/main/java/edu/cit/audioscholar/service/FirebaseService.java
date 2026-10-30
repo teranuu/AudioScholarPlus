@@ -509,6 +509,10 @@ public class FirebaseService {
 				String status = snapshot.getString("status");
 				if ("COMPLETE".equals(status) || "FAILED".equals(status))
 					return false;
+				Timestamp quotaRetryAt = snapshot.getTimestamp("quotaRetryAt");
+				if ("PROCESSING_QUEUED".equals(status) && quotaRetryAt != null
+						&& quotaRetryAt.compareTo(Timestamp.now()) > 0)
+					return false;
 				Timestamp updatedAt = snapshot.getTimestamp("updatedAt");
 				if (updatedAt == null || !updatedAt.toDate().before(cutoff))
 					return false;

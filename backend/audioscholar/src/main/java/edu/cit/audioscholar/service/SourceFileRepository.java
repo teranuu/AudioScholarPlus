@@ -21,6 +21,11 @@ public class SourceFileRepository {
 		firebaseService.saveData(COLLECTION_NAME, sourceFile.getSourceFileId(), sourceFile.toMap());
 		return sourceFile;
 	}
+
+	public void delete(String sourceFileId) {
+		firebaseService.deleteData(COLLECTION_NAME, sourceFileId);
+	}
+
 	public List<Map<String, Object>> findByJobId(String jobId) {
 		return firebaseService.queryCollection(COLLECTION_NAME, "jobId", jobId);
 	}

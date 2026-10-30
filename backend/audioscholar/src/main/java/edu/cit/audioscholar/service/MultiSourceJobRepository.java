@@ -26,6 +26,10 @@ public class MultiSourceJobRepository {
 	public Map<String, Object> findById(String jobId) {
 		return firebaseService.getData(COLLECTION_NAME, jobId);
 	}
+
+	public List<Map<String, Object>> findByUserId(String userId) {
+		return firebaseService.queryCollection(COLLECTION_NAME, "userId", userId);
+	}
 	public boolean claim(String jobId) {
 		return firebaseService.claimQueuedJob(COLLECTION_NAME, jobId);
 	}

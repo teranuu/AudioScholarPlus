@@ -3,6 +3,7 @@ package edu.cit.audioscholar.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
@@ -37,11 +38,12 @@ class SemanticEvidenceServiceTest {
 		SourceFile first = source("source-a", "A");
 		SourceFile second = source("source-b", "B");
 		job.setSourceFiles(List.of(first, second));
-		when(gemini.callSimpleTextAPI(anyString(), eq("job-1"), eq("multi-source.key-point-batch.generateContent")))
+		when(gemini.callSimpleTextAPI(anyString(), eq("job-1"), eq("multi-source.key-point-batch.generateContent"),
+				anyMap()))
 				.thenReturn("{\"sources\":[{\"sourceFileId\":\"source-a\",\"keyPoints\":[\"claim A\"]},"
 						+ "{\"sourceFileId\":\"source-b\",\"keyPoints\":[\"claim B\"]}]}");
-		when(gemini.callSimpleTextAPI(anyString(), eq("job-1"), eq("multi-source.semantic-pair-batch.generateContent")))
-				.thenReturn("{\"pairs\":[]}");
+		when(gemini.callSimpleTextAPI(anyString(), eq("job-1"), eq("multi-source.semantic-pair-batch.generateContent"),
+				anyMap())).thenReturn("{\"pairs\":[]}");
 		when(firebase.queryCollection(eq("transcriptSegments"), eq("sourceFileId"), anyString())).thenReturn(List.of());
 
 		IllegalStateException failure = assertThrows(IllegalStateException.class,
@@ -65,7 +67,8 @@ class SemanticEvidenceServiceTest {
 		job.setSourceFiles(List.of(unresolved, resolved));
 		Summary summary = new Summary("summary-1", "job-1", "merged");
 
-		when(gemini.callSimpleTextAPI(anyString(), eq("job-1"), eq("multi-source.key-point-batch.generateContent")))
+		when(gemini.callSimpleTextAPI(anyString(), eq("job-1"), eq("multi-source.key-point-batch.generateContent"),
+				anyMap()))
 				.thenReturn("{\"sources\":[{\"sourceFileId\":\"source-a\",\"keyPoints\":[\"shared claim\"]},"
 						+ "{\"sourceFileId\":\"source-b\",\"keyPoints\":[\"shared claim\"]}]}");
 		when(firebase.queryCollection("transcriptSegments", "sourceFileId", "source-a")).thenReturn(List.of());
@@ -112,7 +115,7 @@ class SemanticEvidenceServiceTest {
 		service.evaluate(job, new Summary("summary-1", "job-1", "merged"));
 
 		verify(gemini, never()).callSimpleTextAPI(anyString(), eq("job-1"),
-				eq("multi-source.key-point-batch.generateContent"));
+				eq("multi-source.key-point-batch.generateContent"), anyMap());
 	}
 
 	private SourceFile source(String id, String label) {

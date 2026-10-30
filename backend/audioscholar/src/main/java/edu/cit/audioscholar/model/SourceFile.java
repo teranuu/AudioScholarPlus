@@ -164,12 +164,34 @@ public class SourceFile {
 		map.put("durationSeconds", durationSeconds);
 		map.put("estimatedGeminiAudioTokens", estimatedGeminiAudioTokens);
 		map.put("audioFingerprint", audioFingerprint);
-		map.put("transcriptText", transcriptText);
+		// Transcript content is stored in sourceTranscripts. Keeping another copy in
+		// this document can exceed Firestore's 1 MiB document limit.
 		map.put("qualityReport", qualityReport != null ? qualityReport.toMap() : null);
 		map.put("createdAt", createdAt);
 		map.put("uploadCompletedAt", uploadCompletedAt);
 		map.put("transcriptionCompletedAt", transcriptionCompletedAt);
 		map.put("retrievedAt", retrievedAt);
+		return map;
+	}
+
+	/**
+	 * Compact representation embedded in a multi-source job. Transcript and quality
+	 * artifacts live in their own collections and must not be duplicated into the
+	 * job document (Firestore documents are limited to 1 MiB).
+	 */
+	public Map<String, Object> toJobReferenceMap() {
+		Map<String, Object> map = new HashMap<>();
+		map.put("sourceFileId", sourceFileId);
+		map.put("jobId", jobId);
+		map.put("sourceLabel", sourceLabel);
+		map.put("sourceKind", sourceKind);
+		map.put("fileName", fileName);
+		map.put("contentType", contentType);
+		map.put("fileSize", fileSize);
+		map.put("durationSeconds", durationSeconds);
+		map.put("uploadStatus", uploadStatus);
+		map.put("uploadCompletedAt", uploadCompletedAt);
+		map.put("transcriptionCompletedAt", transcriptionCompletedAt);
 		return map;
 	}
 }

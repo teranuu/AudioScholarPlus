@@ -22,6 +22,10 @@ public class StorageService {
 		nhostStorageService.downloadFileToPath(objectId, targetPath);
 	}
 
+	public void deleteSourceFile(String objectId) {
+		nhostStorageService.deleteFile(objectId);
+	}
+
 	public record StoredObject(String objectId, String compatibilityUrl) {
 	}
 }
