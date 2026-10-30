@@ -6,6 +6,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Map;
@@ -109,6 +110,35 @@ class GeminiBudgetServiceTest {
 				.isInstanceOf(GeminiBudgetExceededException.class).hasMessageContaining("project RPD");
 		assertThat(document("project-admission-")).containsEntry("actualRequests", 5L).containsEntry("reservedRequests",
 				5L);
+	}
+
+	@Test
+	void modelBudgetsAreIndependentAndProviderBlockExpiresByModel() {
+		GeminiBudgetService service = service(20);
+		service.reserveModel("gemini-a", "operation", 100, "job-a");
+		service.reserveModel("gemini-b", "operation", 100, "job-b");
+
+		long modelDayDocuments = references.keySet().stream().filter(key -> key.contains("-day-")).count();
+		assertThat(modelDayDocuments).isEqualTo(2);
+		assertThat(references.entrySet().stream().filter(entry -> entry.getKey().contains("-day-"))
+				.map(entry -> documents.get(entry.getValue()).get("requests"))).containsExactlyInAnyOrder(1L, 1L);
+
+		Instant retryAt = Instant.now().plusSeconds(60);
+		service.recordProviderRateLimit("gemini-a", GeminiQuotaDimension.RPM, retryAt, 5L, "rpm");
+		assertThatThrownBy(() -> service.reserveModel("gemini-a", "operation", 100, "job-a"))
+				.isInstanceOf(GeminiBudgetExceededException.class);
+		service.reserveModel("gemini-b", "operation", 100, "job-b");
+	}
+
+	@Test
+	void multiSourceStageAttemptLimitSpansModelRotation() {
+		GeminiBudgetService service = service(20);
+		String operation = "multi-source.key-point-batch.generateContent";
+		service.reserveModel("gemini-a", operation, 100, "job-1");
+		service.reserveModel("gemini-b", operation, 100, "job-1");
+
+		assertThatThrownBy(() -> service.reserveModel("gemini-c", operation, 100, "job-1"))
+				.isInstanceOf(GeminiStageRequestLimitException.class);
 	}
 
 	private GeminiBudgetService service(long projectRpd) {

@@ -13,6 +13,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
 
+import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
+
 @Service
 public class GeminiSmartRotationService {
 
@@ -122,10 +124,17 @@ public class GeminiSmartRotationService {
 		}
 
 		RuntimeException lastFailure = null;
+		GeminiBudgetExceededException earliestQuotaReset = null;
 		for (int cycle = 1; cycle <= maxCycles; cycle++) {
 			for (String model : modelHierarchy) {
 				try {
 					return apiCallFunction.apply(model);
+				} catch (GeminiBudgetExceededException e) {
+					if (earliestQuotaReset == null || e.getRetryAt() != null && (earliestQuotaReset.getRetryAt() == null
+							|| e.getRetryAt().isBefore(earliestQuotaReset.getRetryAt())))
+						earliestQuotaReset = e;
+					logger.warn("Model {} is locally blocked until {}. Switching to next configured model.", model,
+							e.getRetryAt());
 				} catch (HttpClientErrorException.TooManyRequests | HttpServerErrorException.ServiceUnavailable e) {
 					lastFailure = e;
 					logger.warn("Model {} is rate limited/overloaded ({}). Switching to next...", model,
@@ -144,7 +153,11 @@ public class GeminiSmartRotationService {
 			}
 		}
 
-		throw lastFailure != null ? lastFailure : new IllegalStateException("No Gemini models are configured");
+		if (lastFailure != null)
+			throw lastFailure;
+		if (earliestQuotaReset != null)
+			throw earliestQuotaReset;
+		throw new IllegalStateException("No Gemini models are configured");
 	}
 
 	private boolean isModelUnavailable(HttpClientErrorException e) {

@@ -34,9 +34,9 @@ public class GeminiBudgetService {
 	private final ZoneId quotaZone;
 
 	public GeminiBudgetService(Firestore firestore, @Value("${gemini.guardrails.budget.enabled:true}") boolean enabled,
-			@Value("${gemini.guardrails.project-rpm:4}") long projectRpm,
-			@Value("${gemini.guardrails.project-input-tpm:200000}") long projectInputTpm,
-			@Value("${gemini.guardrails.project-rpd:18}") long projectRpd,
+			@Value("${gemini.guardrails.project-rpm:5}") long projectRpm,
+			@Value("${gemini.guardrails.project-input-tpm:250000}") long projectInputTpm,
+			@Value("${gemini.guardrails.project-rpd:20}") long projectRpd,
 			@Value("${gemini.guardrails.user-rpm:0}") long userRpm,
 			@Value("${gemini.guardrails.user-input-tpm:0}") long userInputTpm,
 			@Value("${gemini.guardrails.multi-source-stage-max-requests:2}") long multiSourceStageMaxRequests,
@@ -91,6 +91,59 @@ public class GeminiBudgetService {
 			throw new IllegalStateException("Interrupted while reserving Gemini pacing slot", e);
 		} catch (ExecutionException e) {
 			throw new IllegalStateException("Could not reserve Gemini pacing slot", e.getCause());
+		}
+	}
+
+	/**
+	 * Reserves a pacing slot for one provider model. Gemini applies RPM/RPD per
+	 * project and model, so unrelated models must not consume the same local
+	 * bucket.
+	 */
+	public Instant reserveModelPacingSlot(String model, String operation, String contextId) {
+		Instant now = Instant.now();
+		if (!enabled || projectRpm <= 0) {
+			return now;
+		}
+		String normalizedModel = normalizeModel(model);
+		DocumentReference pacingRef = modelRef(normalizedModel, "pacing");
+		DocumentReference availabilityRef = modelRef(normalizedModel, "availability");
+		try {
+			return firestore.runTransaction(transaction -> {
+				Instant observedNow = Instant.now();
+				ModelAvailability availability = ModelAvailability
+						.from(transaction.get(availabilityRef).get().getData());
+				Instant blockedUntil = availability.blockedUntil(observedNow);
+				if (blockedUntil != null)
+					throw new GeminiBudgetExceededException(
+							"Gemini model " + normalizedModel + " is unavailable until its quota resets", blockedUntil);
+				Map<String, Object> data = transaction.get(pacingRef).get().getData();
+				Instant nextAllowedAt = instant(data == null ? null : data.get("nextAllowedAt"));
+				Instant scheduledAt = nextAllowedAt != null && nextAllowedAt.isAfter(observedNow)
+						? nextAllowedAt
+						: observedNow;
+				Map<String, Object> update = new HashMap<>();
+				long effectiveRpm = availability.limit(GeminiQuotaDimension.RPM, projectRpm);
+				long spacingMillis = Math.max(1L, (long) Math.ceil(60_000d / Math.max(1, effectiveRpm)));
+				Instant followingSlot = scheduledAt.plusMillis(spacingMillis);
+				update.put("nextAllowedAt",
+						Timestamp.ofTimeSecondsAndNanos(followingSlot.getEpochSecond(), followingSlot.getNano()));
+				update.put("lastScheduledAt",
+						Timestamp.ofTimeSecondsAndNanos(scheduledAt.getEpochSecond(), scheduledAt.getNano()));
+				update.put("lastOperation", operation);
+				update.put("lastContextId", contextId);
+				update.put("model", normalizedModel);
+				update.put("rpm", availability.limit(GeminiQuotaDimension.RPM, projectRpm));
+				update.put("updatedAt", Timestamp.now());
+				transaction.set(pacingRef, update);
+				return scheduledAt;
+			}).get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException("Interrupted while reserving Gemini model pacing slot", e);
+		} catch (ExecutionException e) {
+			if (e.getCause() instanceof GeminiBudgetExceededException exceeded)
+				throw exceeded;
+			throw new IllegalStateException("Could not reserve Gemini model pacing slot", e.getCause());
 		}
 	}
 
@@ -309,6 +362,105 @@ public class GeminiBudgetService {
 		}
 	}
 
+	/** Records one request attempt against model-specific RPM, TPM, and RPD. */
+	public Reservation reserveModel(String model, String operation, long inputTokens, String contextId) {
+		if (!enabled)
+			return new Reservation(operation, inputTokens, Instant.now(), false, false);
+		Instant now = Instant.now();
+		Instant minute = now.truncatedTo(ChronoUnit.MINUTES);
+		String normalizedModel = normalizeModel(model);
+		DocumentReference minuteRef = modelRef(normalizedModel, "minute-" + minute);
+		DocumentReference dayRef = modelRef(normalizedModel, "day-" + quotaDay(now));
+		DocumentReference availabilityRef = modelRef(normalizedModel, "availability");
+		boolean boundedStage = StringUtils.hasText(contextId) && isBoundedMultiSourceStage(operation);
+		DocumentReference stageRef = boundedStage ? stageRef(contextId) : null;
+		try {
+			return firestore.runTransaction(transaction -> {
+				Usage minuteUsage = Usage.from(transaction.get(minuteRef).get().getData());
+				Usage dayUsage = Usage.from(transaction.get(dayRef).get().getData());
+				ModelAvailability availability = ModelAvailability
+						.from(transaction.get(availabilityRef).get().getData());
+				Map<String, Object> stageData = boundedStage ? transaction.get(stageRef).get().getData() : null;
+				Map<String, Long> stageRequests = operationRequests(stageData);
+				long operationAttempts = stageRequests.getOrDefault(operation, 0L);
+				if (boundedStage && multiSourceStageMaxRequests > 0 && operationAttempts >= multiSourceStageMaxRequests)
+					throw new GeminiStageRequestLimitException(operation, multiSourceStageMaxRequests);
+				Instant blockedUntil = availability.blockedUntil(now);
+				if (blockedUntil != null)
+					throw new GeminiBudgetExceededException(
+							"Gemini model " + normalizedModel + " is unavailable until its quota resets", blockedUntil);
+
+				long rpm = availability.limit(GeminiQuotaDimension.RPM, projectRpm);
+				long tpm = availability.limit(GeminiQuotaDimension.TPM, projectInputTpm);
+				long rpd = availability.limit(GeminiQuotaDimension.RPD, projectRpd);
+				checkLimit(minuteUsage.requests + 1, rpm, minute.plus(1, ChronoUnit.MINUTES),
+						"Gemini model RPM budget exceeded for " + normalizedModel);
+				checkLimit(minuteUsage.inputTokens + inputTokens, tpm, minute.plus(1, ChronoUnit.MINUTES),
+						"Gemini model input TPM budget exceeded for " + normalizedModel);
+				checkLimit(dayUsage.requests + 1, rpd, nextQuotaDay(now),
+						"Gemini model RPD budget exceeded for " + normalizedModel);
+
+				Map<String, Object> minuteUpdate = minuteUsage.add(1, inputTokens).toMap("minute", minute, operation,
+						contextId);
+				minuteUpdate.put("model", normalizedModel);
+				transaction.set(minuteRef, minuteUpdate);
+				Map<String, Object> dayUpdate = dayUsage.add(1, inputTokens).toMap("day", quotaDayStart(now), operation,
+						contextId);
+				dayUpdate.put("model", normalizedModel);
+				transaction.set(dayRef, dayUpdate);
+				if (boundedStage) {
+					stageRequests.put(operation, operationAttempts + 1);
+					Map<String, Object> stageUpdate = new HashMap<>();
+					stageUpdate.put("contextId", contextId);
+					stageUpdate.put("operationRequests", stageRequests);
+					stageUpdate.put("updatedAt", Timestamp.now());
+					transaction.set(stageRef, stageUpdate, SetOptions.merge());
+				}
+				return new Reservation(operation, inputTokens, now, false, false);
+			}).get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException("Interrupted while reserving Gemini model budget", e);
+		} catch (ExecutionException e) {
+			Throwable cause = e.getCause();
+			if (cause instanceof GeminiBudgetExceededException exceeded)
+				throw exceeded;
+			if (cause instanceof GeminiStageRequestLimitException stageLimit)
+				throw stageLimit;
+			throw new IllegalStateException("Could not reserve Gemini model budget", cause);
+		}
+	}
+
+	/**
+	 * Persists provider-reported blocking state so all backend instances see it.
+	 */
+	public void recordProviderRateLimit(String model, GeminiQuotaDimension dimension, Instant retryAt, Long quotaLimit,
+			String detail) {
+		if (!enabled || retryAt == null)
+			return;
+		String normalizedModel = normalizeModel(model);
+		DocumentReference availabilityRef = modelRef(normalizedModel, "availability");
+		Map<String, Object> update = new HashMap<>();
+		update.put("model", normalizedModel);
+		update.put(blockField(dimension), Timestamp.of(java.util.Date.from(retryAt)));
+		update.put("lastQuotaDimension", dimension.name());
+		update.put("lastQuotaDetail", detail == null ? "" : detail);
+		update.put("updatedAt", Timestamp.now());
+		if (quotaLimit != null && quotaLimit > 0)
+			update.put(limitField(dimension), quotaLimit);
+		try {
+			firestore.runTransaction(transaction -> {
+				transaction.set(availabilityRef, update, SetOptions.merge());
+				return null;
+			}).get();
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException("Interrupted while recording Gemini provider quota", e);
+		} catch (ExecutionException e) {
+			throw new IllegalStateException("Could not record Gemini provider quota", e.getCause());
+		}
+	}
+
 	private void checkLimit(long nextValue, long limit, Instant retryAt, String message) {
 		if (limit > 0 && nextValue > limit) {
 			throw new GeminiBudgetExceededException(message, retryAt);
@@ -339,6 +491,46 @@ public class GeminiBudgetService {
 	private DocumentReference admissionRef(String contextId) {
 		return firestore.collection(collectionName)
 				.document("project-admission-" + ValidationEventService.digest(contextId));
+	}
+
+	private DocumentReference modelRef(String model, String suffix) {
+		return firestore.collection(collectionName)
+				.document("project-model-" + ValidationEventService.digest(model) + "-" + suffix);
+	}
+
+	private DocumentReference stageRef(String contextId) {
+		return firestore.collection(collectionName)
+				.document("project-context-" + ValidationEventService.digest(contextId));
+	}
+
+	private Map<String, Long> operationRequests(Map<String, Object> data) {
+		Map<String, Long> operations = new HashMap<>();
+		if (data != null && data.get("operationRequests") instanceof Map<?, ?> rawOperations)
+			rawOperations.forEach((key, value) -> operations.put(String.valueOf(key), number(value)));
+		return operations;
+	}
+
+	private String normalizeModel(String model) {
+		return StringUtils.hasText(model) ? model.trim().toLowerCase(java.util.Locale.ROOT) : "unknown";
+	}
+
+	private String blockField(GeminiQuotaDimension dimension) {
+		return switch (dimension) {
+			case RPM -> "rpmBlockedUntil";
+			case TPM -> "tpmBlockedUntil";
+			case RPD -> "rpdBlockedUntil";
+			case SPEND -> "spendBlockedUntil";
+			case UNKNOWN -> "unknownBlockedUntil";
+		};
+	}
+
+	private String limitField(GeminiQuotaDimension dimension) {
+		return switch (dimension) {
+			case RPM -> "observedRpmLimit";
+			case TPM -> "observedTpmLimit";
+			case RPD -> "observedRpdLimit";
+			case SPEND, UNKNOWN -> "observedOtherLimit";
+		};
 	}
 
 	private String quotaDay(Instant instant) {
@@ -429,6 +621,34 @@ public class GeminiBudgetService {
 
 		boolean activeFor(String day) {
 			return active() && quotaDay.equals(day);
+		}
+	}
+
+	private record ModelAvailability(Map<String, Object> data) {
+		static ModelAvailability from(Map<String, Object> data) {
+			return new ModelAvailability(data == null ? Map.of() : data);
+		}
+
+		Instant blockedUntil(Instant now) {
+			Instant latest = null;
+			for (String field : java.util.List.of("rpmBlockedUntil", "tpmBlockedUntil", "rpdBlockedUntil",
+					"spendBlockedUntil", "unknownBlockedUntil")) {
+				Instant value = GeminiBudgetService.instant(data.get(field));
+				if (value != null && value.isAfter(now) && (latest == null || value.isAfter(latest)))
+					latest = value;
+			}
+			return latest;
+		}
+
+		long limit(GeminiQuotaDimension dimension, long configured) {
+			String field = switch (dimension) {
+				case RPM -> "observedRpmLimit";
+				case TPM -> "observedTpmLimit";
+				case RPD -> "observedRpdLimit";
+				case SPEND, UNKNOWN -> "observedOtherLimit";
+			};
+			long observed = number(data.get(field));
+			return observed > 0 ? observed : configured;
 		}
 	}
 

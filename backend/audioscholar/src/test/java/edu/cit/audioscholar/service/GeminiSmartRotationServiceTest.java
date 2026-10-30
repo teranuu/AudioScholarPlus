@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.junit.jupiter.api.Test;
@@ -11,6 +12,8 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.HttpServerErrorException;
+
+import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
 
 class GeminiSmartRotationServiceTest {
 
@@ -66,6 +69,18 @@ class GeminiSmartRotationServiceTest {
 		}, 1));
 
 		assertEquals(1, attempts.get());
+	}
+
+	@Test
+	void rotatesPastLocallyBlockedModel() {
+		GeminiSmartRotationService service = new GeminiSmartRotationService("blocked, available", 0, 0, 2.0);
+		String result = service.executeWithRotation(model -> {
+			if ("blocked".equals(model))
+				throw new GeminiBudgetExceededException("daily quota", Instant.now().plusSeconds(3600));
+			return model;
+		}, 1);
+
+		assertEquals("available", result);
 	}
 
 	private HttpClientErrorException unavailableModel() {

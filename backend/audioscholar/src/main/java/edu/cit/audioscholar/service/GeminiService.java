@@ -101,6 +101,7 @@ public class GeminiService {
 	private final PromptTemplateService promptTemplateService;
 	private final GeminiRequestGovernor requestGovernor;
 	private final AudioProcessingGuardrailService guardrailService;
+	private final GeminiRateLimitParser rateLimitParser = new GeminiRateLimitParser(objectMapper);
 
 	@Value("${gemini.rotation.max-cycles:2}")
 	private int rotationMaxCycles;
@@ -123,13 +124,15 @@ public class GeminiService {
 		try {
 			long estimatedInputTokens = guardrailService.validateSummaryInput(promptText + "\n" + transcriptText, 0);
 			return rotationService.executeWithRotation(targetModel -> {
+				String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 				try {
-					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
-					reserveGemini("summarization.generateContent", estimatedInputTokens, null);
+					reserveGemini("summarization.generateContent", estimatedInputTokens, null, targetModel);
 					String result = callGeminiSummarizationAPISingleModel(promptText, transcriptText, targetModel,
 							currentKey);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
 					return result;
+				} catch (HttpClientErrorException.TooManyRequests e) {
+					throw providerRateLimit(targetModel, currentKey, e);
 				} catch (Exception e) {
 					if (e instanceof HttpClientErrorException) {
 						int code = ((HttpClientErrorException) e).getStatusCode().value();
@@ -291,16 +294,14 @@ public class GeminiService {
 					continue;
 				attemptedModel = true;
 				try {
-					reserveGemini("transcription.generateContent", estimatedInputTokens, contextId);
+					reserveGemini("transcription.generateContent", estimatedInputTokens, contextId, normalizedModel);
 					return callGeminiTranscriptionAPISingleModel(fileUri, mimeType, normalizedModel, apiKey);
 				} catch (HttpClientErrorException e) {
 					int statusCode = e.getStatusCode().value();
 					if (statusCode == 429) {
-						Duration retryDelay = retryDelay(e);
-						keyRotationManager.reportError(KeyProvider.GEMINI, apiKey, statusCode, retryDelay);
+						GeminiRateLimitParser.RateLimitInfo limit = recordProviderRateLimit(normalizedModel, apiKey, e);
 						lastRateLimit = new GeminiRateLimitException(
-								"Gemini transcription quota is temporarily exhausted", Instant.now().plus(retryDelay),
-								e);
+								"Gemini transcription quota is temporarily exhausted", limit.retryAt(), e);
 						continue;
 					}
 					keyRotationManager.reportError(KeyProvider.GEMINI, apiKey, statusCode);
@@ -334,6 +335,32 @@ public class GeminiService {
 
 	private Duration retryDelay(HttpClientErrorException exception) {
 		return retryDelay((RestClientResponseException) exception);
+	}
+
+	private GeminiBudgetExceededException providerRateLimit(String model, String apiKey,
+			HttpClientErrorException exception) {
+		GeminiRateLimitParser.RateLimitInfo limit = recordProviderRateLimit(model, apiKey, exception);
+		return new GeminiBudgetExceededException(
+				"Gemini " + limit.dimension() + " quota unavailable for model " + limit.model(), limit.retryAt());
+	}
+
+	private GeminiRateLimitParser.RateLimitInfo recordProviderRateLimit(String model, String apiKey,
+			HttpClientErrorException exception) {
+		GeminiRateLimitParser.RateLimitInfo limit = rateLimitParser.parse(exception, model);
+		String detail = limit.quotaId() != null ? limit.quotaId() : limit.quotaMetric();
+		try {
+			requestGovernor.recordProviderRateLimit(limit.model(), limit.dimension(), limit.retryAt(),
+					limit.quotaLimit(), detail);
+			// API keys share project quota. Blocking the key would incorrectly prevent a
+			// different model from being tried. Block the provider model and its alias.
+			if (!limit.model().equalsIgnoreCase(model))
+				requestGovernor.recordProviderRateLimit(model, limit.dimension(), limit.retryAt(), limit.quotaLimit(),
+						detail);
+		} catch (RuntimeException persistenceFailure) {
+			log.error("Could not persist Gemini provider quota state model={} retryAt={}", model, limit.retryAt(),
+					persistenceFailure);
+		}
+		return limit;
 	}
 
 	private Duration retryDelay(RestClientResponseException exception) {
@@ -571,7 +598,8 @@ public class GeminiService {
 						.queryParam("key", currentKey).buildAndExpand(TRANSCRIPTION_MODEL_NAME).toUriString();
 
 				try {
-					reserveGemini("legacy-transcription.generateContent", estimatedInputTokens, null);
+					reserveGemini("legacy-transcription.generateContent", estimatedInputTokens, null,
+							transcriptionModelName);
 					ResponseEntity<String> response = restTemplate.exchange(generateContentUrl, HttpMethod.POST,
 							requestEntity, String.class);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -804,8 +832,8 @@ public class GeminiService {
 		}
 	}
 
-	private void reserveGemini(String operation, long inputTokens, String contextId) {
-		requestGovernor.acquire(operation, inputTokens, contextId);
+	private void reserveGemini(String operation, long inputTokens, String contextId, String model) {
+		requestGovernor.acquire(operation, inputTokens, contextId, model);
 	}
 
 	public String callGeminiSummarizationAPI(String promptText, String transcriptText) {
@@ -858,7 +886,8 @@ public class GeminiService {
 			String summarizationUrl = UriComponentsBuilder.fromUriString(API_BASE_URL + GENERATE_CONTENT_PATH)
 					.queryParam("key", currentKey).buildAndExpand(SUMMARIZATION_MODEL_NAME).toUriString();
 			try {
-				reserveGemini("legacy-summarization.generateContent", estimatedInputTokens, null);
+				reserveGemini("legacy-summarization.generateContent", estimatedInputTokens, null,
+						summarizationModelName);
 				ResponseEntity<String> response = restTemplate.exchange(summarizationUrl, HttpMethod.POST,
 						requestEntity, String.class);
 				keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -955,13 +984,15 @@ public class GeminiService {
 			final String finalPdfFileUri = pdfFileUri;
 
 			return rotationService.executeWithRotation(targetModel -> {
+				String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 				try {
-					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
-					reserveGemini("summary-with-pdf.generateContent", estimatedInputTokens, metadataId);
+					reserveGemini("summary-with-pdf.generateContent", estimatedInputTokens, metadataId, targetModel);
 					String result = callGeminiSummarizationWithPdfContextSingleModel(transcriptText, finalPdfFileUri,
 							metadataId, targetModel, currentKey, outputType);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
 					return result;
+				} catch (HttpClientErrorException.TooManyRequests e) {
+					throw providerRateLimit(targetModel, currentKey, e);
 				} catch (Exception e) {
 					if (e instanceof RuntimeException)
 						throw (RuntimeException) e;
@@ -1082,13 +1113,16 @@ public class GeminiService {
 			long estimatedInputTokens = guardrailService.validateSummaryInput(transcriptText, 0);
 
 			return rotationService.executeWithRotation(targetModel -> {
+				String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 				try {
-					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
-					reserveGemini("summary-with-google-file.generateContent", estimatedInputTokens, metadataId);
+					reserveGemini("summary-with-google-file.generateContent", estimatedInputTokens, metadataId,
+							targetModel);
 					String result = callGeminiSummarizationWithPdfContextSingleModel(transcriptText, googleFileUri,
 							metadataId, targetModel, currentKey, outputType);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
 					return result;
+				} catch (HttpClientErrorException.TooManyRequests e) {
+					throw providerRateLimit(targetModel, currentKey, e);
 				} catch (Exception e) {
 					if (e instanceof RuntimeException)
 						throw (RuntimeException) e;
@@ -1232,8 +1266,32 @@ public class GeminiService {
 		HttpEntity<Map<String, Object>> requestEntity = new HttpEntity<>(requestBody, headers);
 
 		log.info("Calling Gemini Simple Text API (Model: {})", TRANSCRIPTION_MODEL_NAME);
+		if (multiSourceOperation) {
+			return rotationService.executeWithRotation(targetModel -> {
+				String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
+				String url = UriComponentsBuilder.fromUriString(API_BASE_URL + GENERATE_CONTENT_PATH)
+						.queryParam("key", currentKey).buildAndExpand(targetModel).toUriString();
+				try {
+					long estimatedInputTokens = guardrailService.validateSummaryInput(promptText, 0);
+					reserveGemini(operation, estimatedInputTokens, contextId, targetModel);
+					ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.POST, requestEntity,
+							String.class);
+					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
+					String responseBody = response.getBody();
+					if (responseBody == null || responseBody.isBlank())
+						throw new IllegalStateException("Gemini returned an empty multi-source semantic response");
+					return extractTextFromStandardResponse(responseBody);
+				} catch (HttpClientErrorException.TooManyRequests e) {
+					throw providerRateLimit(targetModel, currentKey, e);
+				} catch (GeminiBudgetExceededException | NonRetryableTaskException e) {
+					throw e;
+				} catch (JsonProcessingException | ApiException e) {
+					throw new IllegalStateException("Could not parse Gemini multi-source semantic response", e);
+				}
+			}, rotationMaxCycles);
+		}
 
-		int maxAttempts = multiSourceOperation ? 1 : MAX_RETRIES;
+		int maxAttempts = MAX_RETRIES;
 		for (int attempt = 1; attempt <= maxAttempts; attempt++) {
 			String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 			String simpleTextUrl = UriComponentsBuilder.fromUriString(API_BASE_URL + GENERATE_CONTENT_PATH)
@@ -1241,7 +1299,7 @@ public class GeminiService {
 
 			try {
 				long estimatedInputTokens = guardrailService.validateSummaryInput(promptText, 0);
-				reserveGemini(operation, estimatedInputTokens, contextId);
+				reserveGemini(operation, estimatedInputTokens, contextId, TRANSCRIPTION_MODEL_NAME);
 				ResponseEntity<String> response = restTemplate.exchange(simpleTextUrl, HttpMethod.POST, requestEntity,
 						String.class);
 				keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
@@ -1281,9 +1339,12 @@ public class GeminiService {
 				sleepForRetry(attempt);
 			} catch (HttpClientErrorException e) {
 				int statusCode = e.getStatusCode().value();
-				if (statusCode == 429 || statusCode == 403) {
+				if (statusCode == 429) {
+					GeminiBudgetExceededException quota = providerRateLimit(TRANSCRIPTION_MODEL_NAME, currentKey, e);
+					if (multiSourceOperation)
+						throw quota;
+				} else if (statusCode == 403)
 					keyRotationManager.reportError(KeyProvider.GEMINI, currentKey, statusCode);
-				}
 				log.error("Gemini Simple Text API client error: status={}", e.getStatusCode(), e);
 				String details = parseErrorDetails(e);
 				return createErrorResponse("API Client Error: " + e.getStatusCode(), details);
@@ -1360,13 +1421,15 @@ public class GeminiService {
 		try {
 			long estimatedInputTokens = guardrailService.validateSummaryInput(transcriptText, 0);
 			return rotationService.executeWithRotation(targetModel -> {
+				String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
 				try {
-					String currentKey = keyRotationManager.getKey(KeyProvider.GEMINI);
-					reserveGemini("transcript-summary.generateContent", estimatedInputTokens, metadataId);
+					reserveGemini("transcript-summary.generateContent", estimatedInputTokens, metadataId, targetModel);
 					String result = callGeminiTranscriptOnlySummarizationSingleModel(transcriptText, metadataId,
 							targetModel, currentKey, outputType);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
 					return result;
+				} catch (HttpClientErrorException.TooManyRequests e) {
+					throw providerRateLimit(targetModel, currentKey, e);
 				} catch (Exception e) {
 					if (e instanceof RuntimeException)
 						throw (RuntimeException) e;
@@ -1531,7 +1594,8 @@ public class GeminiService {
 						.queryParam("key", currentKey).buildAndExpand(SUMMARIZATION_MODEL_NAME).toUriString();
 
 				try {
-					reserveGemini("recommendations.generateContent", estimatedInputTokens, metadataId);
+					reserveGemini("recommendations.generateContent", estimatedInputTokens, metadataId,
+							SUMMARIZATION_MODEL_NAME);
 					ResponseEntity<String> response = restTemplate.exchange(generateContentUrl, HttpMethod.POST,
 							requestEntity, String.class);
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);

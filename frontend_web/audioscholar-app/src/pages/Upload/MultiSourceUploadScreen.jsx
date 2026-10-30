@@ -48,6 +48,19 @@ const isValidDocumentFile = (file) => {
   return VALID_DOCUMENT_TYPES.includes((file.type || '').toLowerCase()) || VALID_DOCUMENT_EXTENSIONS.includes(ext);
 };
 const withoutExtension = (fileName) => fileName.replace(/\.[^/.]+$/, '');
+const formatPhilippineDateTime = (value) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'the next quota window';
+  return new Intl.DateTimeFormat('en-PH', {
+    timeZone: 'Asia/Manila',
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  }).format(date);
+};
 
 const SourceFileList = ({ files, kind, offset = 0, loading, onRemove }) => (
   <div className="space-y-2 mt-3">
@@ -115,8 +128,7 @@ const MergeStatusIndicator = ({ job }) => {
 
 const DeferredStatusIndicator = ({ job }) => {
   if (!job || job.status !== 'PROCESSING_QUEUED' || !job.quotaRetryAt) return null;
-  const retryAt = new Date(job.quotaRetryAt);
-  const retryLabel = Number.isNaN(retryAt.getTime()) ? 'the next quota window' : retryAt.toLocaleString();
+	const retryLabel = formatPhilippineDateTime(job.quotaRetryAt);
   return (
     <div className="text-sm text-amber-700 dark:text-amber-300 text-center flex items-center justify-center gap-1">
       <FiClock /> Processing is paused for the daily Gemini limit and will resume automatically at {retryLabel}.
