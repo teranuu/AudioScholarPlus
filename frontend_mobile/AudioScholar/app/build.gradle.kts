@@ -39,11 +39,13 @@ android {
             useSupportLibrary = true
         }
 
-        val baseUrl = localProperties.getProperty("BASE_URL") ?: "\"https://mastodon-balanced-randomly.ngrok-free.app/\""
-        val githubClientId = localProperties.getProperty("GITHUB_CLIENT_ID") ?: "\"Iv23liMzUNGL8JuXu40i\""
+        val baseUrl = localProperties.getProperty("BASE_URL")?.trim()?.removeSurrounding("\"")
+            ?: "https://mastodon-balanced-randomly.ngrok-free.app/"
+        val githubClientId = localProperties.getProperty("GITHUB_CLIENT_ID")?.trim()?.removeSurrounding("\"")
+            ?: "Iv23liMzUNGL8JuXu40i"
 
-        buildConfigField("String", "BASE_URL", baseUrl)
-        buildConfigField("String", "GITHUB_CLIENT_ID", githubClientId)
+        buildConfigField("String", "BASE_URL", "\"$baseUrl\"")
+        buildConfigField("String", "GITHUB_CLIENT_ID", "\"$githubClientId\"")
     }
 
     buildTypes {

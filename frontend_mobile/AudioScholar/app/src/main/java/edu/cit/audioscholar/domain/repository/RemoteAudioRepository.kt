@@ -17,12 +17,17 @@ interface RemoteAudioRepository {
         audioFile: File,
         powerpointFile: File? = null,
         title: String?,
-        description: String?
+        description: String?,
+        outputType: String
     ): Flow<UploadResult>
 
     fun getCloudRecordings(): Flow<Result<List<AudioMetadataDto>>>
 
     fun getSummary(recordingId: String): Flow<Result<SummaryResponseDto>>
+
+    suspend fun getWarningIndicators(summaryId: String): List<WarningIndicatorDto>
+
+    suspend fun recordWarningDisplay(summaryId: String, warningId: String, displayState: String)
 
     fun getRecommendations(recordingId: String): Flow<Result<List<RecommendationDto>>>
 

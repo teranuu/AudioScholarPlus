@@ -17,6 +17,7 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import edu.cit.audioscholar.model.AudioMetadata;
 import edu.cit.audioscholar.model.Flashcard;
 import edu.cit.audioscholar.model.QualityIssue;
 import edu.cit.audioscholar.model.QualityReport;
@@ -25,6 +26,30 @@ import edu.cit.audioscholar.model.SummaryKeyPoint;
 import edu.cit.audioscholar.model.WarningIndicator;
 
 class WarningIndicatorServiceTest {
+
+	@Test
+	void displayReceiptsKeepWebAndAndroidCohortsSeparate() throws Exception {
+		SummaryService summaries = mock(SummaryService.class);
+		FirebaseService firebase = mock(FirebaseService.class);
+		WarningIndicatorService service = new WarningIndicatorService(summaries, mock(QualityReportService.class),
+				firebase);
+		Summary summary = new Summary();
+		summary.setSummaryId("summary-1");
+		summary.setRecordingId("recording-1");
+		summary.setSummaryEvidenceVersion("v1");
+		AudioMetadata metadata = new AudioMetadata();
+		metadata.setStudySessionId("session-1");
+		when(summaries.getSummaryById("summary-1")).thenReturn(summary);
+		when(firebase.getAudioMetadataByRecordingId("recording-1")).thenReturn(metadata);
+		when(firebase.getData("warningIndicators", "warning-1")).thenReturn(
+				Map.of("summaryId", "summary-1", "summaryEvidenceVersion", "v1", "generationStatus", "DISPLAYABLE"));
+
+		Map<String, Object> web = service.recordDisplay("summary-1", "warning-1", "INDICATOR_VISIBLE", "WEB");
+		Map<String, Object> android = service.recordDisplay("summary-1", "warning-1", "INDICATOR_VISIBLE", "ANDROID");
+		assertNotEquals(web.get("receiptId"), android.get("receiptId"));
+		assertEquals("WEB", web.get("clientSource"));
+		assertEquals("ANDROID", android.get("clientSource"));
+	}
 
 	@Test
 	void generateWarningIndicatorsLinksReviewMaterialWarningsByCardId() throws Exception {

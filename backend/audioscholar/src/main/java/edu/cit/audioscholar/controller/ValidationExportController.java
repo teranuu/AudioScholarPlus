@@ -63,12 +63,12 @@ public class ValidationExportController {
 			@RequestParam(defaultValue = "jsonl") String format,
 			@RequestParam(defaultValue = "false") boolean includeText) throws Exception {
 		Instant start = Instant.parse(from), end = Instant.parse(to);
-		if (!start.isBefore(end) || !"WEB".equals(clientSource))
-			throw new IllegalArgumentException("Use an increasing UTC range and clientSource=WEB");
+		if (!start.isBefore(end) || !Set.of("WEB", "ANDROID").contains(clientSource))
+			throw new IllegalArgumentException("Use an increasing UTC range and clientSource=WEB or ANDROID");
 		if (!Set.of("jsonl", "zip").contains(format))
 			throw new IllegalArgumentException("format must be jsonl or zip");
 		List<Map<String, Object>> rangeEvents = firebase.getAllData("validationEvents").stream()
-				.filter(e -> "WEB".equals(e.get("clientSource"))).filter(e -> {
+				.filter(e -> clientSource.equals(e.get("clientSource"))).filter(e -> {
 					Instant at = instant(e.get("occurredAt"));
 					return at != null && !at.isBefore(start) && at.isBefore(end);
 				}).sorted(Comparator.comparing(e -> instant(e.get("occurredAt")))).toList();

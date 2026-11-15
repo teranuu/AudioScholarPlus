@@ -17,8 +17,10 @@ public class DeduplicationService {
 		List<KeyPoint> deduped = new ArrayList<>();
 		for (KeyPoint keyPoint : keyPoints) {
 			String text = keyPoint.getText();
-			String key = text == null ? "" : text.toLowerCase().replaceAll("[^a-z0-9 ]", "").trim();
-			if (!key.isBlank() && seen.add(key)) {
+			// Punctuation and numbers can change a claim's meaning. Source identity is
+			// also part of a point until provenance has been merged explicitly.
+			String key = normalize(text) + "\0" + normalize(keyPoint.getSourceLabel());
+			if (text != null && !text.isBlank() && seen.add(key)) {
 				deduped.add(keyPoint);
 			}
 		}
@@ -38,11 +40,20 @@ public class DeduplicationService {
 		}
 		for (Flashcard flashcard : flashcards) {
 			String front = flashcard != null ? flashcard.getFront() : null;
-			String key = front == null ? "" : front.toLowerCase().replaceAll("[^a-z0-9 ]", "").trim();
-			if (!key.isBlank() && seen.add(key)) {
+			String back = flashcard != null ? flashcard.getBack() : null;
+			String key = normalize(front) + "\0" + normalize(back) + "\0"
+					+ normalize(flashcard == null ? null : flashcard.getSourceFileId()) + "\0"
+					+ normalize(flashcard == null ? null : flashcard.getSourceSegmentId()) + "\0"
+					+ normalize(flashcard == null ? null : flashcard.getSourceStartTime()) + "\0"
+					+ normalize(flashcard == null ? null : flashcard.getSourceEndTime());
+			if (front != null && !front.isBlank() && back != null && !back.isBlank() && seen.add(key)) {
 				deduped.add(flashcard);
 			}
 		}
 		return deduped;
+	}
+
+	private String normalize(String value) {
+		return value == null ? "" : value.trim().replaceAll("\\s+", " ");
 	}
 }

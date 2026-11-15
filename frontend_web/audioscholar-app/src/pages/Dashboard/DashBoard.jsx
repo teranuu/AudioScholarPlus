@@ -59,6 +59,8 @@ const Dashboard = () => {
         <div className="container mx-auto px-4 py-12">
           <div className="max-w-6xl mx-auto">
             <h1 className="text-3xl font-bold text-gray-800 dark:text-gray-100 mb-10">Dashboard</h1>
+            {loadingUser && <p role="status">Loading your profile...</p>}
+            {errorUser && <p role="alert" className="text-red-600 mb-4">{errorUser}</p>}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <Link

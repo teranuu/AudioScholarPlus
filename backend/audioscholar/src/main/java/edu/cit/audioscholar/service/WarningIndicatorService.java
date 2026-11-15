@@ -154,6 +154,11 @@ public class WarningIndicatorService {
 	}
 
 	public Map<String, Object> recordDisplay(String summaryId, String warningId, String displayState) throws Exception {
+		return recordDisplay(summaryId, warningId, displayState, "WEB");
+	}
+
+	public Map<String, Object> recordDisplay(String summaryId, String warningId, String displayState,
+			String clientSource) throws Exception {
 		if (!Set.of("INDICATOR_VISIBLE", "DETAILS_EXPANDED").contains(displayState))
 			throw new IllegalArgumentException("displayState must be INDICATOR_VISIBLE or DETAILS_EXPANDED");
 		Summary summary = summaryService.getSummaryById(summaryId);
@@ -168,13 +173,14 @@ public class WarningIndicatorService {
 				|| !version.equals(summary.getSummaryEvidenceVersion()))
 			throw new IllegalArgumentException("Warning evidence is stale or not displayable.");
 		String session = studySessionId(summary.getRecordingId());
-		String receiptId = ValidationEventService.digest(session + warningId + displayState + version);
+		String receiptId = ValidationEventService.digest(session + warningId + displayState + version + clientSource);
 		java.util.Date now = new java.util.Date();
 		Map<String, Object> receipt = new java.util.LinkedHashMap<>();
 		receipt.put("receiptId", receiptId);
 		receipt.put("studySessionId", session);
 		receipt.put("warningId", warningId);
 		receipt.put("displayState", displayState);
+		receipt.put("clientSource", clientSource);
 		receipt.put("summaryEvidenceVersion", version);
 		receipt.put("summaryId", summaryId);
 		receipt.put("recordingId", summary.getRecordingId());

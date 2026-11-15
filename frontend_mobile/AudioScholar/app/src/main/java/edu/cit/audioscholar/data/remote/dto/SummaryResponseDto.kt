@@ -12,6 +12,9 @@ data class SummaryResponseDto(
     @SerializedName("keyPoints")
     val keyPoints: List<String>? = null,
 
+    @SerializedName("summaryKeyPoints")
+    val summaryKeyPoints: List<SummaryKeyPointDto>? = null,
+
     @SerializedName("topics")
     val topics: List<String>? = null,
 
@@ -20,6 +23,12 @@ data class SummaryResponseDto(
 
     @SerializedName("formattedSummaryText")
     val formattedSummaryText: String? = null,
+
+    @SerializedName("outputType")
+    val outputType: String? = null,
+
+    @SerializedName("flashcards")
+    val flashcards: List<MultiSourceFlashcardDto>? = null,
 
     @SerializedName("qualityNotice")
     val qualityNotice: String? = null,
@@ -36,6 +45,22 @@ data class SummaryResponseDto(
     @SerializedName("createdAt")
     val createdAt: String? = null
 )
+
+data class SummaryKeyPointDto(
+    val keyPointId: String? = null,
+    val text: String? = null
+)
+
+data class WarningIndicatorDto(
+    val warningId: String? = null,
+    val keyPointId: String? = null,
+    val cardId: String? = null,
+    val issueType: String? = null,
+    val severity: String? = null,
+    val recommendedAction: String? = null
+)
+
+data class WarningDisplayRequestDto(val displayState: String)
 
 data class QualityReportDto(
     @SerializedName("status")

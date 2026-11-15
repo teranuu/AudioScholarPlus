@@ -136,22 +136,76 @@ const DeferredStatusIndicator = ({ job }) => {
   );
 };
 
-const MergedSummaryContentViewer = ({ summary }) => (
-  <div className="prose prose-sm max-w-none dark:prose-invert">
-    <ReactMarkdown>{summary?.formattedSummaryText || 'Merged summary is available.'}</ReactMarkdown>
-  </div>
-);
-
 const MergedSummaryScreen = ({ job }) => {
+  const [cardIndex, setCardIndex] = useState(0);
+  const [showAnswer, setShowAnswer] = useState(false);
   if (!job || job.status !== 'COMPLETE' || !job.mergedSummary) return null;
+  const summary = job.mergedSummary;
+  const sources = job.sourceFiles || [];
+  const cards = summary.flashcards || [];
+  const reviewMaterial = job.outputType === 'REVIEW_MATERIAL' && cards.length > 0;
+  const currentIndex = Math.min(cardIndex, cards.length - 1);
+  const card = cards[currentIndex];
+  const sourceName = (sourceFileId) => {
+    const source = sources.find((item) => item.sourceFileId === sourceFileId);
+    return source ? `${source.sourceLabel}: ${source.fileName}` : 'Source unresolved';
+  };
+  const selectCard = (index) => {
+    setCardIndex(index);
+    setShowAnswer(false);
+  };
   return (
     <div className="mt-8 border-t border-gray-200 dark:border-gray-700 pt-6">
+      <p className="text-sm font-semibold text-teal-700 dark:text-teal-300 mb-3">
+        {OUTPUT_TYPES.find((type) => type.value === job.outputType)?.title || job.outputType}
+      </p>
       <div className="flex flex-wrap gap-2 mb-4">
-        {(job.sourceFiles || []).map((source) => (
+        {sources.map((source) => (
           <SourceAttributionChip key={source.sourceFileId} source={source} />
         ))}
       </div>
-      <MergedSummaryContentViewer summary={job.mergedSummary} />
+      {reviewMaterial ? (
+        <div className="rounded-xl border border-teal-200 dark:border-teal-800 p-5">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mb-3">Flashcard {currentIndex + 1} of {cards.length}</p>
+          <p className="text-lg font-semibold text-gray-900 dark:text-white">{card.front}</p>
+          <button type="button" className="mt-4 text-teal-700 dark:text-teal-300 underline" onClick={() => setShowAnswer((value) => !value)}>
+            {showAnswer ? 'Hide answer' : 'Flip to answer'}
+          </button>
+          {showAnswer && <p className="mt-3 text-gray-800 dark:text-gray-100">{card.back}</p>}
+          <p className="mt-4 text-xs text-gray-600 dark:text-gray-300">{sourceName(card.sourceFileId)}
+            {card.sourceStartTime && card.sourceEndTime ? ` · ${card.sourceStartTime}–${card.sourceEndTime}` : ' · Supporting interval unavailable'}
+          </p>
+          <div className="flex gap-3 mt-5">
+            <button type="button" disabled={currentIndex === 0} onClick={() => selectCard(currentIndex - 1)} className="px-3 py-1 rounded border disabled:opacity-40">Previous</button>
+            <button type="button" disabled={currentIndex >= cards.length - 1} onClick={() => selectCard(currentIndex + 1)} className="px-3 py-1 rounded border disabled:opacity-40">Next</button>
+          </div>
+        </div>
+      ) : (
+        <div className="prose prose-sm max-w-none dark:prose-invert">
+          <ReactMarkdown>{summary.formattedSummaryText || 'Merged summary is available.'}</ReactMarkdown>
+        </div>
+      )}
+      {Array.isArray(summary.summaryKeyPoints) && summary.summaryKeyPoints.length > 0 && (
+        <section className="mt-6" aria-label="Source-supported key points">
+          <h3 className="font-semibold text-gray-900 dark:text-white mb-3">Source-supported key points</h3>
+          <div className="space-y-3">
+            {summary.summaryKeyPoints.map((point) => {
+              const attributions = (job.sourceAttributions || []).filter((item) => item.keyPointId === point.keyPointId);
+              const labels = attributions.length > 0
+                ? attributions.map((item) => `${sourceName(item.sourceFileId)}${item.attributionStatus === 'UNRESOLVED' ? ' (evidence unresolved)' : ''}`)
+                : [sourceName(point.sourceFileId)];
+              return (
+                <div key={point.keyPointId} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
+                  <p className="text-sm text-gray-900 dark:text-white">{point.text}</p>
+                  <p className="text-xs text-gray-600 dark:text-gray-300 mt-2">{labels.join(' · ')}
+                    {point.sourceStartTime && point.sourceEndTime ? ` · ${point.sourceStartTime}–${point.sourceEndTime}` : ' · Supporting interval unavailable'}
+                  </p>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
     </div>
   );
 };
@@ -546,7 +600,7 @@ const MultiSourceUploadScreen = () => {
               </button>
             </form>
 
-            <MergedSummaryScreen job={job} />
+            <MergedSummaryScreen key={job?.jobId} job={job} />
 
             {recentJobs.length > 0 && (
               <section className="mt-8 border-t border-gray-200 dark:border-gray-700 pt-6">

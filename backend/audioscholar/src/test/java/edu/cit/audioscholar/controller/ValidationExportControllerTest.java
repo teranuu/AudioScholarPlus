@@ -19,6 +19,23 @@ import edu.cit.audioscholar.service.FirebaseService;
 
 class ValidationExportControllerTest {
 	@Test
+	void androidExportUsesAndroidWorkflowEvents() throws Exception {
+		FirebaseService firebase = mock(FirebaseService.class);
+		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
+		when(firebase.getAllData("validationEvents")).thenReturn(List.of(
+				Map.of("eventId", "android-event", "workflowId", "android-1", "clientSource", "ANDROID", "eventType",
+						"COMPLETE", "occurredAt", occurredAt, "objectiveCodes", List.of(7)),
+				Map.of("eventId", "web-event", "workflowId", "web-1", "clientSource", "WEB", "eventType", "COMPLETE",
+						"occurredAt", occurredAt, "objectiveCodes", List.of(7))));
+		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
+
+		String body = new String(controller
+				.export("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", null, "ANDROID", "jsonl", false).getBody(),
+				StandardCharsets.UTF_8);
+		assertThat(body).contains("android-event").doesNotContain("web-event");
+	}
+
+	@Test
 	void manifestAggregatesObjectiveCodesAndPublishesEveryModule2EvidenceStatus() throws Exception {
 		FirebaseService firebase = mock(FirebaseService.class);
 		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));

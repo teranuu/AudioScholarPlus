@@ -25,6 +25,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.focus.*
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.findRootCoordinates
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.*
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -56,6 +59,7 @@ import edu.cit.audioscholar.R
 import edu.cit.audioscholar.data.remote.dto.GlossaryItemDto
 import edu.cit.audioscholar.data.remote.dto.RecommendationDto
 import edu.cit.audioscholar.data.remote.dto.UserNoteDto
+import edu.cit.audioscholar.data.remote.dto.WarningIndicatorDto
 import edu.cit.audioscholar.ui.components.ModernButton
 import edu.cit.audioscholar.ui.components.ModernDialog
 import edu.cit.audioscholar.ui.components.ModernOutlinedButton
@@ -80,6 +84,41 @@ private fun openUrl(context: Context, url: String) {
     }
 }
 
+@Composable
+private fun QualityWarningIndicators(
+    warnings: List<WarningIndicatorDto>,
+    viewModel: RecordingDetailsViewModel
+) {
+    if (warnings.isEmpty()) return
+    var expanded by remember(warnings) { mutableStateOf(false) }
+    Column(
+        modifier = Modifier.fillMaxWidth().onGloballyPositioned { coordinates ->
+            val bounds = coordinates.boundsInWindow()
+            val viewport = coordinates.findRootCoordinates().boundsInWindow()
+            val visibleHeight = (minOf(bounds.bottom, viewport.bottom) - maxOf(bounds.top, viewport.top))
+                .coerceAtLeast(0f)
+            if (bounds.height > 0f && visibleHeight / bounds.height >= 0.5f) {
+                warnings.forEach { warning ->
+                    warning.warningId?.let { viewModel.recordWarningDisplay(it, "INDICATOR_VISIBLE") }
+                }
+            }
+        }
+    ) {
+        TextButton(onClick = {
+            expanded = !expanded
+            if (expanded) warnings.forEach { warning ->
+                warning.warningId?.let { viewModel.recordWarningDisplay(it, "DETAILS_EXPANDED") }
+            }
+        }) {
+            Text("Recording quality warning · ${warnings.size} ${if (warnings.size == 1) "issue" else "issues"}")
+        }
+        if (expanded) warnings.forEach { warning ->
+            Text("${warning.issueType ?: "Recording issue"} · ${warning.severity ?: "Severity unknown"}")
+            warning.recommendedAction?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        }
+    }
+}
+
 
 @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
 @OptIn(ExperimentalMaterial3Api::class)
@@ -88,10 +127,34 @@ fun RecordingDetailsScreen(
     navController: NavHostController,
     viewModel: RecordingDetailsViewModel = hiltViewModel()
 ) {
+    var showOutputTypeDialog by remember { mutableStateOf(false) }
+    var selectedOutputType by remember { mutableStateOf<String?>(null) }
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    if (showOutputTypeDialog) {
+        AlertDialog(
+            onDismissRequest = { showOutputTypeDialog = false },
+            title = { Text("Choose output type") },
+            text = {
+                Column {
+                    listOf("NOTES" to "Notes", "STUDY_MATERIAL" to "Study Material",
+                        "REVIEW_MATERIAL" to "Review Material").forEach { (value, label) ->
+                        FilterChip(selected = selectedOutputType == value,
+                            onClick = { selectedOutputType = value }, label = { Text(label) })
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    selectedOutputType?.let(viewModel::onProcessRecordingClicked)
+                    showOutputTypeDialog = false
+                }, enabled = selectedOutputType != null) { Text("Generate") }
+            },
+            dismissButton = { TextButton(onClick = { showOutputTypeDialog = false }) { Text("Cancel") } }
+        )
+    }
     val clipboardManager = LocalClipboardManager.current
 
     val powerPointLauncher = rememberLauncherForActivityResult(
@@ -337,7 +400,7 @@ fun RecordingDetailsScreen(
                             if (uiState.filePath.isNotEmpty() && uiState.remoteRecordingId == null && !uiState.isProcessing) {
                                 Spacer(modifier = Modifier.height(16.dp))
                                 ModernButton(
-                                    onClick = viewModel::onProcessRecordingClicked,
+                                    onClick = { showOutputTypeDialog = true },
                                     modifier = Modifier.fillMaxWidth(),
                                     enabled = !uiState.isProcessing
                                 ) {
@@ -839,6 +902,8 @@ fun InsightsTabContent(
     uiState: RecordingDetailsUiState,
     viewModel: RecordingDetailsViewModel
 ) {
+    var reviewCardIndex by remember(uiState.summaryId) { mutableIntStateOf(0) }
+    var reviewAnswerVisible by remember(uiState.summaryId, reviewCardIndex) { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -939,11 +1004,53 @@ fun InsightsTabContent(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         if (uiState.summaryStatus == SummaryStatus.READY) {
-                            MarkdownText(
-                                markdown = uiState.summaryText.ifBlank { stringResource(R.string.details_summary_placeholder) },
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                            uiState.qualityReport?.let { report ->
+                                Text("Recording quality", style = MaterialTheme.typography.titleSmall)
+                                when {
+                                    report.status == "ALL_CLEAR" && report.issues.isNullOrEmpty() ->
+                                        Text("Analysis complete: no recording issues found.")
+                                    report.issues.isNullOrEmpty() ->
+                                        Text("Recording quality analysis is unavailable or still processing.")
+                                    else -> report.issues.forEach { issue ->
+                                        Text("${issue.issueType ?: "Recording issue"} · ${issue.severity ?: "Severity unknown"}")
+                                        Text("${issue.startTime ?: "Time unknown"}–${issue.endTime ?: "Time unknown"}")
+                                        issue.recommendedAction?.let { Text(it) }
+                                    }
+                                }
+                                Text("These warnings concern recording conditions, not verified factual errors.",
+                                    style = MaterialTheme.typography.bodySmall)
+                                Spacer(modifier = Modifier.height(12.dp))
+                            } ?: run {
+                                Text("Recording quality analysis is unavailable for this result.",
+                                    style = MaterialTheme.typography.bodySmall)
+                                Spacer(modifier = Modifier.height(12.dp))
+                            }
+                            Text(uiState.outputType?.replace('_', ' ') ?: "Notes",
+                                style = MaterialTheme.typography.labelLarge)
+                            if (uiState.outputType == "REVIEW_MATERIAL" && uiState.flashcards.isNotEmpty()) {
+                                val card = uiState.flashcards[reviewCardIndex.coerceIn(0, uiState.flashcards.lastIndex)]
+                                Text("Flashcard ${reviewCardIndex + 1} of ${uiState.flashcards.size}")
+                                Text(card.front.orEmpty(), style = MaterialTheme.typography.titleMedium)
+                                TextButton(onClick = { reviewAnswerVisible = !reviewAnswerVisible }) {
+                                    Text(if (reviewAnswerVisible) "Hide answer" else "Flip to answer")
+                                }
+                                if (reviewAnswerVisible) Text(card.back.orEmpty())
+                                QualityWarningIndicators(
+                                    uiState.warningIndicators.filter { it.cardId != null && it.cardId == card.cardId },
+                                    viewModel
+                                )
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedButton(onClick = { reviewCardIndex-- }, enabled = reviewCardIndex > 0) { Text("Previous") }
+                                    OutlinedButton(onClick = { reviewCardIndex++ },
+                                        enabled = reviewCardIndex < uiState.flashcards.lastIndex) { Text("Next") }
+                                }
+                            } else {
+                                MarkdownText(
+                                    markdown = uiState.summaryText.ifBlank { stringResource(R.string.details_summary_placeholder) },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
                             if (uiState.summaryText.isNotEmpty() || uiState.keyPoints.isNotEmpty()) {
                                 Spacer(modifier = Modifier.height(12.dp))
                                 ModernButton(
@@ -1018,6 +1125,14 @@ fun InsightsTabContent(
                                                 style = MaterialTheme.typography.bodyMedium
                                             )
                                         }
+                                         val keyPointId = uiState.summaryKeyPoints.getOrNull(index)
+                                             ?.takeIf { it.text == point }?.keyPointId
+                                         QualityWarningIndicators(
+                                             uiState.warningIndicators.filter {
+                                                 keyPointId != null && it.keyPointId == keyPointId
+                                             },
+                                             viewModel
+                                         )
                                         if (index < uiState.keyPoints.lastIndex) {
                                             Spacer(modifier = Modifier.height(4.dp))
                                         }

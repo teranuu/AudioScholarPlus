@@ -293,6 +293,9 @@ fun LibraryScreen(
                         }
                     },
                     actions = {
+                        IconButton(onClick = { navController.navigate(Screen.MultiSource.route) }) {
+                            Icon(imageVector = Icons.Filled.MergeType, contentDescription = "Merge lecture sources")
+                        }
                         if (pagerState.currentPage == 0 && !uiState.isMultiSelectActive) {
                             IconButton(onClick = {
                                 Log.d("LibraryScreen", "Upload/Import Icon Clicked - Calling ViewModel")

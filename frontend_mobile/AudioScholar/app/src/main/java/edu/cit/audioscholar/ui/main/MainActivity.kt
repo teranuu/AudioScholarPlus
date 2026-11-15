@@ -46,6 +46,7 @@ import edu.cit.audioscholar.ui.about.AboutScreen
 import edu.cit.audioscholar.ui.auth.*
 import edu.cit.audioscholar.ui.details.RecordingDetailsScreen
 import edu.cit.audioscholar.ui.library.LibraryScreen
+import edu.cit.audioscholar.ui.multisource.MultiSourceScreen
 import edu.cit.audioscholar.ui.onboarding.OnboardingScreen
 import edu.cit.audioscholar.ui.admin.AdminAnalyticsScreen
 import edu.cit.audioscholar.ui.admin.AdminDashboardScreen
@@ -78,6 +79,7 @@ sealed class Screen(val route: String, val labelResId: Int, val icon: ImageVecto
     object Onboarding : Screen("onboarding", R.string.nav_onboarding, Icons.Filled.Info)
     object Record : Screen("record", R.string.nav_record, Icons.Filled.Mic)
     object Library : Screen("library", R.string.nav_library, Icons.AutoMirrored.Filled.List)
+    object MultiSource : Screen("multi_source", R.string.nav_library)
     object Settings : Screen("settings", R.string.nav_settings, Icons.Filled.Settings)
     object Profile : Screen("profile", R.string.nav_profile, Icons.Filled.AccountCircle)
     object EditProfile : Screen("edit_profile", R.string.nav_edit_profile, Icons.Filled.Edit)
@@ -811,6 +813,9 @@ fun MainAppScreen(
                     navController = navController,
                     drawerState = drawerState,
                 )
+            }
+            composable(Screen.MultiSource.route) {
+                MultiSourceScreen(navController = navController)
             }
             composable(Screen.Settings.route) {
                 edu.cit.audioscholar.ui.settings.SettingsScreen(

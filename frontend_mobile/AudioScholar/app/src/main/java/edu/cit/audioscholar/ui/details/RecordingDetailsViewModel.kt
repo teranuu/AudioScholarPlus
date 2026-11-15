@@ -75,6 +75,34 @@ class RecordingDetailsViewModel @Inject constructor(
 
     private val _uiState = MutableStateFlow(RecordingDetailsUiState())
     val uiState: StateFlow<RecordingDetailsUiState> = _uiState.asStateFlow()
+    private val sentWarningReceipts = mutableSetOf<String>()
+
+    fun recordWarningDisplay(warningId: String, displayState: String) {
+        val summaryId = uiState.value.summaryId ?: return
+        val receiptKey = "$summaryId:$warningId:$displayState"
+        if (!sentWarningReceipts.add(receiptKey)) return
+        viewModelScope.launch {
+            try {
+                remoteAudioRepository.recordWarningDisplay(summaryId, warningId, displayState)
+            } catch (failure: Exception) {
+                sentWarningReceipts.remove(receiptKey)
+                Log.w("DetailsViewModel", "Warning receipt could not be recorded", failure)
+            }
+        }
+    }
+
+    private fun loadWarningIndicators(summaryId: String) {
+        viewModelScope.launch {
+            try {
+                val warnings = remoteAudioRepository.getWarningIndicators(summaryId)
+                _uiState.update { state ->
+                    if (state.summaryId == summaryId) state.copy(warningIndicators = warnings) else state
+                }
+            } catch (failure: Exception) {
+                Log.w("DetailsViewModel", "Warning indicators could not be loaded", failure)
+            }
+        }
+    }
 
     private val _triggerFilePicker = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val triggerFilePicker: SharedFlow<Unit> = _triggerFilePicker.asSharedFlow()
@@ -422,7 +450,12 @@ class RecordingDetailsViewModel @Inject constructor(
                     summaryStatus = SummaryStatus.READY,
                     summaryId = summaryDto.summaryId,
                     summaryText = summaryDto.formattedSummaryText ?: "",
+                    outputType = summaryDto.outputType,
+                    flashcards = summaryDto.flashcards.orEmpty(),
+                    qualityReport = summaryDto.qualityReport,
                     keyPoints = summaryDto.keyPoints ?: emptyList(),
+                    summaryKeyPoints = summaryDto.summaryKeyPoints.orEmpty(),
+                    warningIndicators = emptyList(),
                     topics = summaryDto.topics ?: emptyList(),
                     glossaryItems = summaryDto.glossary ?: emptyList(),
                     error = null
@@ -430,6 +463,7 @@ class RecordingDetailsViewModel @Inject constructor(
             }
                     Log.d("DetailsViewModel", "[DirectFetch SUCCESS] UI State updated. New status: ${updatedState.summaryStatus}")
                     cacheSummary(summaryDto)
+                    summaryDto.summaryId?.let(::loadWarningIndicators)
                 }.onFailure { e ->
                      Log.e("DetailsViewModel", "[DirectFetch FAILURE] Summary fetch inner fail for $remoteId", e)
                     throw e
@@ -523,7 +557,11 @@ class RecordingDetailsViewModel @Inject constructor(
         }
     }
 
-    fun onProcessRecordingClicked() {
+    fun onProcessRecordingClicked(outputType: String) {
+        if (outputType !in setOf("NOTES", "STUDY_MATERIAL", "REVIEW_MATERIAL")) {
+            _uiState.update { it.copy(error = "Choose a valid output type.") }
+            return
+        }
         Log.d("DetailsViewModel", "Process Recording button clicked for: ${uiState.value.filePath}")
         val currentState = uiState.value
         val meta = currentMetadata
@@ -612,7 +650,8 @@ class RecordingDetailsViewModel @Inject constructor(
                 audioFile = fileToUpload,
                 powerpointFile = powerpointFile,
                 title = titleToUpload,
-                description = null
+                description = null,
+                outputType = outputType
             )
                 .catch { e ->
                     Log.e("DetailsViewModel", "Exception during upload flow collection", e)
