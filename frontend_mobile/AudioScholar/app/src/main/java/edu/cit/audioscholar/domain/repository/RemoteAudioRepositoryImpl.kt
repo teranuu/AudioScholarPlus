@@ -33,11 +33,27 @@ class RemoteAudioRepositoryImpl @Inject constructor(
     private val gson: Gson
 ) : RemoteAudioRepository {
 
+    override suspend fun getWarningIndicators(summaryId: String): List<WarningIndicatorDto> {
+        val response = apiService.getWarningIndicators(summaryId)
+        if (!response.isSuccessful) throw HttpException(response)
+        return response.body().orEmpty()
+    }
+
+    override suspend fun recordWarningDisplay(summaryId: String, warningId: String, displayState: String) {
+        val response = apiService.recordWarningDisplay(
+            summaryId = summaryId,
+            warningId = warningId,
+            request = WarningDisplayRequestDto(displayState)
+        )
+        if (!response.isSuccessful) throw HttpException(response)
+    }
+
     override fun uploadAudioFile(
         audioFile: File,
         powerpointFile: File?,
         title: String?,
-        description: String?
+        description: String?,
+        outputType: String
     ): Flow<UploadResult> = callbackFlow<UploadResult> {
         trySend(UploadResult.Loading)
         Log.d(TAG_REMOTE_REPO, "Starting upload for File: ${audioFile.absolutePath}. PowerPoint: ${powerpointFile?.absolutePath}, Title: '$title', Desc: '$description'")
@@ -141,7 +157,8 @@ class RemoteAudioRepositoryImpl @Inject constructor(
                 file = filePart,
                 powerpointFile = pptxPart,
                 title = titlePart,
-                description = descriptionPart
+                description = descriptionPart,
+                outputType = outputType.toRequestBody("text/plain".toMediaTypeOrNull())
             )
             Log.d(TAG_REMOTE_REPO, "API call finished. Response code: ${response.code()}")
 

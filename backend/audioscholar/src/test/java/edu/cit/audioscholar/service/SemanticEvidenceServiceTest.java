@@ -1,6 +1,7 @@
 package edu.cit.audioscholar.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyMap;
@@ -13,6 +14,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -25,6 +27,24 @@ import edu.cit.audioscholar.model.SourceFile;
 import edu.cit.audioscholar.model.Summary;
 
 class SemanticEvidenceServiceTest {
+	@Test
+	void vocabularyOverlapDoesNotProveSupportingEvidence() {
+		Map<String, Object> passage = Map.of("text", "The dose is 15 mg.");
+		assertEquals(null, SemanticEvidenceService.bestSegment("The dose is 1.5 mg.", List.of(passage)));
+		assertEquals(null, SemanticEvidenceService.bestSegment("The dose is not 15 mg.", List.of(passage)));
+		assertEquals(passage, SemanticEvidenceService.bestSegment("The dose is 15 mg.", List.of(passage)));
+		assertEquals(passage, SemanticEvidenceService.bestSegment("The dose is 15 mg", List.of(passage)));
+	}
+
+	@Test
+	void doesNotMergeTransitiveDuplicatesWithoutEveryPairConfirmed() {
+		int[] parent = {0, 1, 2};
+		Set<Long> chain = Set.of(1L, (1L << 32) | 2L);
+		assertTrue(SemanticEvidenceService.mergeIfFullyConfirmed(parent, 0, 1, chain));
+		assertFalse(SemanticEvidenceService.mergeIfFullyConfirmed(parent, 1, 2, chain));
+		assertEquals(2, parent[2]);
+		assertTrue(SemanticEvidenceService.mergeIfFullyConfirmed(parent, 1, 2, Set.of(1L, 2L, (1L << 32) | 2L)));
+	}
 
 	@Test
 	void incompleteSemanticBatchFailsInsteadOfPublishingPartialDeduplication() throws Exception {

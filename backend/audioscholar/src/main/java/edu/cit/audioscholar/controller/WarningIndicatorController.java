@@ -80,11 +80,11 @@ public class WarningIndicatorController {
 	public ResponseEntity<?> recordDisplay(@PathVariable String summaryId, @PathVariable String warningId,
 			@RequestHeader("X-AudioScholar-Client") String client, @RequestBody Map<String, String> body,
 			Authentication authentication) {
-		if (!"WEB".equals(client))
-			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "WEB client header required.");
+		if (!List.of("WEB", "ANDROID").contains(client))
+			throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "WEB or ANDROID client header required.");
 		try {
 			authorize(summaryId, authentication);
-			return ResponseEntity.ok(warnings.recordDisplay(summaryId, warningId, body.get("displayState")));
+			return ResponseEntity.ok(warnings.recordDisplay(summaryId, warningId, body.get("displayState"), client));
 		} catch (ResponseStatusException e) {
 			throw e;
 		} catch (IllegalArgumentException e) {

@@ -194,6 +194,16 @@ public class MultiSourceJobService {
 				AudioProcessingGuardrailService.GuardrailResult guardrail = null;
 				if (SourceKind.MEDIA == sourceKind) {
 					guardrail = guardrailService.validateAudioFile(tempFile, file.getOriginalFilename());
+				} else if ("pdf".equalsIgnoreCase(extensionOf(file))
+						|| "application/pdf".equalsIgnoreCase(file.getContentType())) {
+					// Reject scanned or unreadable PDFs before storing an admitted source.
+					try {
+						documentTextExtractionService.extractText(tempFile, file.getOriginalFilename(),
+								file.getContentType());
+					} catch (IOException | IllegalArgumentException e) {
+						throw new IllegalArgumentException("PDF " + file.getOriginalFilename()
+								+ " has no readable text or cannot be opened. Select a text-based PDF.", e);
+					}
 				}
 				SourceFile sourceFile = sourceFileService.createSourceFile(job.getJobId(), sourceLabel, sourceKind,
 						file, tempFile);
@@ -395,26 +405,12 @@ public class MultiSourceJobService {
 				event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial", Map.of("jobId", jobId, "outputCount",
 						summary.getKeyPoints().size(), "algorithmVersion", "semantic-clustering-batch-v2"));
 			} catch (Exception enrichmentFailure) {
-				// Quota failures are resumable job state, not degraded semantic output. Let
-				// the outer handler persist quotaRetryAt and requeue the durable job.
-				if (quotaRetryAt(enrichmentFailure) != null)
-					throw enrichmentFailure;
-				// The user-facing merged summary is already durable. Attribution is useful
-				// evidence, but it must not discard an otherwise valid result.
-				attributions = List.of();
+				// Attribution and duplicate validation are required publication stages.
+				// Retain the summary checkpoint, then use the normal retry/failure path.
 				job.setMeasurementIncomplete(true);
-				job.setSemanticEnrichmentStatus("DEGRADED");
+				job.setSemanticEnrichmentStatus("INCOMPLETE");
 				job.setSemanticEnrichmentFailure(sanitizeFailure(enrichmentFailure.getMessage()));
-				try {
-					semanticEvidence.persistFailedRun(job, stage, failureCode(enrichmentFailure),
-							job.getProcessingAttempts());
-				} catch (RuntimeException evidenceFailure) {
-					log.warn("Could not persist degraded semantic evidence jobId={}", jobId, evidenceFailure);
-				}
-				log.warn("Completing multi-source job with degraded semantic enrichment jobId={} reason={}", jobId,
-						job.getSemanticEnrichmentFailure());
-				event(job, "SEMANTIC_ENRICHMENT_DEGRADED", List.of(10, 11, 12), "initial",
-						Map.of("jobId", jobId, "failureCode", failureCode(enrichmentFailure)));
+				throw enrichmentFailure;
 			}
 			summaryService.createSummary(summary);
 			event(job, "OUTPUT_GENERATED", List.of(1), summary.getSummaryId(),
@@ -535,7 +531,13 @@ public class MultiSourceJobService {
 	}
 
 	public Map<String, Object> getJobMapForClient(String jobId) {
-		return clientView(multiSourceJobRepository.findById(jobId));
+		Map<String, Object> result = clientView(multiSourceJobRepository.findById(jobId));
+		if (result != null && ProcessingStatus.COMPLETE.name().equals(result.get("status"))) {
+			Map<String, Object> merged = mergedSummaryRepository.getByJobId(jobId);
+			if (merged != null && merged.get("sourceAttributions") instanceof List<?> attributions)
+				result.put("sourceAttributions", attributions);
+		}
+		return result;
 	}
 
 	public List<Map<String, Object>> getJobsForUser(String userId) {

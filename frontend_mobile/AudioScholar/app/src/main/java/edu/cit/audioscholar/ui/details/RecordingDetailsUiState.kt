@@ -5,6 +5,10 @@ import androidx.compose.ui.text.input.TextFieldValue
 import edu.cit.audioscholar.data.remote.dto.GlossaryItemDto
 import edu.cit.audioscholar.data.remote.dto.RecommendationDto
 import edu.cit.audioscholar.data.remote.dto.UserNoteDto
+import edu.cit.audioscholar.data.remote.dto.QualityReportDto
+import edu.cit.audioscholar.data.remote.dto.MultiSourceFlashcardDto
+import edu.cit.audioscholar.data.remote.dto.SummaryKeyPointDto
+import edu.cit.audioscholar.data.remote.dto.WarningIndicatorDto
 
 enum class SummaryStatus { IDLE, PROCESSING, READY, FAILED }
 enum class RecommendationsStatus { IDLE, LOADING, READY, FAILED }
@@ -41,7 +45,12 @@ data class RecordingDetailsUiState(
     val summaryStatus: SummaryStatus = SummaryStatus.IDLE,
     val summaryId: String? = null,
     val summaryText: String = "",
+    val outputType: String? = null,
+    val flashcards: List<MultiSourceFlashcardDto> = emptyList(),
+    val qualityReport: QualityReportDto? = null,
     val keyPoints: List<String> = emptyList(),
+    val summaryKeyPoints: List<SummaryKeyPointDto> = emptyList(),
+    val warningIndicators: List<WarningIndicatorDto> = emptyList(),
     val topics: List<String> = emptyList(),
     val glossaryItems: List<GlossaryItemDto> = emptyList(),
     val showSummaryEditDialog: Boolean = false,

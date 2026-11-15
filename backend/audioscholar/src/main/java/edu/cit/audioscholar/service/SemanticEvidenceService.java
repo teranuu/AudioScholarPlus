@@ -26,15 +26,15 @@ import edu.cit.audioscholar.model.SummaryKeyPoint;
 
 @Service
 public class SemanticEvidenceService {
-	private static final int MAX_KEY_POINTS_PER_SOURCE = 12;
 	private static final int MAX_SEMANTIC_CANDIDATES = 200;
 	private static final int PAIR_BATCH_SIZE = 100;
 	private static final Map<String, Object> SOURCE_KEY_POINT_SCHEMA = Map.of("type", "OBJECT", "properties",
-			Map.of("sources", Map.of("type", "ARRAY", "items", Map.of("type", "OBJECT", "properties",
-					Map.of("sourceFileId", Map.of("type", "STRING"), "keyPoints",
-							Map.of("type", "ARRAY", "items", Map.of("type", "STRING"), "maxItems",
-									MAX_KEY_POINTS_PER_SOURCE)),
-					"required", List.of("sourceFileId", "keyPoints")))),
+			Map.of("sources",
+					Map.of("type", "ARRAY", "items",
+							Map.of("type", "OBJECT", "properties",
+									Map.of("sourceFileId", Map.of("type", "STRING"), "keyPoints",
+											Map.of("type", "ARRAY", "items", Map.of("type", "STRING"))),
+									"required", List.of("sourceFileId", "keyPoints")))),
 			"required", List.of("sources"));
 	private static final Map<String, Object> PAIR_SCHEMA = Map
 			.of("type", "OBJECT", "properties",
@@ -162,10 +162,17 @@ public class SemanticEvidenceService {
 					"multiSourceJobs");
 		}
 
-		for (Decision decision : decisions) {
-			if (decision.duplicate)
-				parent[find(parent, decision.rightIndex)] = find(parent, decision.leftIndex);
-			if (decision.duplicate && links.containsKey(decision.a.id) && links.containsKey(decision.b.id))
+		Set<Long> confirmedPairs = new HashSet<>();
+		decisions.stream().filter(Decision::duplicate)
+				.forEach(d -> confirmedPairs.add(pairKey(d.leftIndex, d.rightIndex)));
+		Set<String> acceptedDecisionIds = new HashSet<>();
+		List<Decision> ranked = decisions.stream().filter(Decision::duplicate)
+				.sorted(Comparator.comparingDouble(Decision::confidence).reversed()).toList();
+		for (Decision decision : ranked) {
+			if (!mergeIfFullyConfirmed(parent, decision.leftIndex, decision.rightIndex, confirmedPairs))
+				continue;
+			acceptedDecisionIds.add(decisionId(job, decision));
+			if (links.containsKey(decision.a.id) && links.containsKey(decision.b.id))
 				anchors.computeIfAbsent(decision.a.sourceId + ":" + decision.b.sourceId, ignored -> new ArrayList<>())
 						.add(new Anchor(links.get(decision.a.id), links.get(decision.b.id), decision.confidence));
 		}
@@ -207,7 +214,8 @@ public class SemanticEvidenceService {
 					Map.of("lineageId", lineageId, "jobId", job.getJobId(), "mergedKeyPointId", representative.id,
 							"sourceKeyPointIds", cluster.stream().map(Point::id).toList(), "semanticDecisionIds",
 							decisions.stream().filter(Decision::duplicate)
-									.filter(d -> clusterPointIds.contains(d.a.id) && clusterPointIds.contains(d.b.id))
+									.filter(d -> acceptedDecisionIds.contains(decisionId(job, d))
+											&& clusterPointIds.contains(d.a.id) && clusterPointIds.contains(d.b.id))
 									.map(d -> decisionId(job, d)).toList(),
 							"algorithmVersion", "semantic-clustering-v1", "applicationVersion", applicationVersion));
 			for (Point contributor : contributingSources.values()) {
@@ -232,7 +240,8 @@ public class SemanticEvidenceService {
 			}
 		}
 		for (Decision decision : decisions)
-			persistDecision(job, decision, canonicalPointIds.get(find(parent, decision.leftIndex)));
+			persistDecision(job, decision, canonicalPointIds.get(find(parent, decision.leftIndex)),
+					acceptedDecisionIds.contains(decisionId(job, decision)));
 		summary.setSummaryKeyPoints(structured);
 		summary.setKeyPoints(structured.stream().map(SummaryKeyPoint::getText).toList());
 		for (Flashcard card : summary.getFlashcards()) {
@@ -256,7 +265,7 @@ public class SemanticEvidenceService {
 		return attributions;
 	}
 
-	private void persistDecision(MultiSourceJob job, Decision d, String clusterId) {
+	private void persistDecision(MultiSourceJob job, Decision d, String clusterId, boolean merged) {
 		String id = decisionId(job, d);
 		Map<String, Object> row = new LinkedHashMap<>();
 		row.put("decisionId", id);
@@ -267,12 +276,12 @@ public class SemanticEvidenceService {
 		row.put("rightSourceFileId", d.b.sourceId);
 		row.put("confidence", d.confidence);
 		row.put("duplicate", d.duplicate);
-		row.put("decision", d.duplicate ? "DUPLICATE" : "DISTINCT");
+		row.put("decision", d.duplicate ? (merged ? "DUPLICATE" : "DUPLICATE_UNMERGED") : "DISTINCT");
 		row.put("threshold", threshold);
 		row.put("decisionMethod", d.method);
 		row.put("modelVersion", semanticModelVersion);
 		row.put("promptVersion", "semantic-pair-batch-v2");
-		row.put("clusterId", d.duplicate ? clusterId : null);
+		row.put("clusterId", merged ? clusterId : null);
 		row.put("canonicalKeyPointId", clusterId);
 		row.put("algorithmVersion", "semantic-clustering-batch-v2");
 		row.put("applicationVersion", applicationVersion);
@@ -388,7 +397,7 @@ public class SemanticEvidenceService {
 			List<String> keyPoints = new ArrayList<>();
 			for (JsonNode point : source.path("keyPoints")) {
 				String text = point.asText("").trim();
-				if (!text.isBlank() && keyPoints.size() < MAX_KEY_POINTS_PER_SOURCE)
+				if (!text.isBlank())
 					keyPoints.add(text);
 			}
 			result.put(sourceFileId, keyPoints);
@@ -511,22 +520,21 @@ public class SemanticEvidenceService {
 		return ValidationEventService.digest(a.id + ":" + b.id);
 	}
 
-	private Map<String, Object> bestSegment(String text, List<Map<String, Object>> segments) {
-		Set<String> tokens = tokens(text);
-		double best = 0;
-		Map<String, Object> winner = null;
-		for (Map<String, Object> s : segments) {
-			Set<String> other = tokens(String.valueOf(s.get("text")));
-			Set<String> common = new HashSet<>(tokens);
-			common.retainAll(other);
-			double score = tokens.isEmpty() ? 0 : (double) common.size() / tokens.size();
-			if (score > best) {
-				best = score;
-				winner = s;
-			}
-		}
-		return best > 0 ? winner : null;
+	static Map<String, Object> bestSegment(String text, List<Map<String, Object>> segments) {
+		// Shared vocabulary is a search hint, not evidence for a claim. Only use
+		// an exact passage here; paraphrases remain unresolved until validated.
+		if (text == null || text.isBlank())
+			return null;
+		String claim = evidenceText(text);
+		return segments.stream()
+				.filter(segment -> segment.get("text") instanceof String passage && claim.equals(evidenceText(passage)))
+				.findFirst().orElse(null);
 	}
+
+	private static String evidenceText(String text) {
+		return normalize(text).replaceFirst("[.!?]+$", "");
+	}
+
 	private Set<String> tokens(String text) {
 		Set<String> s = new HashSet<>();
 		for (String token : text.toLowerCase().split("[^a-z0-9]+"))
@@ -556,8 +564,26 @@ public class SemanticEvidenceService {
 			p[i] = find(p, p[i]);
 		return p[i];
 	}
+	private static long pairKey(int a, int b) {
+		return ((long) Math.min(a, b) << 32) | Math.max(a, b);
+	}
+	static boolean mergeIfFullyConfirmed(int[] parent, int left, int right, Set<Long> confirmedPairs) {
+		int leftRoot = find(parent, left);
+		int rightRoot = find(parent, right);
+		if (leftRoot == rightRoot)
+			return true;
+		for (int i = 0; i < parent.length; i++) {
+			if (find(parent, i) != leftRoot)
+				continue;
+			for (int j = 0; j < parent.length; j++)
+				if (find(parent, j) == rightRoot && !confirmedPairs.contains(pairKey(i, j)))
+					return false;
+		}
+		parent[rightRoot] = leftRoot;
+		return true;
+	}
 	private static String normalize(String s) {
-		return s.toLowerCase().replaceAll("[^a-z0-9]", "");
+		return s.trim().replaceAll("\\s+", " ");
 	}
 	private static long ms(Map<String, Object> m, String k) {
 		return ((Number) m.get(k)).longValue();

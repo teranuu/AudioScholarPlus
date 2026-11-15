@@ -11,12 +11,29 @@ import retrofit2.http.*
 interface ApiService {
 
     @Multipart
+    @POST("/api/audio/multi-source")
+    suspend fun createMultiSourceJob(
+        @Part files: List<MultipartBody.Part>,
+        @Part("title") title: RequestBody,
+        @Part("outputType") outputType: RequestBody,
+        @Header("X-AudioScholar-Client") client: String = "ANDROID",
+        @Header("X-Idempotency-Key") idempotencyKey: String
+    ): Response<MultiSourceJobDto>
+
+    @GET("/api/audio/multi-source/{jobId}")
+    suspend fun getMultiSourceJob(@Path("jobId") jobId: String): Response<MultiSourceJobDto>
+
+    @GET("/api/audio/multi-source")
+    suspend fun listMultiSourceJobs(): Response<List<MultiSourceJobDto>>
+
+    @Multipart
     @POST("/api/audio/upload")
     suspend fun uploadAudio(
         @Part file: MultipartBody.Part,
         @Part powerpointFile: MultipartBody.Part?,
         @Part("title") title: RequestBody?,
-        @Part("description") description: RequestBody?
+        @Part("description") description: RequestBody?,
+        @Part("outputType") outputType: RequestBody
     ): Response<AudioMetadataDto>
 
     @Headers("Cache-Control: no-cache")
@@ -79,6 +96,17 @@ interface ApiService {
     suspend fun getRecordingSummary(
         @Path("recordingId") recordingId: String
     ): Response<SummaryResponseDto>
+
+    @GET("/api/summaries/{summaryId}/warning-indicators")
+    suspend fun getWarningIndicators(@Path("summaryId") summaryId: String): Response<List<WarningIndicatorDto>>
+
+    @POST("/api/summaries/{summaryId}/warning-indicators/{warningId}/display")
+    suspend fun recordWarningDisplay(
+        @Path("summaryId") summaryId: String,
+        @Path("warningId") warningId: String,
+        @Header("X-AudioScholar-Client") client: String = "ANDROID",
+        @Body request: WarningDisplayRequestDto
+    ): Response<Unit>
 
     @GET("/api/v1/recommendations/recording/{recordingId}")
     suspend fun getRecordingRecommendations(

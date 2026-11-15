@@ -51,6 +51,24 @@ class MultiSourceJobServiceTest {
 	}
 
 	@Test
+	void rejectsUnreadablePdfBeforeUploadingAnySource() throws Exception {
+		SourceFileService sourceFiles = mock(SourceFileService.class);
+		DocumentTextExtractionService extraction = mock(DocumentTextExtractionService.class);
+		when(extraction.extractText(any(Path.class), eq("slides.pdf"), eq("application/pdf")))
+				.thenThrow(new IllegalArgumentException("No readable text"));
+		MultiSourceJobService service = submissionService(governor(), sourceFiles, extraction);
+
+		IllegalArgumentException failure = assertThrows(IllegalArgumentException.class,
+				() -> service.createAndProcess("user-1", List.of(),
+						List.of(document("slides.pdf"), document("other.pdf")), "Title", null, "NOTES"));
+
+		assertTrue(failure.getMessage().contains("slides.pdf"));
+		assertTrue(failure.getMessage().contains("text-based PDF"));
+		verify(sourceFiles, never()).createSourceFile(anyString(), anyString(), any(SourceKind.class),
+				any(MultipartFile.class), any(Path.class));
+	}
+
+	@Test
 	void acceptsAndQueuesUploadEvenWhenLegacyDailyAdmissionWouldRejectIt() throws Exception {
 		GeminiRequestGovernor governor = governor();
 		doThrow(new GeminiBudgetExceededException("legacy global cap exhausted", Instant.now().plusSeconds(3600)))
@@ -124,7 +142,7 @@ class MultiSourceJobServiceTest {
 	}
 
 	@Test
-	void parseMergedSummaryDeduplicatesReviewMaterialFlashcards() throws Exception {
+	void parseMergedSummaryPreservesFlashcardsWithDifferentAnswers() throws Exception {
 		MultiSourceJobService service = serviceWithDeduplication();
 		MultiSourceJob job = new MultiSourceJob();
 		job.setJobId("job-1");
@@ -139,6 +157,7 @@ class MultiSourceJobServiceTest {
 				  "flashcards": [
 				    {"front": "What is polymorphism?", "back": "Many forms."},
 				    {"front": "What is polymorphism", "back": "Duplicate wording."},
+				    {"front": "What is inheritance?", "back": "Sharing behavior."},
 				    {"front": "What is inheritance?", "back": "Sharing behavior."}
 				  ]
 				}
@@ -149,9 +168,10 @@ class MultiSourceJobServiceTest {
 		parser.setAccessible(true);
 		Summary summary = (Summary) parser.invoke(service, job, summaryJson);
 
-		assertEquals(2, summary.getFlashcards().size());
+		assertEquals(3, summary.getFlashcards().size());
 		assertEquals("What is polymorphism?", summary.getFlashcards().get(0).getFront());
-		assertEquals("What is inheritance?", summary.getFlashcards().get(1).getFront());
+		assertEquals("What is polymorphism", summary.getFlashcards().get(1).getFront());
+		assertEquals("What is inheritance?", summary.getFlashcards().get(2).getFront());
 	}
 
 	@Test
@@ -206,17 +226,13 @@ class MultiSourceJobServiceTest {
 	}
 
 	@Test
-	void semanticEnrichmentFailureCompletesWithDegradedResult() throws Exception {
+	void semanticEnrichmentFailureRetriesInsteadOfPublishingComplete() throws Exception {
 		ProcessingHarness harness = processingHarness(true);
 		when(harness.semantic.evaluate(any(), any())).thenThrow(new IllegalStateException("provider unavailable"));
-
 		harness.service.processQueuedJob("job-1");
-
-		verify(harness.repository).transitionTerminal(
-				argThat(job -> "COMPLETE".equals(job.getStatus())
-						&& "DEGRADED".equals(job.getSemanticEnrichmentStatus()) && job.isMeasurementIncomplete()),
-				eq("JOB_COMPLETED"), eq("initial"), anyList(), anyMap());
-		verify(harness.repository, never()).transitionTerminal(any(), eq("JOB_FAILED"), anyString(), anyList(),
+		verify(harness.publisher).publishToProcessingExchange(eq(RabbitMQConfig.MULTI_SOURCE_RETRY_ROUTING_KEY),
+				any(MultiSourceJobMessage.class));
+		verify(harness.repository, never()).transitionTerminal(any(), eq("JOB_COMPLETED"), anyString(), anyList(),
 				anyMap());
 	}
 
@@ -391,7 +407,14 @@ class MultiSourceJobServiceTest {
 	}
 
 	private MultiSourceJobService submissionService(GeminiRequestGovernor governor) throws Exception {
+		DocumentTextExtractionService extraction = mock(DocumentTextExtractionService.class);
+		when(extraction.extractText(any(Path.class), anyString(), anyString())).thenReturn("Readable document");
 		SourceFileService sourceFiles = mock(SourceFileService.class);
+		return submissionService(governor, sourceFiles, extraction);
+	}
+
+	private MultiSourceJobService submissionService(GeminiRequestGovernor governor, SourceFileService sourceFiles,
+			DocumentTextExtractionService extraction) throws Exception {
 		when(sourceFiles.createSourceFile(anyString(), anyString(), any(SourceKind.class), any(MultipartFile.class),
 				any(Path.class))).thenAnswer(invocation -> {
 					SourceFile source = new SourceFile();
@@ -406,9 +429,9 @@ class MultiSourceJobServiceTest {
 				.thenReturn(new AudioProcessingGuardrailService.GuardrailResult(1, 32, "fingerprint", "audio"));
 		return new MultiSourceJobService(mock(GeminiService.class), mock(QualityReportService.class),
 				mock(SummaryService.class), mock(DeduplicationService.class), mock(SourceAttributionService.class),
-				sourceFiles, mock(SourceTranscriptService.class), mock(DocumentTextExtractionService.class),
-				mock(MergedSummaryRepository.class), mock(MultiSourceJobRepository.class), guardrails,
-				tempDir.toString(), "500MB", mock(ConfirmedRabbitPublisher.class), mock(ValidationEventService.class),
+				sourceFiles, mock(SourceTranscriptService.class), extraction, mock(MergedSummaryRepository.class),
+				mock(MultiSourceJobRepository.class), guardrails, tempDir.toString(), "500MB",
+				mock(ConfirmedRabbitPublisher.class), mock(ValidationEventService.class),
 				mock(TimedTranscriptSegmentService.class), mock(SemanticEvidenceService.class), governor,
 				java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
 	}
