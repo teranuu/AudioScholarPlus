@@ -136,12 +136,16 @@ public class SemanticEvidenceService {
 				}
 			}
 		if (semanticCandidates.size() > MAX_SEMANTIC_CANDIDATES) {
+			int candidateCount = semanticCandidates.size();
 			semanticCandidates.sort(Comparator.comparingDouble(this::lexicalOverlap).reversed());
-			for (PairCandidate skipped : semanticCandidates.subList(MAX_SEMANTIC_CANDIDATES, semanticCandidates.size()))
-				decisions.add(new Decision(skipped.leftIndex, skipped.rightIndex, skipped.a, skipped.b, 0, false,
-						"CANDIDATE_CAP_FALLBACK"));
+			// Unexamined pairs are unknown, not evidence that the claims differ.
 			semanticCandidates = new ArrayList<>(semanticCandidates.subList(0, MAX_SEMANTIC_CANDIDATES));
 			job.setMeasurementIncomplete(true);
+			events.emit(job.getJobId(), "MULTI_SOURCE", job.getClientSource(), "SEMANTIC_CANDIDATES_CAPPED",
+					List.of(11), "initial",
+					Map.of("jobId", job.getJobId(), "candidatePairCount", candidateCount, "classifiedPairCount",
+							MAX_SEMANTIC_CANDIDATES, "unclassifiedPairCount", candidateCount - MAX_SEMANTIC_CANDIDATES),
+					"multiSourceJobs");
 		}
 
 		Map<String, PairClassification> classifications = Map.of();
@@ -157,7 +161,8 @@ public class SemanticEvidenceService {
 			events.emit(job.getJobId(), "MULTI_SOURCE", job.getClientSource(), "SEMANTIC_BATCH_CLASSIFIED", List.of(11),
 					"initial",
 					Map.of("jobId", job.getJobId(), "candidatePairCount", semanticCandidates.size(),
-							"resolvedPairCount", classifications.size(), "geminiRequestCount", 1, "promptVersion",
+							"resolvedPairCount", classifications.size(), "geminiRequestCount",
+							(semanticCandidates.size() + PAIR_BATCH_SIZE - 1) / PAIR_BATCH_SIZE, "promptVersion",
 							"semantic-pair-batch-v2"),
 					"multiSourceJobs");
 		}

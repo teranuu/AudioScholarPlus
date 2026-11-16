@@ -303,6 +303,24 @@ class ValidationEvaluatorTest {
 		assertThat(metrics.path("11").path("status").asText()).isEqualTo("PASS");
 	}
 
+	@Test
+	void t13RequiresTheCompleteReviewerConfirmedSourceSet() throws Exception {
+		String export = manifest("source-sets")
+				+ row("sourceAttributions",
+						"{\"keyPointId\":\"k1\",\"sourceFileId\":\"a\",\"attributionStatus\":\"MULTI_SOURCE\"}")
+				+ row("sourceAttributions",
+						"{\"keyPointId\":\"k1\",\"sourceFileId\":\"b\",\"attributionStatus\":\"MULTI_SOURCE\"}")
+				+ row("sourceAttributions",
+						"{\"keyPointId\":\"k2\",\"sourceFileId\":\"a\",\"attributionStatus\":\"UNRESOLVED\"}");
+		String truth = "{\"schemaVersion\":2,\"exportManifestHash\":\"source-sets\","
+				+ "\"sourceLabels\":[{\"keyPointId\":\"k1\",\"sourceFileIds\":[\"a\",\"b\"]},"
+				+ "{\"keyPointId\":\"k2\",\"sourceFileIds\":[\"a\"]}]}";
+		JsonNode metrics = evaluate(export, truth);
+		assertThat(metrics.path("13").path("numerator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("13").path("denominator").asInt()).isEqualTo(2);
+		assertThat(metrics.path("13").path("status").asText()).isNotEqualTo("PASS");
+	}
+
 	private String manifest(String hash) {
 		return row("manifest", "{\"exportBindingHash\":\"" + hash + "\"}");
 	}

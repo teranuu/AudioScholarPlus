@@ -303,6 +303,7 @@ public class MultiSourceJob {
 		map.put("mergeStartedAt", mergeStartedAt);
 		map.put("mergedSummaryAvailableAt", mergedSummaryAvailableAt);
 		map.put("mergeLatencyMs", mergeLatencyMs);
+		map.put("deliveryWithinTarget", mergeLatencyMs == null ? null : mergeLatencyMs < 120_000);
 		map.put("measurementIncomplete", measurementIncomplete);
 		map.put("clientSource", clientSource);
 		map.put("processingAttempts", processingAttempts);

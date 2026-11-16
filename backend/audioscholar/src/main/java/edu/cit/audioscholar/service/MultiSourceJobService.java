@@ -370,7 +370,8 @@ public class MultiSourceJobService {
 						Map.of("jobId", jobId, "sourceFileId", source.getSourceFileId()));
 			}
 			job.setSourceFiles(sources);
-			job.setFinalTranscriptionCompletedAt(new Date());
+			if (job.getFinalTranscriptionCompletedAt() == null)
+				job.setFinalTranscriptionCompletedAt(new Date());
 			event(job, "ALL_TRANSCRIPTIONS_COMPLETED", List.of(9, 12), "initial",
 					Map.of("jobId", jobId, "sourceCount", sources.size()));
 			job.setStatus(ProcessingStatus.SUMMARIZING.name());
@@ -400,7 +401,7 @@ public class MultiSourceJobService {
 			List<SourceAttribution> attributions;
 			try {
 				attributions = semanticEvidence.evaluate(job, summary);
-				job.setSemanticEnrichmentStatus("COMPLETE");
+				job.setSemanticEnrichmentStatus(job.isMeasurementIncomplete() ? "INCOMPLETE" : "COMPLETE");
 				job.setSemanticEnrichmentFailure(null);
 				event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial", Map.of("jobId", jobId, "outputCount",
 						summary.getKeyPoints().size(), "algorithmVersion", "semantic-clustering-batch-v2"));

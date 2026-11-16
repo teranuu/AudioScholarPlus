@@ -112,6 +112,11 @@ fun MultiSourceScreen(navController: NavHostController, viewModel: MultiSourceVi
                         if (job.status == "FAILED") Text(job.failureReason ?: "Processing failed. Select the sources again to retry.",
                             color = MaterialTheme.colorScheme.error)
                         if (job.status == "COMPLETE" && job.mergedSummary != null) {
+                            if (job.measurementIncomplete == true || job.semanticEnrichmentStatus == "INCOMPLETE")
+                                Text("Source attribution is incomplete; review linked sources before relying on this result.",
+                                    color = MaterialTheme.colorScheme.error)
+                            if (job.deliveryWithinTarget == false)
+                                Text("Delivery took ${(job.mergeLatencyMs ?: 0L) / 1000} seconds, exceeding the 120-second target.")
                             MergedContent(job)
                         } else if (job.mergedSummary != null) {
                             Text("Incomplete result: ${job.failureStage ?: "required processing"} remains unfinished.")

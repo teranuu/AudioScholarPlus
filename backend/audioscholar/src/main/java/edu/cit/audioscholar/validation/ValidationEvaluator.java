@@ -469,26 +469,47 @@ public final class ValidationEvaluator {
 				missing + incomplete.size(), missing + incomplete.size(), Map.of());
 	}
 	private void attribution(Set<String> incomplete) {
-		Map<String, String> expected = new HashMap<>();
+		Map<String, Set<String>> expected = new LinkedHashMap<>();
 		boolean malformed = false;
 		for (JsonNode r : array(truth.path("sourceLabels"))) {
-			if (r.path("keyPointId").asText().isBlank() || r.path("sourceLabel").asText().isBlank())
+			String keyPointId = r.path("keyPointId").asText();
+			Set<String> sources = new HashSet<>();
+			JsonNode ids = r.path("sourceFileIds");
+			if (ids.isArray()) {
+				for (JsonNode id : ids)
+					if (!id.isTextual() || id.asText().isBlank() || !sources.add(id.asText()))
+						malformed = true;
+			} else if (!r.path("sourceLabel").asText().isBlank())
+				sources.add("label:" + r.path("sourceLabel").asText());
+			if (keyPointId.isBlank() || sources.isEmpty() || expected.putIfAbsent(keyPointId, sources) != null)
 				malformed = true;
-			expected.put(r.path("keyPointId").asText(), r.path("sourceLabel").asText());
 		}
-		long found = 0, correct = 0;
+		Map<String, Set<String>> found = new HashMap<>();
+		Set<String> unresolved = new HashSet<>();
 		for (JsonNode r : data("sourceAttributions")) {
-			String label = expected.remove(r.path("keyPointId").asText());
-			if (label == null)
+			String keyPointId = r.path("keyPointId").asText();
+			if (!expected.containsKey(keyPointId))
 				continue;
-			found++;
-			if ("SINGLE_SOURCE".equals(r.path("attributionType").asText())
-					&& label.equals(r.path("sourceLabel").asText()))
-				correct++;
+			if ("UNRESOLVED".equals(r.path("attributionStatus").asText())) {
+				unresolved.add(keyPointId);
+				continue;
+			}
+			String source = expected.get(keyPointId).stream().anyMatch(s -> s.startsWith("label:"))
+					? "label:" + r.path("sourceLabel").asText()
+					: r.path("sourceFileId").asText();
+			if (source.isBlank() || !found.computeIfAbsent(keyPointId, ignored -> new HashSet<>()).add(source))
+				malformed = true;
 		}
-		put(13, correct, found + expected.size(), 1, malformed || !expected.isEmpty() || !incomplete.isEmpty(),
-				expected.size() + incomplete.size(), expected.size() + incomplete.size(),
-				Map.of("missingAttributions", expected.keySet()));
+		long correct = expected.entrySet().stream().filter(
+				entry -> !unresolved.contains(entry.getKey()) && entry.getValue().equals(found.get(entry.getKey())))
+				.count();
+		Set<String> missing = new HashSet<>(expected.keySet());
+		missing.removeAll(found.keySet());
+		put(13, correct, expected.size(), 1,
+				malformed || !missing.isEmpty() || !unresolved.isEmpty() || !incomplete.isEmpty(),
+				missing.size() + unresolved.size() + incomplete.size(),
+				missing.size() + unresolved.size() + incomplete.size(),
+				Map.of("missingAttributions", missing, "unresolvedAttributions", unresolved));
 	}
 	private void alignment(Set<String> incomplete) {
 		Map<String, JsonNode> expected = new HashMap<>();
