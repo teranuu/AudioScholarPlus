@@ -42,7 +42,15 @@ data class MultiSourceKeyPointDto(
     val text: String? = null,
     val sourceFileId: String? = null,
     val sourceStartTime: String? = null,
-    val sourceEndTime: String? = null
+    val sourceEndTime: String? = null,
+    val claimIds: List<String>? = null,
+    val claimEvidence: List<MultiSourceClaimEvidenceDto>? = null
+)
+
+data class MultiSourceClaimEvidenceDto(
+    val sourceFileId: String? = null,
+    val segmentId: String? = null,
+    val quote: String? = null
 )
 
 data class MultiSourceFlashcardDto(

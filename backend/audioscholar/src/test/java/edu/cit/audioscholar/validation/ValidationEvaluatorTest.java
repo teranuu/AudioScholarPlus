@@ -304,6 +304,20 @@ class ValidationEvaluatorTest {
 	}
 
 	@Test
+	void t11ReviewsPredictedGroundedGroupPairs() throws Exception {
+		String export = manifest("grounded-pairs")
+				+ row("sourceKeyPoints", "{\"keyPointId\":\"a1\",\"sourceFileId\":\"a\"}")
+				+ row("sourceKeyPoints", "{\"keyPointId\":\"b1\",\"sourceFileId\":\"b\"}")
+				+ row("mergedKeyPointLineage",
+						"{\"algorithmVersion\":\"grounded-merge-v1\",\"sourceKeyPointIds\":[\"a1\",\"b1\"]}");
+		String truth = "{\"schemaVersion\":2,\"exportManifestHash\":\"grounded-pairs\","
+				+ "\"duplicatePairs\":[{\"leftKeyPointId\":\"a1\",\"rightKeyPointId\":\"b1\",\"duplicate\":true}]}";
+		JsonNode metrics = evaluate(export, truth);
+		assertThat(metrics.path("11").path("numerator").asInt()).isEqualTo(1);
+		assertThat(metrics.path("11").path("denominator").asInt()).isEqualTo(1);
+	}
+
+	@Test
 	void t13RequiresTheCompleteReviewerConfirmedSourceSet() throws Exception {
 		String export = manifest("source-sets")
 				+ row("sourceAttributions",

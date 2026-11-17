@@ -28,6 +28,55 @@ import edu.cit.audioscholar.model.Summary;
 
 class SemanticEvidenceServiceTest {
 	@Test
+	void groundedMergeRequiresEveryClaimAndPreservesBothContributors() throws Exception {
+		GeminiService gemini = mock(GeminiService.class);
+		FirebaseService firebase = mock(FirebaseService.class);
+		SemanticEvidenceService service = new SemanticEvidenceService(gemini, firebase, new ObjectMapper(),
+				mock(ValidationEventService.class), .80, "app", "summary", "semantic");
+		MultiSourceJob job = new MultiSourceJob();
+		job.setJobId("grounded-1");
+		job.setOutputType("NOTES");
+		job.setSourceFiles(List.of(source("a", "A"), source("b", "B")));
+		when(firebase.queryCollection("transcriptSegments", "sourceFileId", "a")).thenReturn(List.of(Map.of("segmentId",
+				"sa", "sourceFileId", "a", "text", "Water boils at 100 C.", "startMs", 0L, "endMs", 1000L)));
+		when(firebase.queryCollection("transcriptSegments", "sourceFileId", "b")).thenReturn(List.of(Map.of("segmentId",
+				"sb", "sourceFileId", "b", "text", "Water boils at 100 C.", "startMs", 0L, "endMs", 1000L)));
+		when(gemini.callSimpleTextAPI(anyString(), eq("grounded-1"),
+				eq("multi-source.grounded-claims-0.generateContent"))).thenReturn(
+						"{\"claims\":[{\"sourceFileId\":\"a\",\"segmentId\":\"sa\",\"quote\":\"Water boils at 100 C.\",\"text\":\"Boiling point is 100 C\"},{\"sourceFileId\":\"b\",\"segmentId\":\"sb\",\"quote\":\"Water boils at 100 C.\",\"text\":\"Boiling point is 100 C\"}]}");
+		String a = ValidationEventService
+				.digest("grounded-1:claim-v1:a:sa:Water boils at 100 C.:Boiling point is 100 C");
+		String b = ValidationEventService
+				.digest("grounded-1:claim-v1:b:sb:Water boils at 100 C.:Boiling point is 100 C");
+		when(gemini.callSimpleTextAPI(anyString(), eq("grounded-1"),
+				eq("multi-source.grounded-groups.generateContent")))
+				.thenReturn("{\"summaryText\":\"Boiling point\",\"groups\":[{\"claimIds\":[\"" + a + "\",\"" + b
+						+ "\"],\"text\":\"Water boils at 100 C\"}]}");
+		SemanticEvidenceService.GroundedResult result = service.evaluateGrounded(job);
+		assertEquals(1, result.summary().getSummaryKeyPoints().size());
+		assertEquals(2, result.attributions().size());
+		assertTrue(result.attributions().stream().allMatch(x -> "MULTI_SOURCE".equals(x.getAttributionStatus())));
+		verify(firebase).createEvidenceBatch(eq("multiSourceGroupCoverage"), anyMap());
+	}
+
+	@Test
+	void groundedMergeRejectsInventedQuote() throws Exception {
+		GeminiService gemini = mock(GeminiService.class);
+		FirebaseService firebase = mock(FirebaseService.class);
+		SemanticEvidenceService service = new SemanticEvidenceService(gemini, firebase, new ObjectMapper(),
+				mock(ValidationEventService.class), .80, "app", "summary", "semantic");
+		MultiSourceJob job = new MultiSourceJob();
+		job.setJobId("bad-quote");
+		job.setSourceFiles(List.of(source("a", "A")));
+		when(firebase.queryCollection("transcriptSegments", "sourceFileId", "a"))
+				.thenReturn(List.of(Map.of("segmentId", "sa", "sourceFileId", "a", "text", "Water boils at 100 C.")));
+		when(gemini.callSimpleTextAPI(anyString(), eq("bad-quote"),
+				eq("multi-source.grounded-claims-0.generateContent"))).thenReturn(
+						"{\"claims\":[{\"sourceFileId\":\"a\",\"segmentId\":\"sa\",\"quote\":\"Water boils at 10 C.\",\"text\":\"Wrong\"}]}");
+		assertThrows(IllegalStateException.class, () -> service.evaluateGrounded(job));
+		verify(firebase, never()).createEvidenceBatch(eq("sourceKeyPoints"), anyMap());
+	}
+	@Test
 	void vocabularyOverlapDoesNotProveSupportingEvidence() {
 		Map<String, Object> passage = Map.of("text", "The dose is 15 mg.");
 		assertEquals(null, SemanticEvidenceService.bestSegment("The dose is 1.5 mg.", List.of(passage)));

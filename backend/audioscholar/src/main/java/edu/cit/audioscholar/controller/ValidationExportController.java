@@ -48,7 +48,7 @@ public class ValidationExportController {
 			"sourceKeyPoints", "summaries", "mergedSummaries", "transcriptSegments", "summaryKeyPoints",
 			"qualityReports", "warningMappings", "warningCandidates", "warningIndicators", "warningDisplayReceipts",
 			"semanticDecisions", "sourceAttributions", "crossSourceAlignments", "mergedKeyPointLineage",
-			"multiSourceStageRuns");
+			"multiSourceStageRuns", "multiSourceGroupCoverage", "multiSourceStageTimings");
 	private final FirebaseService firebase;
 	private final ObjectMapper json;
 	public ValidationExportController(FirebaseService firebase, @Qualifier("objectMapper") ObjectMapper json) {
@@ -210,7 +210,8 @@ public class ValidationExportController {
 		result.put(8, List.of("events", "warningCandidates", "warningIndicators"));
 		result.put(9, List.of("events", "multiSourceJobs", "sourceFiles"));
 		result.put(10, List.of("events", "sourceKeyPoints", "mergedKeyPointLineage", "summaries", "summaryKeyPoints"));
-		result.put(11, List.of("events", "semanticDecisions", "sourceKeyPoints"));
+		result.put(11, List.of("events", "semanticDecisions", "sourceKeyPoints", "multiSourceGroupCoverage",
+				"mergedKeyPointLineage"));
 		result.put(12, List.of("events", "multiSourceJobs", "sourceFiles"));
 		result.put(13, List.of("events", "sourceAttributions", "sourceKeyPoints", "summaries", "summaryKeyPoints"));
 		result.put(14, List.of("events", "crossSourceAlignments", "transcriptSegments"));
@@ -273,8 +274,10 @@ public class ValidationExportController {
 								&& completedRunWithCount(datasets, "SOURCE_KEY_POINT_EXTRACTION", "outputCount", 0)
 								&& completedRunWithCount(datasets, "DEDUPLICATION", "outputCount", 0)));
 		result.put(11,
-				reviewerStatus(processingFailed, reviewerEvidenceIncomplete, datasets.get("semanticDecisions").isEmpty()
-						&& completedRunWithCount(datasets, "DEDUPLICATION", "candidateCount", 0)));
+				reviewerStatus(processingFailed, reviewerEvidenceIncomplete,
+						datasets.get("semanticDecisions").isEmpty()
+								&& datasets.get("multiSourceGroupCoverage").isEmpty()
+								&& completedRunWithCount(datasets, "DEDUPLICATION", "candidateCount", 0)));
 		result.put(13,
 				reviewerStatus(processingFailed, reviewerEvidenceIncomplete,
 						datasets.get("sourceAttributions").isEmpty()
@@ -566,15 +569,21 @@ public class ValidationExportController {
 			if (!"COMPLETE".equals(job.get("status")))
 				continue;
 			String jobId = String.valueOf(job.get("jobId"));
+			boolean grounded = "grounded-merge-v1".equals(job.get("pipelineVersion"));
 			for (String timestamp : List.of("finalTranscriptionCompletedAt", "mergeStartedAt",
 					"mergedSummaryAvailableAt", "mergeLatencyMs"))
 				if (job.get(timestamp) == null)
 					issues.add("job:" + jobId + ":missing-" + timestamp);
-			for (String stage : List.of("SOURCE_KEY_POINT_EXTRACTION", "DEDUPLICATION", "ATTRIBUTION", "ALIGNMENT"))
+			for (String stage : grounded
+					? List.of("GROUNDED_EXTRACTION", "GROUNDED_GROUPING")
+					: List.of("SOURCE_KEY_POINT_EXTRACTION", "DEDUPLICATION", "ATTRIBUTION", "ALIGNMENT"))
 				if (datasets.get("multiSourceStageRuns").stream().noneMatch(r -> jobId.equals(r.get("jobId"))
 						&& stage.equals(r.get("stage")) && "COMPLETED".equals(r.get("status"))))
 					issues.add("job:" + jobId + ":missing-stage-run-" + stage.toLowerCase(java.util.Locale.ROOT));
 			Set<Object> mergedForJob = mergedPointIds(datasets, jobId);
+			if (grounded
+					&& datasets.get("multiSourceGroupCoverage").stream().noneMatch(r -> jobId.equals(r.get("jobId"))))
+				issues.add("job:" + jobId + ":missing-group-coverage");
 			boolean explainedEmpty = datasets.get("multiSourceStageRuns").stream()
 					.anyMatch(run -> jobId.equals(run.get("jobId")) && "DEDUPLICATION".equals(run.get("stage"))
 							&& "COMPLETED".equals(run.get("status")) && run.get("outputCount") instanceof Number count

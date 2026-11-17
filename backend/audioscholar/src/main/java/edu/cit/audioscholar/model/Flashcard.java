@@ -16,6 +16,13 @@ public class Flashcard {
 	private String sourceEndTime;
 	private String sourceFileId;
 	private String sourceSegmentId;
+	private java.util.List<String> claimIds = new java.util.ArrayList<>();
+	public java.util.List<String> getClaimIds() {
+		return claimIds;
+	}
+	public void setClaimIds(java.util.List<String> value) {
+		claimIds = value == null ? new java.util.ArrayList<>() : new java.util.ArrayList<>(value);
+	}
 	private Date createdAt = new Date();
 
 	public Flashcard() {
@@ -104,6 +111,7 @@ public class Flashcard {
 		map.put("sourceEndTime", sourceEndTime);
 		map.put("sourceFileId", sourceFileId);
 		map.put("sourceSegmentId", sourceSegmentId);
+		map.put("claimIds", claimIds);
 		map.put("createdAt", createdAt);
 		return map;
 	}
@@ -121,6 +129,8 @@ public class Flashcard {
 		flashcard.sourceEndTime = (String) map.get("sourceEndTime");
 		flashcard.sourceFileId = (String) map.get("sourceFileId");
 		flashcard.sourceSegmentId = (String) map.get("sourceSegmentId");
+		if (map.get("claimIds") instanceof java.util.List<?> ids)
+			flashcard.claimIds = ids.stream().map(String::valueOf).toList();
 		Object created = map.get("createdAt");
 		if (created instanceof Timestamp timestamp) {
 			flashcard.createdAt = timestamp.toDate();

@@ -46,6 +46,13 @@ public class MultiSourceJob {
 	private Date quotaRetryAt;
 	private String semanticEnrichmentStatus;
 	private String semanticEnrichmentFailure;
+	private String pipelineVersion;
+	public String getPipelineVersion() {
+		return pipelineVersion;
+	}
+	public void setPipelineVersion(String value) {
+		pipelineVersion = value;
+	}
 
 	public String getJobId() {
 		return jobId;
@@ -319,6 +326,7 @@ public class MultiSourceJob {
 		map.put("quotaRetryAt", quotaRetryAt);
 		map.put("semanticEnrichmentStatus", semanticEnrichmentStatus);
 		map.put("semanticEnrichmentFailure", semanticEnrichmentFailure);
+		map.put("pipelineVersion", pipelineVersion);
 		return map;
 	}
 }

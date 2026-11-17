@@ -1274,13 +1274,26 @@ public class GeminiService {
 				try {
 					long estimatedInputTokens = guardrailService.validateSummaryInput(promptText, 0);
 					reserveGemini(operation, estimatedInputTokens, contextId, targetModel);
-					ResponseEntity<String> response = restTemplate.exchange(url, HttpMethod.POST, requestEntity,
-							String.class);
+					long providerStarted = System.nanoTime();
+					ResponseEntity<String> response;
+					try {
+						response = restTemplate.exchange(url, HttpMethod.POST, requestEntity, String.class);
+					} finally {
+						log.info("Multi-source Gemini provider operation={} model={} httpElapsedMs={}", operation,
+								targetModel, java.util.concurrent.TimeUnit.NANOSECONDS
+										.toMillis(System.nanoTime() - providerStarted));
+					}
 					keyRotationManager.reportSuccess(KeyProvider.GEMINI, currentKey);
 					String responseBody = response.getBody();
 					if (responseBody == null || responseBody.isBlank())
 						throw new IllegalStateException("Gemini returned an empty multi-source semantic response");
-					return extractTextFromStandardResponse(responseBody);
+					long parseStarted = System.nanoTime();
+					try {
+						return extractTextFromStandardResponse(responseBody);
+					} finally {
+						log.info("Multi-source Gemini response parsed operation={} parseElapsedMs={}", operation,
+								java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - parseStarted));
+					}
 				} catch (HttpClientErrorException.TooManyRequests e) {
 					throw providerRateLimit(targetModel, currentKey, e);
 				} catch (GeminiBudgetExceededException | NonRetryableTaskException e) {

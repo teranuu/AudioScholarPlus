@@ -15,6 +15,20 @@ public class SummaryKeyPoint {
 	private String sourceEndTime;
 	private String sourceFileId;
 	private String sourceSegmentId;
+	private java.util.List<String> claimIds = new java.util.ArrayList<>();
+	private java.util.List<Map<String, String>> claimEvidence = new java.util.ArrayList<>();
+	public java.util.List<Map<String, String>> getClaimEvidence() {
+		return claimEvidence;
+	}
+	public void setClaimEvidence(java.util.List<Map<String, String>> value) {
+		claimEvidence = value == null ? new java.util.ArrayList<>() : new java.util.ArrayList<>(value);
+	}
+	public java.util.List<String> getClaimIds() {
+		return claimIds;
+	}
+	public void setClaimIds(java.util.List<String> value) {
+		claimIds = value == null ? new java.util.ArrayList<>() : new java.util.ArrayList<>(value);
+	}
 	private Date createdAt = new Date();
 
 	public String getKeyPointId() {
@@ -86,6 +100,8 @@ public class SummaryKeyPoint {
 		map.put("sourceEndTime", sourceEndTime);
 		map.put("sourceFileId", sourceFileId);
 		map.put("sourceSegmentId", sourceSegmentId);
+		map.put("claimIds", claimIds);
+		map.put("claimEvidence", claimEvidence);
 		map.put("createdAt", createdAt);
 		return map;
 	}
@@ -102,6 +118,11 @@ public class SummaryKeyPoint {
 		keyPoint.sourceEndTime = (String) map.get("sourceEndTime");
 		keyPoint.sourceFileId = (String) map.get("sourceFileId");
 		keyPoint.sourceSegmentId = (String) map.get("sourceSegmentId");
+		if (map.get("claimIds") instanceof java.util.List<?> ids)
+			keyPoint.claimIds = ids.stream().map(String::valueOf).toList();
+		if (map.get("claimEvidence") instanceof java.util.List<?> evidence)
+			keyPoint.claimEvidence = evidence.stream().filter(Map.class::isInstance).map(e -> (Map<String, String>) e)
+					.toList();
 		Object created = map.get("createdAt");
 		if (created instanceof Timestamp timestamp) {
 			keyPoint.createdAt = timestamp.toDate();
