@@ -415,6 +415,76 @@ public class FirebaseService {
 		}
 	}
 
+	/**
+	 * Creates immutable evidence in bounded chunks. Existing IDs must have
+	 * identical content.
+	 */
+	public void createEvidenceBatch(String collection, Map<String, Map<String, Object>> documents) {
+		if (documents == null || documents.isEmpty())
+			return;
+		try {
+			Firestore firestore = getFirestore();
+			List<Map.Entry<String, Map<String, Object>>> pending = new java.util.ArrayList<>();
+			List<Map.Entry<String, Map<String, Object>>> entries = new java.util.ArrayList<>(documents.entrySet());
+			for (int offset = 0; offset < entries.size(); offset += 400) {
+				List<Map.Entry<String, Map<String, Object>>> part = entries.subList(offset,
+						Math.min(offset + 400, entries.size()));
+				DocumentReference[] refs = part.stream()
+						.map(entry -> firestore.collection(collection).document(entry.getKey()))
+						.toArray(DocumentReference[]::new);
+				List<DocumentSnapshot> snapshots = firestore.getAll(refs).get();
+				for (int i = 0; i < part.size(); i++) {
+					var entry = part.get(i);
+					DocumentSnapshot existing = snapshots.get(i);
+					if (existing.exists()) {
+						if (!java.util.Objects.equals(existing.getData(), entry.getValue()))
+							throw new FirestoreInteractionException(
+									"Conflicting immutable evidence: " + collection + "/" + entry.getKey());
+					} else
+						pending.add(entry);
+				}
+			}
+			for (int start = 0; start < pending.size(); start += 400) {
+				WriteBatch batch = firestore.batch();
+				int bytes = 0;
+				int end = start;
+				while (end < pending.size() && end - start < 400) {
+					var entry = pending.get(end);
+					int size = entry.getValue().toString().getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+					if (size > 800_000)
+						throw new FirestoreInteractionException("Evidence document too large");
+					if (end > start && bytes + size > 8_000_000)
+						break;
+					bytes += size;
+					batch.create(firestore.collection(collection).document(entry.getKey()), entry.getValue());
+					end++;
+				}
+				try {
+					batch.commit().get();
+				} catch (ExecutionException conflict) {
+					if (io.grpc.Status.fromThrowable(conflict.getCause())
+							.getCode() != io.grpc.Status.Code.ALREADY_EXISTS)
+						throw conflict;
+					List<Map.Entry<String, Map<String, Object>>> attempted = pending.subList(start, end);
+					DocumentReference[] refs = attempted.stream()
+							.map(entry -> firestore.collection(collection).document(entry.getKey()))
+							.toArray(DocumentReference[]::new);
+					List<DocumentSnapshot> existing = firestore.getAll(refs).get();
+					for (int i = 0; i < attempted.size(); i++)
+						if (!existing.get(i).exists()
+								|| !java.util.Objects.equals(existing.get(i).getData(), attempted.get(i).getValue()))
+							throw new FirestoreInteractionException("Conflicting immutable evidence after batch retry");
+				}
+				start = end - 1;
+			}
+		} catch (InterruptedException e) {
+			Thread.currentThread().interrupt();
+			throw new FirestoreInteractionException("Interrupted creating evidence batch", e);
+		} catch (ExecutionException e) {
+			throw new FirestoreInteractionException("Could not create evidence batch", e);
+		}
+	}
+
 	/** Atomically chooses and stores exactly one terminal event for an attempt. */
 	public boolean createAttemptTerminalEvidence(String metadataCollection, String metadataId, String attemptId,
 			String terminalType, String evidenceCollection, String eventId, Map<String, Object> event) {

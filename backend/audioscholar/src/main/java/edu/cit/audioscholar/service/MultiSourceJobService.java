@@ -83,6 +83,8 @@ public class MultiSourceJobService {
 	private final Duration processingLeaseDuration;
 	private final Duration contentionRetryDelay;
 	private final String workerIdentity;
+	@Value("${multi-source.grounded-merge.enabled:false}")
+	private boolean groundedMergeEnabled;
 
 	public MultiSourceJobService(GeminiService geminiService, QualityReportService qualityReportService,
 			SummaryService summaryService, DeduplicationService deduplicationService,
@@ -168,6 +170,7 @@ public class MultiSourceJobService {
 		job.setStatus(ProcessingStatus.ACCEPTED.name());
 		job.setSemanticEnrichmentStatus("PENDING");
 		job.setSourceCount(normalizedMediaFiles.size() + normalizedDocumentFiles.size());
+		job.setPipelineVersion(groundedMergeEnabled ? "grounded-merge-v1" : "semantic-clustering-batch-v2");
 		int estimatedGeminiRequests = normalizedMediaFiles.size() + 3;
 		job.setEstimatedGeminiRequests(estimatedGeminiRequests);
 		job.setClientSource(ValidationEventService.clientSource(clientHeader));
@@ -383,8 +386,9 @@ public class MultiSourceJobService {
 			job.setUpdatedAt(new Date());
 			if (!saveWorkerProgress(job))
 				return;
+			boolean grounded = "grounded-merge-v1".equals(job.getPipelineVersion());
 			Summary summary = job.getMergedSummary();
-			if (summary == null) {
+			if (summary == null && !grounded) {
 				summary = parseMergedSummary(job, geminiService
 						.generateTranscriptOnlySummary(buildMergedTranscript(sources), jobId, job.getOutputType()));
 				job.setMergedSummary(summary);
@@ -393,18 +397,25 @@ public class MultiSourceJobService {
 					return;
 				event(job, "MERGE_SUMMARY_CHECKPOINTED", List.of(9, 12), summary.getSummaryId(),
 						Map.of("jobId", jobId, "summaryId", summary.getSummaryId()));
-			} else {
+			} else if (summary != null) {
 				log.info("Resuming multi-source job from merged-summary checkpoint jobId={} summaryId={}", jobId,
 						summary.getSummaryId());
 			}
 			stage = "DEDUPLICATION";
 			List<SourceAttribution> attributions;
 			try {
-				attributions = semanticEvidence.evaluate(job, summary);
+				if (grounded) {
+					SemanticEvidenceService.GroundedResult result = semanticEvidence.evaluateGrounded(job);
+					summary = result.summary();
+					attributions = result.attributions();
+				} else {
+					attributions = semanticEvidence.evaluate(job, summary);
+				}
 				job.setSemanticEnrichmentStatus(job.isMeasurementIncomplete() ? "INCOMPLETE" : "COMPLETE");
 				job.setSemanticEnrichmentFailure(null);
-				event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial", Map.of("jobId", jobId, "outputCount",
-						summary.getKeyPoints().size(), "algorithmVersion", "semantic-clustering-batch-v2"));
+				event(job, "DEDUPLICATION_COMPLETED", List.of(10, 11), "initial",
+						Map.of("jobId", jobId, "outputCount", summary.getKeyPoints().size(), "algorithmVersion",
+								grounded ? "grounded-merge-v1" : "semantic-clustering-batch-v2"));
 			} catch (Exception enrichmentFailure) {
 				// Attribution and duplicate validation are required publication stages.
 				// Retain the summary checkpoint, then use the normal retry/failure path.
@@ -796,6 +807,7 @@ public class MultiSourceJobService {
 		job.setCreatedAt(date(row.get("createdAt")));
 		job.setUpdatedAt(date(row.get("updatedAt")));
 		job.setSemanticEnrichmentStatus((String) row.get("semanticEnrichmentStatus"));
+		job.setPipelineVersion((String) row.get("pipelineVersion"));
 		job.setSemanticEnrichmentFailure((String) row.get("semanticEnrichmentFailure"));
 		job.setFailureStage((String) row.get("failureStage"));
 		job.setFailureCode((String) row.get("failureCode"));

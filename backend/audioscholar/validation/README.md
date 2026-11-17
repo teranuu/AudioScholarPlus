@@ -1,5 +1,15 @@
 # Validation export and evaluation
 
+Grounded GO3 merging is a controlled-study option (`MULTI_SOURCE_GROUNDED_MERGE_ENABLED=true`).
+Jobs record `pipelineVersion`; retries retain that version. New exports include
+`multiSourceGroupCoverage`, `multiSourceStageTimings`, claim quotations in `sourceKeyPoints`, and claim IDs on
+summary points and flashcards. A group records claim coverage, not a judgment for
+every possible pair. Objective 11 still requires independent duplicate review.
+For grounded groups, reviewers provide `duplicatePairs` with `leftKeyPointId`,
+`rightKeyPointId`, and `duplicate` for each predicted cross-source pair.
+Objective 12 passes only with measured merge latency strictly below 120,000 ms;
+grounded merging has not passed that threshold until live replay confirms it.
+
 This tooling exports raw evidence for T1–T14 for web workflows. Module 2 uses attempt-scoped reports, generated warning evidence, viewport receipts, and ground-truth schema v2. Set both `VALIDATION_TELEMETRY_ENABLED=true` and `VALIDATION_EXPORT_ENABLED=true` in the controlled-study environment. Events are retained for 180 days by default.
 
 Export as an administrator:

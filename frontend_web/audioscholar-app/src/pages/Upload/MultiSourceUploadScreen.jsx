@@ -201,6 +201,11 @@ const MergedSummaryScreen = ({ job }) => {
                   <p className="text-xs text-gray-600 dark:text-gray-300 mt-2">{labels.join(' · ')}
                     {point.sourceStartTime && point.sourceEndTime ? ` · ${point.sourceStartTime}–${point.sourceEndTime}` : ' · Supporting interval unavailable'}
                   </p>
+                  {point.claimEvidence?.map((evidence, index) => (
+                    <blockquote key={`${evidence.segmentId}-${index}`} className="mt-2 border-l-2 pl-2 text-xs text-gray-600 dark:text-gray-300">
+                      {sourceName(evidence.sourceFileId)}: “{evidence.quote}”
+                    </blockquote>
+                  ))}
                 </div>
               );
             })}

@@ -449,9 +449,13 @@ public final class ValidationEvaluator {
 		Map<String, Boolean> reviewed = new HashMap<>();
 		boolean malformed = false;
 		for (JsonNode r : array(truth.path("duplicatePairs"))) {
-			if (r.path("decisionId").asText().isBlank() || !r.path("duplicate").isBoolean())
+			String id = r.path("decisionId").asText();
+			if (id.isBlank() && !r.path("leftKeyPointId").asText().isBlank()
+					&& !r.path("rightKeyPointId").asText().isBlank())
+				id = pairReviewId(r.path("leftKeyPointId").asText(), r.path("rightKeyPointId").asText());
+			if (id.isBlank() || !r.path("duplicate").isBoolean() || reviewed.containsKey(id))
 				malformed = true;
-			reviewed.put(r.path("decisionId").asText(), r.path("duplicate").asBoolean());
+			reviewed.put(id, r.path("duplicate").asBoolean());
 		}
 		long denominator = 0, correct = 0, missing = 0;
 		for (JsonNode d : data("semanticDecisions")) {
@@ -465,8 +469,44 @@ public final class ValidationEvaluator {
 			else if (value)
 				correct++;
 		}
+		Map<String, String> sourceByClaim = new HashMap<>();
+		for (JsonNode claim : data("sourceKeyPoints"))
+			sourceByClaim.put(claim.path("keyPointId").asText(), claim.path("sourceFileId").asText());
+		Set<String> predictedPairs = new HashSet<>();
+		for (JsonNode lineage : data("mergedKeyPointLineage")) {
+			if (!"grounded-merge-v1".equals(lineage.path("algorithmVersion").asText()))
+				continue;
+			List<String> ids = new ArrayList<>();
+			for (JsonNode id : array(lineage.path("sourceKeyPointIds")))
+				ids.add(id.asText());
+			for (int i = 0; i < ids.size(); i++)
+				for (int j = i + 1; j < ids.size(); j++) {
+					if (sourceByClaim.get(ids.get(i)) == null || sourceByClaim.get(ids.get(j)) == null) {
+						malformed = true;
+						continue;
+					}
+					if (sourceByClaim.get(ids.get(i)).equals(sourceByClaim.get(ids.get(j))))
+						continue;
+					String pairId = pairReviewId(ids.get(i), ids.get(j));
+					if (!predictedPairs.add(pairId)) {
+						malformed = true;
+						continue;
+					}
+					denominator++;
+					Boolean value = reviewed.get(pairId);
+					if (value == null)
+						missing++;
+					else if (value)
+						correct++;
+				}
+		}
 		put(11, correct, denominator, .85, malformed || missing > 0 || !incomplete.isEmpty(),
 				missing + incomplete.size(), missing + incomplete.size(), Map.of());
+	}
+	private static String pairReviewId(String left, String right) {
+		if (left.isBlank() || right.isBlank() || left.equals(right))
+			return "";
+		return left.compareTo(right) < 0 ? left + ":" + right : right + ":" + left;
 	}
 	private void attribution(Set<String> incomplete) {
 		Map<String, Set<String>> expected = new LinkedHashMap<>();

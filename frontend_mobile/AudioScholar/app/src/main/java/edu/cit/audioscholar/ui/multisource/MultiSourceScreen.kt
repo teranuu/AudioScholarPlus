@@ -171,6 +171,9 @@ private fun MergedContent(job: MultiSourceJobDto) {
             Column(Modifier.padding(12.dp)) {
                 Text(point.text.orEmpty())
                 Text(labels.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                point.claimEvidence.orEmpty().forEach { evidence ->
+                    Text("${sourceName(evidence.sourceFileId)}: “${evidence.quote.orEmpty()}”", style = MaterialTheme.typography.bodySmall)
+                }
                 if (!point.sourceStartTime.isNullOrBlank() && !point.sourceEndTime.isNullOrBlank())
                     Text("${point.sourceStartTime}–${point.sourceEndTime}", style = MaterialTheme.typography.bodySmall)
             }
