@@ -4,6 +4,8 @@ import { FiCheckCircle, FiClock, FiFile, FiFileText, FiLoader, FiUpload, FiXCirc
 import { API_BASE_URL } from '../../services/authService';
 import { Header } from '../Home/HomePage';
 import ReactMarkdown from 'react-markdown';
+import { TutorialPanel, useTutorial } from '../../tutorial/Tutorial';
+import { readTutorial } from '../../tutorial/tutorialState';
 
 const OUTPUT_TYPES = [
   { value: 'NOTES', title: 'Notes', description: 'Detailed lecture notes from every source.' },
@@ -232,10 +234,12 @@ const MultiSourceUploadScreen = () => {
   const documentInputRef = useRef(null);
   const pollAbortRef = useRef(null);
   const navigate = useNavigate();
+  const tutorial = useTutorial();
 
   const sourceCount = mediaFiles.length + documentFiles.length;
   const remainingSlots = MAX_TOTAL_SOURCES - sourceCount;
   const hasActiveJob = Boolean(job?.jobId && !TERMINAL_JOB_STATUSES.has(job.status));
+  const guidedJob = job?.jobId === tutorial.state.jobId ? job : recentJobs.find((item) => item.jobId === tutorial.state.jobId);
 
   const handleUnauthorized = useCallback(() => {
     localStorage.removeItem('AuthToken');
@@ -336,7 +340,7 @@ const MultiSourceUploadScreen = () => {
       } catch {
         // Recovery is best-effort; a new upload remains available when the API is offline.
       }
-      const activeJobId = localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
+      const activeJobId = localStorage.getItem(ACTIVE_JOB_STORAGE_KEY) || readTutorial(localStorage.getItem('userId')).jobId;
       if (activeJobId && !cancelled) await pollJob(activeJobId, token);
     };
     restore();
@@ -490,6 +494,7 @@ const MultiSourceUploadScreen = () => {
       }
       localStorage.removeItem(SUBMISSION_KEY_STORAGE_KEY);
       localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, data.jobId);
+      tutorial.advance({ type: 'multiSubmitted', jobId: data.jobId, sourceCount: mediaFiles.length === 2 && documentFiles.length === 1 ? sourceCount : 0 });
       setJob(data);
       mergeRecentJob(data);
       setLoading(false);
@@ -510,7 +515,12 @@ const MultiSourceUploadScreen = () => {
       <UploadProgressIndicator loading={loading} job={job} />
 
       <Header />
-      <main className="flex-grow flex items-center justify-center py-12 bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
+      <main className="flex-grow flex flex-col items-center justify-center py-12 bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
+        <div className="w-full max-w-5xl px-4"><TutorialPanel detail={tutorial.state.step === 4 ? 'Add both audio or video files and the slides to the same upload. Confirm that three files appear, choose Notes or Study Material, and submit once.' : guidedJob ? `Your tutorial job is ${guidedJob.status}. ${guidedJob.status === 'INCOMPLETE' ? 'Inspect the partial result. A complete result is required to finish.' : ''}` : 'Your submitted job will appear here when its status loads.'}>
+          {tutorial.state.step === 5 && guidedJob?.jobId && job?.jobId !== guidedJob.jobId && <button type="button" className="mt-3 rounded bg-teal-700 px-4 py-2 text-white" onClick={() => setJob(guidedJob)}>Open tutorial job</button>}
+          {tutorial.state.step === 5 && guidedJob?.status === 'COMPLETE' && job?.jobId === guidedJob.jobId && job.mergedSummary && <button type="button" className="mt-3 rounded bg-teal-700 px-4 py-2 text-white" onClick={() => tutorial.advance({ type: 'mergedReviewed', jobId: job.jobId, status: job.status })}>Finish tutorial</button>}
+          {tutorial.state.step === 5 && (guidedJob?.status === 'FAILED' || guidedJob?.status === 'INCOMPLETE') && <button type="button" className="mt-3 ml-3 underline" onClick={() => { setJob(null); tutorial.retryMulti(); }}>Try a new three-source job</button>}
+        </TutorialPanel></div>
         <div className="container mx-auto px-4 max-w-4xl">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-8 md:p-10 transition-colors duration-200">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6">

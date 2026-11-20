@@ -25,11 +25,13 @@ import AdminAnalytics from '../../pages/Admin/Analytics/AdminAnalytics';
 import PrivacyPolicy from '../../pages/Legal/PrivacyPolicy';
 import TermsOfService from '../../pages/Legal/TermsOfService';
 import ProtectedRoute from '../common/ProtectedRoute';
+import { TutorialProvider } from '../../tutorial/Tutorial';
 
 
 function App() {
   return (
     <Router>
+      <TutorialProvider>
       <div className="min-h-screen flex flex-col">
         <Routes>
           <Route path="/" element={<HomePage />} />
@@ -109,6 +111,7 @@ function App() {
 
         </Routes>
       </div>
+      </TutorialProvider>
     </Router>
   );
 }
