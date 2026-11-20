@@ -7,11 +7,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyMap;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -27,6 +32,74 @@ import edu.cit.audioscholar.model.SourceFile;
 import edu.cit.audioscholar.model.Summary;
 
 class SemanticEvidenceServiceTest {
+	@Test
+	void classifiesAll636PairsAndResumesAfterTwoBatches() throws Exception {
+		ObjectMapper json = new ObjectMapper();
+		GeminiService gemini = mock(GeminiService.class);
+		FirebaseService firebase = mock(FirebaseService.class);
+		SemanticEvidenceService service = new SemanticEvidenceService(gemini, firebase, json,
+				mock(ValidationEventService.class), .80, "app", "summary", "semantic");
+		MultiSourceJob job = new MultiSourceJob();
+		job.setJobId("many-pairs");
+		job.setOutputType("NOTES");
+		job.setSourceFiles(List.of(source("a", "A"), source("b", "B"), source("c", "C")));
+		Map<String, Object> checkpoints = new HashMap<>();
+		Map<String, List<String>> points = new LinkedHashMap<>();
+		int[] sizes = {12, 18, 14};
+		String[] ids = {"a", "b", "c"};
+		for (int sourceIndex = 0; sourceIndex < ids.length; sourceIndex++) {
+			String sourceId = ids[sourceIndex];
+			List<String> sourcePoints = new ArrayList<>();
+			List<Map<String, Object>> segments = new ArrayList<>();
+			for (int i = 0; i < sizes[sourceIndex]; i++) {
+				String claim = "Unique claim " + sourceId + " number " + i;
+				sourcePoints.add(claim);
+				segments.add(Map.of("segmentId", sourceId + i, "sourceFileId", sourceId, "text", claim, "startMs", 0L,
+						"endMs", 1000L));
+			}
+			points.put(sourceId, sourcePoints);
+			when(firebase.queryCollection("transcriptSegments", "sourceFileId", sourceId)).thenReturn(segments);
+		}
+		checkpoints.put(ValidationEventService.digest("many-pairs:source-key-point-checkpoint-v2"),
+				Map.of("pointsBySource", points));
+		when(firebase.getData(eq("multiSourceStageCheckpoints"), anyString()))
+				.thenAnswer(call -> checkpoints.get(call.getArgument(1)));
+		doAnswer(call -> {
+			checkpoints.put(call.getArgument(1), call.getArgument(2));
+			return null;
+		}).when(firebase).saveData(eq("multiSourceStageCheckpoints"), anyString(), anyMap());
+		int[] requests = {0};
+		when(gemini.callSimpleTextAPI(anyString(), eq("many-pairs"),
+				eq("multi-source.semantic-pair-batch.generateContent"), anyMap())).thenAnswer(call -> {
+					requests[0]++;
+					if (requests[0] == 3)
+						throw new IllegalStateException("Interrupted after two batches");
+					String prompt = call.getArgument(0);
+					String input = prompt.substring(prompt.indexOf("INPUT_PAIRS=") + "INPUT_PAIRS=".length()).trim();
+					List<Map<String, Object>> response = new ArrayList<>();
+					for (com.fasterxml.jackson.databind.JsonNode pair : json.readTree(input))
+						response.add(
+								Map.of("pairId", pair.path("pairId").asText(), "duplicate", false, "confidence", 1.0));
+					return json.writeValueAsString(Map.of("pairs", response));
+				});
+		assertThrows(IllegalStateException.class,
+				() -> service.evaluate(job, new Summary("summary", "many-pairs", "merged")));
+		requests[0] = 3;
+		Summary summary = new Summary("summary", "many-pairs", "merged");
+		List<SourceAttribution> attributions = service.evaluate(job, summary);
+		assertEquals(636, checkpoints.entrySet().stream()
+				.filter(entry -> entry.getValue() instanceof Map<?, ?> row && "SEMANTIC_PAIRS".equals(row.get("stage")))
+				.mapToInt(entry -> ((List<?>) ((Map<?, ?>) entry.getValue()).get("pairs")).size()).sum());
+		assertEquals(636,
+				checkpoints.values().stream()
+						.filter(value -> value instanceof Map<?, ?> row && "SEMANTIC_PAIRS".equals(row.get("stage")))
+						.flatMap(value -> ((List<?>) ((Map<?, ?>) value).get("pairs")).stream())
+						.map(pair -> ((Map<?, ?>) pair).get("pairId")).distinct().count());
+		assertEquals(44, attributions.size());
+		assertFalse(job.isMeasurementIncomplete());
+		verify(gemini, times(8)).callSimpleTextAPI(anyString(), eq("many-pairs"),
+				eq("multi-source.semantic-pair-batch.generateContent"), anyMap());
+	}
 	@Test
 	void groundedMergeRequiresEveryClaimAndPreservesBothContributors() throws Exception {
 		GeminiService gemini = mock(GeminiService.class);
