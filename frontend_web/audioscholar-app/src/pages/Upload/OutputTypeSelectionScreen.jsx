@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../services/authService';
 import { Header } from '../Home/HomePage';
 import { FiCheckCircle, FiFile, FiFileText, FiLoader, FiUpload, FiXCircle } from 'react-icons/fi';
+import { TutorialPanel, useTutorial } from '../../tutorial/Tutorial';
 
 const VALID_AUDIO_TYPES = [
   'audio/mpeg', 'audio/mp3',
@@ -71,6 +72,7 @@ const OutputTypeSelectionScreen = () => {
   const [audioPreviewUrl, setAudioPreviewUrl] = useState(null);
   const [success, setSuccess] = useState(null);
   const navigate = useNavigate();
+  const tutorial = useTutorial();
   const audioFileInputRef = useRef(null);
   const pptxFileInputRef = useRef(null);
 
@@ -284,6 +286,7 @@ const OutputTypeSelectionScreen = () => {
       } else {
         const result = await response.json();
         console.log("Upload successful:", result);
+        tutorial.advance({ type: 'singleSubmitted', recordingId: result.id });
         setSuccess('File(s) uploaded successfully! Processing has started.');
         removeAudioFile(); 
         removePptxFile(); 
@@ -318,7 +321,8 @@ const OutputTypeSelectionScreen = () => {
       <title>AudioScholar - Upload Recording</title>
       <Header />
 
-      <main className="flex-grow flex items-center justify-center py-12 bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
+      <main className="flex-grow flex flex-col items-center justify-center py-12 bg-gray-50 dark:bg-gray-900 transition-colors duration-200">
+        <div className="w-full max-w-5xl px-4"><TutorialPanel detail={tutorial.state.step === 0 ? 'Download Source 1, upload it here, choose Notes or Study Material, and submit once.' : 'Use the guided steps to continue your recording review.'} action={tutorial.state.step === 1 && tutorial.state.recordingId ? `/recordings/${tutorial.state.recordingId}` : null} actionLabel="Open submitted recording" /></div>
         <div className="container mx-auto px-4 max-w-4xl">
           <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl p-8 md:p-10 transition-colors duration-200">
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-6">

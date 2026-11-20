@@ -16,6 +16,9 @@ import {
 } from '../../utils/processingStatus';
 import { Header } from '../Home/HomePage';
 import { emitExpandedWarningReceipts, emitVisibleWarningReceipts } from './warningExposure';
+import { TutorialPanel, useTutorial } from '../../tutorial/Tutorial';
+
+const timeToSeconds = (value) => String(value || '').split(':').reduce((seconds, part) => seconds * 60 + Number(part), 0);
 
 const DownloadIcon = () => <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>;
 
@@ -342,7 +345,7 @@ const FlashcardViewer = ({ flashcards, warningIndicators = [], summaryId }) => {
   );
 };
 
-const QualityIssueCard = ({ issue }) => (
+const QualityIssueCard = ({ issue, onPlay }) => (
   <div className="bg-white border border-yellow-100 rounded-md p-3 text-sm">
     <div className="flex flex-wrap items-center gap-2 mb-1">
       <span className="font-semibold text-gray-900">{formatIssueType(issue.issueType)}</span>
@@ -350,6 +353,7 @@ const QualityIssueCard = ({ issue }) => (
       <span className="text-xs text-gray-500">{issue.startTime} - {issue.endTime}</span>
     </div>
     <p className="text-gray-700">{issue.recommendedAction}</p>
+    {onPlay && issue.startTime && <button type="button" className="mt-2 text-sm text-teal-800 underline" onClick={() => onPlay(issue.startTime)}>Play from here</button>}
   </div>
 );
 
@@ -369,7 +373,7 @@ const QualityReportUnavailableBanner = () => (
   </div>
 );
 
-const QualityReportSection = ({ report }) => {
+const QualityReportSection = ({ report, onPlay }) => {
   if (!report) {
     return <QualityReportUnavailableBanner />;
   }
@@ -391,7 +395,7 @@ const QualityReportSection = ({ report }) => {
       </div>
       <div className="space-y-2">
         {issues.map((issue, index) => (
-          <QualityIssueCard key={issue.issueId || index} issue={issue} />
+          <QualityIssueCard key={issue.issueId || index} issue={issue} onPlay={onPlay} />
         ))}
       </div>
       <p className="text-xs text-yellow-800 mt-3">Warnings describe recording conditions, not verified factual errors.</p>
@@ -489,6 +493,7 @@ const Skeleton = ({ className }) => (
 const SummaryDetailScreen = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const tutorial = useTutorial();
   const metadataPollIntervalRef = useRef(null);
 
   const [recordingData, setRecordingData] = useState(null);
@@ -501,6 +506,8 @@ const SummaryDetailScreen = () => {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState(null);
   const [warningIndicators, setWarningIndicators] = useState([]);
+  const [warningStatus, setWarningStatus] = useState('loading');
+  const [warningRetry, setWarningRetry] = useState(0);
   const [audioObjectUrl, setAudioObjectUrl] = useState(null);
   const [audioLoading, setAudioLoading] = useState(false);
   const [audioError, setAudioError] = useState(null);
@@ -545,6 +552,7 @@ const SummaryDetailScreen = () => {
       const summaryId = summaryData?.summaryId;
       if (!summaryId) {
         setWarningIndicators([]);
+        setWarningStatus('loading');
         return;
       }
 
@@ -556,18 +564,27 @@ const SummaryDetailScreen = () => {
       }
 
       try {
+        setWarningStatus('loading');
         const response = await axios.get(`${API_BASE_URL}api/summaries/${summaryId}/warning-indicators`, {
           headers: { Authorization: `Bearer ${token}` },
         });
         setWarningIndicators(Array.isArray(response.data) ? response.data : []);
+        setWarningStatus('ready');
       } catch (err) {
         console.error('Failed to load warning indicators:', err);
         setWarningIndicators([]);
+        setWarningStatus('error');
       }
     };
 
     fetchWarningIndicators();
-  }, [summaryData?.summaryId, navigate]);
+  }, [summaryData?.summaryId, navigate, warningRetry]);
+
+  useEffect(() => {
+    if (summaryData && recordingData?.recordingId === tutorial.state.recordingId && tutorial.state.step === 1) {
+      tutorial.advance({ type: 'singleReady', recordingId: recordingData.recordingId });
+    }
+  }, [summaryData, recordingData?.recordingId, tutorial]);
 
   // Save Notes to Backend
   const handleSaveNotes = async () => {
@@ -1149,6 +1166,16 @@ const SummaryDetailScreen = () => {
 
   const audioDownloadUrl = audioObjectUrl || recordingData.storageUrl || recordingData.audioUrl;
   const audioSrcToPlay = audioObjectUrl;
+  const guidedRecording = tutorial.state.recordingId === recordingData.recordingId;
+  const qualityReport = summaryData?.qualityReport || recordingData.qualityReport;
+  const reportReady = Boolean(summaryData && qualityReport && qualityReport.status !== 'UNAVAILABLE' && (qualityReport.status === 'ALL_CLEAR' || qualityReport.issues?.length));
+  const playAt = (time) => {
+    const player = document.getElementById('tutorial-recording-player');
+    if (!player) return;
+    player.currentTime = timeToSeconds(time);
+    player.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    player.play().catch(() => {});
+  };
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F0F4F8]">
@@ -1158,6 +1185,14 @@ const SummaryDetailScreen = () => {
 
       <main className="flex-grow py-8">
         <div className="container mx-auto px-4 sm:px-6 lg:px-8">
+          <TutorialPanel detail={guidedRecording ? tutorial.state.step === 1 ? 'Your recording is processing. The quality report will be ready with the generated output.' : tutorial.state.step === 2 ? 'View every quality segment and play its timestamp when audio is available. Read the all-clear result if shown.' : 'Read the full output and expand every warning. Review its label, description, and any related audio interval.' : 'Open your submitted tutorial recording to continue.'} action={guidedRecording && tutorial.state.step === 2 && reportReady ? () => tutorial.advance({ type: 'qualityReviewed', recordingId: recordingData.recordingId }) : guidedRecording && tutorial.state.step === 3 && summaryData && warningStatus === 'ready' ? () => tutorial.advance({ type: 'outputReviewed', recordingId: recordingData.recordingId }) : null} actionLabel={tutorial.state.step === 2 ? 'Reviewed quality report' : tutorial.state.step === 3 ? 'Reviewed single-source output' : null}>
+            {guidedRecording && tutorial.state.step === 2 && reportReady && <button type="button" className="mt-3 mr-3 underline" onClick={() => document.getElementById('tutorial-quality-report')?.scrollIntoView({ behavior: 'smooth' })}>Open quality report</button>}
+            {guidedRecording && tutorial.state.step === 3 && summaryData && <button type="button" className="mt-3 mr-3 underline" onClick={() => document.getElementById('tutorial-generated-output')?.scrollIntoView({ behavior: 'smooth' })}>Open generated output</button>}
+            {guidedRecording && tutorial.state.step === 3 && warningStatus === 'error' && <button type="button" className="mt-3 underline" onClick={() => setWarningRetry((count) => count + 1)}>Retry loading warnings</button>}
+            {guidedRecording && tutorial.state.step === 3 && warningStatus === 'ready' && warningIndicators.length === 0 && <p className="mt-2 text-sm">No warning indicators were returned for this output.</p>}
+            {guidedRecording && tutorial.state.step === 2 && !reportReady && summaryError && <button type="button" className="mt-3 underline" onClick={() => fetchDetails(recordingData.recordingId)}>Retry loading output</button>}
+            {guidedRecording && tutorial.state.step === 4 && <Link className="mt-3 inline-block rounded bg-teal-700 px-4 py-2 text-white" to="/upload/multi-source">Continue to three-source upload</Link>}
+          </TutorialPanel>
 
           <div className="bg-gradient-to-r from-[#1A365D] to-[#2D8A8A] text-white rounded-lg shadow-lg p-6 md:p-8 mb-8">
             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
@@ -1241,6 +1276,7 @@ const SummaryDetailScreen = () => {
                 <div className="bg-gray-50 p-5 rounded-lg border border-gray-100 shadow-inner">
                   {audioSrcToPlay ? (
                     <audio
+                      id="tutorial-recording-player"
                       controls
                       src={audioSrcToPlay}
                       className="w-full h-14 rounded-md focus:outline-none focus:ring-2 focus:ring-teal-500"
@@ -1406,7 +1442,7 @@ const SummaryDetailScreen = () => {
                   </div>
                 )}
                 {!summaryLoading && !summaryError && summaryData && (
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+                  <div id="tutorial-generated-output" className="grid grid-cols-1 md:grid-cols-3 gap-8">
                     <div className="md:col-span-2 space-y-6 max-h-[600px] overflow-y-auto pr-2">
                       {(() => {
                         const outputType = summaryData.outputType || recordingData?.outputType;
@@ -1418,7 +1454,7 @@ const SummaryDetailScreen = () => {
                           <>
                       <OutputTypeBadge outputType={outputType} status={recordingData?.status} />
                       <StudySessionCode value={recordingData?.studySessionId} />
-                      <QualityReportSection report={summaryData.qualityReport || recordingData?.qualityReport} />
+                      <div id="tutorial-quality-report"><QualityReportSection report={summaryData.qualityReport || recordingData?.qualityReport} onPlay={audioSrcToPlay ? playAt : null} /></div>
                       {shouldShowFlashcards && <FlashcardViewer summaryId={summaryData.summaryId} flashcards={summaryData.flashcards} warningIndicators={warningIndicators} />}
                       {shouldShowSummaryText && <SummaryContentViewer content={summaryData.formattedSummaryText} />}
                       {!shouldShowFlashcards && !summaryData.formattedSummaryText && <SummaryContentViewer />}

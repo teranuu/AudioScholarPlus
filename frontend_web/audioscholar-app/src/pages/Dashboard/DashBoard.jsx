@@ -4,6 +4,7 @@ import { FiUpload } from 'react-icons/fi';
 import { Link, useNavigate } from 'react-router-dom';
 import { API_BASE_URL } from '../../services/authService';
 import { Header } from '../Home/HomePage';
+import { TutorialDashboard } from '../../tutorial/Tutorial';
 
 const Dashboard = () => {
   const [user, setUser] = useState(null);
@@ -61,6 +62,7 @@ const Dashboard = () => {
             <h1 className="text-3xl font-bold text-gray-800 dark:text-gray-100 mb-10">Dashboard</h1>
             {loadingUser && <p role="status">Loading your profile...</p>}
             {errorUser && <p role="alert" className="text-red-600 mb-4">{errorUser}</p>}
+            {!loadingUser && user && <TutorialDashboard />}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
               <Link
