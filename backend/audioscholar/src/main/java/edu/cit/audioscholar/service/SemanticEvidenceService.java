@@ -28,7 +28,6 @@ import edu.cit.audioscholar.model.SummaryKeyPoint;
 
 @Service
 public class SemanticEvidenceService {
-	private static final int MAX_SEMANTIC_CANDIDATES = 200;
 	private static final int PAIR_BATCH_SIZE = 100;
 	private static final Map<String, Object> SOURCE_KEY_POINT_SCHEMA = Map.of("type", "OBJECT", "properties",
 			Map.of("sources",
@@ -139,18 +138,8 @@ public class SemanticEvidenceService {
 					semanticCandidates.add(new PairCandidate(i, j, a, b, pairId(a, b)));
 				}
 			}
-		if (semanticCandidates.size() > MAX_SEMANTIC_CANDIDATES) {
-			int candidateCount = semanticCandidates.size();
-			semanticCandidates.sort(Comparator.comparingDouble(this::lexicalOverlap).reversed());
-			// Unexamined pairs are unknown, not evidence that the claims differ.
-			semanticCandidates = new ArrayList<>(semanticCandidates.subList(0, MAX_SEMANTIC_CANDIDATES));
-			job.setMeasurementIncomplete(true);
-			events.emit(job.getJobId(), "MULTI_SOURCE", job.getClientSource(), "SEMANTIC_CANDIDATES_CAPPED",
-					List.of(11), "initial",
-					Map.of("jobId", job.getJobId(), "candidatePairCount", candidateCount, "classifiedPairCount",
-							MAX_SEMANTIC_CANDIDATES, "unclassifiedPairCount", candidateCount - MAX_SEMANTIC_CANDIDATES),
-					"multiSourceJobs");
-		}
+		semanticCandidates
+				.sort(Comparator.comparingDouble(this::lexicalOverlap).reversed().thenComparing(PairCandidate::pairId));
 
 		Map<String, PairClassification> classifications = Map.of();
 		if (!semanticCandidates.isEmpty()) {
@@ -165,9 +154,7 @@ public class SemanticEvidenceService {
 			events.emit(job.getJobId(), "MULTI_SOURCE", job.getClientSource(), "SEMANTIC_BATCH_CLASSIFIED", List.of(11),
 					"initial",
 					Map.of("jobId", job.getJobId(), "candidatePairCount", semanticCandidates.size(),
-							"resolvedPairCount", classifications.size(), "geminiRequestCount",
-							(semanticCandidates.size() + PAIR_BATCH_SIZE - 1) / PAIR_BATCH_SIZE, "promptVersion",
-							"semantic-pair-batch-v2"),
+							"resolvedPairCount", classifications.size(), "promptVersion", "semantic-pair-batch-v2"),
 					"multiSourceJobs");
 		}
 
@@ -740,10 +727,14 @@ public class SemanticEvidenceService {
 		Map<String, PairClassification> result = loadPairClassificationCheckpoint(job, candidates);
 		Set<String> expectedPairIds = candidates.stream().map(PairCandidate::pairId)
 				.collect(java.util.stream.Collectors.toSet());
-		List<PairCandidate> missing = candidates.stream().filter(candidate -> !result.containsKey(candidate.pairId))
-				.toList();
-		for (int start = 0; start < missing.size(); start += PAIR_BATCH_SIZE) {
-			List<PairCandidate> batch = missing.subList(start, Math.min(start + PAIR_BATCH_SIZE, missing.size()));
+		int requestCount = 0;
+		for (int start = 0; start < candidates.size(); start += PAIR_BATCH_SIZE) {
+			List<PairCandidate> partition = candidates.subList(start,
+					Math.min(start + PAIR_BATCH_SIZE, candidates.size()));
+			List<PairCandidate> batch = partition.stream().filter(candidate -> !result.containsKey(candidate.pairId))
+					.toList();
+			if (batch.isEmpty())
+				continue;
 			List<Map<String, Object>> pairs = batch.stream()
 					.map(candidate -> Map.<String, Object>of("pairId", candidate.pairId, "leftText", candidate.a.text,
 							"rightText", candidate.b.text, "leftSourceFileId", candidate.a.sourceId,
@@ -771,20 +762,28 @@ public class SemanticEvidenceService {
 			}
 			if (!batchResult.keySet().equals(batchIds))
 				throw new IllegalStateException("Batched semantic classification omitted one or more pairs");
+			savePairClassificationCheckpoint(job, start / PAIR_BATCH_SIZE, batchResult);
 			result.putAll(batchResult);
-			savePairClassificationCheckpoint(job, result);
+			requestCount++;
 		}
+		events.emit(job.getJobId(), "MULTI_SOURCE", job.getClientSource(), "SEMANTIC_COMPARISON_COVERAGE", List.of(11),
+				"initial",
+				Map.of("jobId", job.getJobId(), "expectedPairCount", expectedPairIds.size(), "resolvedPairCount",
+						result.size(), "outstandingPairCount", expectedPairIds.size() - result.size(),
+						"geminiRequestCount", requestCount),
+				"multiSourceJobs");
 		if (!result.keySet().equals(expectedPairIds))
 			throw new IllegalStateException("Batched semantic classification omitted one or more pairs");
 		return result;
 	}
 
-	private void savePairClassificationCheckpoint(MultiSourceJob job, Map<String, PairClassification> result) {
+	private void savePairClassificationCheckpoint(MultiSourceJob job, int batchIndex,
+			Map<String, PairClassification> result) {
 		List<Map<String, Object>> checkpointPairs = result.entrySet().stream()
 				.map(entry -> Map.<String, Object>of("pairId", entry.getKey(), "duplicate", entry.getValue().duplicate,
 						"confidence", entry.getValue().confidence))
 				.toList();
-		firebase.saveData("multiSourceStageCheckpoints", pairClassificationCheckpointId(job.getJobId()),
+		firebase.saveData("multiSourceStageCheckpoints", pairBatchCheckpointId(job.getJobId(), batchIndex),
 				Map.of("jobId", job.getJobId(), "stage", "SEMANTIC_PAIRS", "pairs", checkpointPairs, "completedAt",
 						Instant.now().toString()));
 	}
@@ -812,22 +811,35 @@ public class SemanticEvidenceService {
 			List<PairCandidate> candidates) {
 		Map<String, Object> row = firebase.getData("multiSourceStageCheckpoints",
 				pairClassificationCheckpointId(job.getJobId()));
-		if (row == null || !(row.get("pairs") instanceof List<?> rawPairs))
-			return new HashMap<>();
 		Map<String, PairClassification> result = new HashMap<>();
-		for (Object raw : rawPairs) {
-			if (!(raw instanceof Map<?, ?> pair) || !(pair.get("pairId") instanceof String pairId)
-					|| !(pair.get("duplicate") instanceof Boolean duplicate)
-					|| !(pair.get("confidence") instanceof Number confidence))
-				return new HashMap<>();
-			if (confidence.doubleValue() < 0 || confidence.doubleValue() > 1)
-				return new HashMap<>();
-			result.put(pairId, new PairClassification(duplicate, confidence.doubleValue()));
+		if (row != null && row.get("pairs") instanceof List<?> legacyPairs)
+			readPairCheckpoint(result, legacyPairs);
+		for (int start = 0; start < candidates.size(); start += PAIR_BATCH_SIZE) {
+			Map<String, Object> batch = firebase.getData("multiSourceStageCheckpoints",
+					pairBatchCheckpointId(job.getJobId(), start / PAIR_BATCH_SIZE));
+			if (batch != null && batch.get("pairs") instanceof List<?> pairs)
+				readPairCheckpoint(result, pairs);
 		}
 		Set<String> expected = candidates.stream().map(PairCandidate::pairId)
 				.collect(java.util.stream.Collectors.toSet());
 		result.keySet().retainAll(expected);
 		return result;
+	}
+
+	private void readPairCheckpoint(Map<String, PairClassification> result, List<?> pairs) {
+		for (Object raw : pairs) {
+			if (!(raw instanceof Map<?, ?> pair) || !(pair.get("pairId") instanceof String pairId)
+					|| !(pair.get("duplicate") instanceof Boolean duplicate)
+					|| !(pair.get("confidence") instanceof Number confidence))
+				throw new IllegalStateException("Invalid semantic pair checkpoint");
+			if (confidence.doubleValue() < 0 || confidence.doubleValue() > 1)
+				throw new IllegalStateException("Invalid semantic pair checkpoint confidence");
+			result.put(pairId, new PairClassification(duplicate, confidence.doubleValue()));
+		}
+	}
+
+	private String pairBatchCheckpointId(String jobId, int batchIndex) {
+		return ValidationEventService.digest(jobId + ":semantic-pair-batch-v3:" + batchIndex);
 	}
 
 	private String sourceKeyPointCheckpointId(String jobId) {

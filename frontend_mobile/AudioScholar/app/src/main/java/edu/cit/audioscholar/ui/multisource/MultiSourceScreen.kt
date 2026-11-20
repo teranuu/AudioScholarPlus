@@ -114,7 +114,7 @@ fun MultiSourceScreen(navController: NavHostController, viewModel: MultiSourceVi
                         if (job.status == "COMPLETE" && job.mergedSummary != null) {
                             MergedContent(job)
                         } else if (job.status == "INCOMPLETE" && job.mergedSummary != null) {
-                            Text("Partial result: required source evidence or validation is incomplete. Treat unresolved citations as unverified.",
+                            Text(job.failureReason ?: "Required source evidence or validation is incomplete.",
                                 color = MaterialTheme.colorScheme.error)
                             MergedContent(job)
                         }

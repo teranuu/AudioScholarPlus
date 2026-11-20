@@ -249,13 +249,29 @@ class MultiSourceJobServiceTest {
 
 		harness.service.processQueuedJob("job-1");
 
-		verify(harness.repository).transitionTerminal(
-				argThat(job -> "INCOMPLETE".equals(job.getStatus()) && job.isMeasurementIncomplete()
-						&& "INCOMPLETE".equals(job.getMergedSummary().getStatus())
-						&& "ATTRIBUTION".equals(job.getFailureStage())),
+		verify(harness.repository).transitionTerminal(argThat(job -> "INCOMPLETE".equals(job.getStatus())
+				&& job.isMeasurementIncomplete() && "INCOMPLETE".equals(job.getMergedSummary().getStatus())
+				&& "ATTRIBUTION".equals(job.getFailureStage()) && job.getFailureReason().contains("source citations")),
 				eq("JOB_INCOMPLETE"), eq("initial"), anyList(), anyMap());
 		verify(harness.repository, never()).transitionTerminal(any(), eq("JOB_COMPLETED"), anyString(), anyList(),
 				anyMap());
+	}
+
+	@Test
+	void missingValidationRecordsReportValidationFailure() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.semantic.evaluate(any(), any())).thenAnswer(call -> {
+			MultiSourceJob job = call.getArgument(0);
+			job.setMeasurementIncomplete(true);
+			return List.of();
+		});
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository).transitionTerminal(
+				argThat(job -> "INCOMPLETE".equals(job.getStatus()) && "VALIDATION".equals(job.getFailureStage())
+						&& job.getFailureReason().contains("validation records")),
+				eq("JOB_INCOMPLETE"), eq("initial"), anyList(), anyMap());
 	}
 
 	@Test

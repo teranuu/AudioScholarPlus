@@ -123,7 +123,7 @@ const MergeStatusIndicator = ({ job }) => {
   return (
     <div className="text-center">
       <p className={`text-sm flex items-center justify-center gap-1 ${degraded ? 'text-amber-700 dark:text-amber-300' : 'text-green-600 dark:text-green-400'}`}><FiCheckCircle /> {degraded ? 'Partial merged summary available.' : 'Merged summary generated.'}</p>
-      {degraded && <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">Required source evidence or validation is incomplete. Treat unresolved citations as unverified.</p>}
+      {degraded && <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">{job.failureReason || 'Required source evidence or validation is incomplete.'}</p>}
     </div>
   );
 };

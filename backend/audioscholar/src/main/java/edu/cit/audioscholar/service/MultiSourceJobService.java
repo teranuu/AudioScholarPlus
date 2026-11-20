@@ -449,13 +449,26 @@ public class MultiSourceJobService {
 							|| !admittedSourceIds.contains(a.getSourceFileId()))
 					|| summary.getSummaryKeyPoints().stream()
 							.anyMatch(point -> !attributedPointIds.contains(point.getKeyPointId()));
+			Set<String> unresolvedPointIds = attributions.stream()
+					.filter(a -> !("RESOLVED".equals(a.getAttributionStatus())
+							|| "MULTI_SOURCE".equals(a.getAttributionStatus()))
+							|| !admittedSourceIds.contains(a.getSourceFileId()))
+					.map(SourceAttribution::getKeyPointId).collect(java.util.stream.Collectors.toSet());
+			summary.getSummaryKeyPoints().stream().filter(point -> !attributedPointIds.contains(point.getKeyPointId()))
+					.map(point -> point.getKeyPointId()).forEach(unresolvedPointIds::add);
+			int unresolvedAttributionCount = unresolvedPointIds.size();
+			event(job, "ATTRIBUTION_COVERAGE", List.of(12), "initial",
+					Map.of("jobId", jobId, "unresolvedAttributionCount", unresolvedAttributionCount, "keyPointCount",
+							summary.getSummaryKeyPoints().size()));
 			boolean incomplete = job.isMeasurementIncomplete() || attributionIncomplete;
 			if (incomplete) {
 				job.setMeasurementIncomplete(true);
 				job.setSemanticEnrichmentStatus("INCOMPLETE");
 				summary.setStatus(ProcessingStatus.INCOMPLETE.name());
-				job.setFailureStage("ATTRIBUTION");
-				job.setFailureReason("Required source evidence or validation records are incomplete.");
+				job.setFailureStage(attributionIncomplete ? "ATTRIBUTION" : "VALIDATION");
+				job.setFailureReason(attributionIncomplete
+						? "Some merged points lack verified source citations (" + unresolvedAttributionCount + ")."
+						: "Required validation records are incomplete.");
 			}
 			summaryService.createSummary(summary);
 			event(job, "OUTPUT_GENERATED", List.of(1), summary.getSummaryId(),
