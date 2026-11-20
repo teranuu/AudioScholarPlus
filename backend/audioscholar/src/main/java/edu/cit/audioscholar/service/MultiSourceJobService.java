@@ -313,6 +313,8 @@ public class MultiSourceJobService {
 		job.setFailureStage(null);
 		job.setFailureCode(null);
 		job.setFailureDetail(null);
+		// Recompute completeness from this attempt's evidence and validation events.
+		job.setMeasurementIncomplete(false);
 		job.setProcessingStartedAt(new Date());
 		job.setProcessingAttempts(job.getProcessingAttempts() + 1);
 		if (!saveWorkerProgress(job))

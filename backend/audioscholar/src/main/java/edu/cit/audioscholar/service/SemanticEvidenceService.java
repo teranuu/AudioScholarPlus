@@ -28,7 +28,7 @@ import edu.cit.audioscholar.model.SummaryKeyPoint;
 
 @Service
 public class SemanticEvidenceService {
-	private static final int PAIR_BATCH_SIZE = 100;
+	private static final int PAIR_BATCH_SIZE = 50;
 	private static final Map<String, Object> SOURCE_KEY_POINT_SCHEMA = Map.of("type", "OBJECT", "properties",
 			Map.of("sources",
 					Map.of("type", "ARRAY", "items",
@@ -745,26 +745,25 @@ public class SemanticEvidenceService {
 					means both texts express the same substantive claim; related but distinct claims are not duplicates.
 					Return every pairId exactly once. INPUT_PAIRS=%s
 					""".formatted(json.writeValueAsString(pairs));
-			JsonNode root = parse(gemini.callSimpleTextAPI(prompt, job.getJobId(),
-					"multi-source.semantic-pair-batch.generateContent", PAIR_SCHEMA));
-			if (root.has("error") || !root.path("pairs").isArray())
-				throw new IllegalStateException("Batched semantic classification returned invalid JSON");
 			Set<String> batchIds = batch.stream().map(PairCandidate::pairId)
 					.collect(java.util.stream.Collectors.toSet());
-			Map<String, PairClassification> batchResult = new HashMap<>();
-			for (JsonNode pair : root.path("pairs")) {
-				String pairId = pair.path("pairId").asText("").trim();
-				double confidence = pair.path("confidence").asDouble(-1);
-				if (pairId.isBlank() || !batchIds.contains(pairId) || !pair.path("duplicate").isBoolean()
-						|| confidence < 0 || confidence > 1 || batchResult.containsKey(pairId))
-					throw new IllegalStateException("Batched semantic classification returned an invalid pair entry");
-				batchResult.put(pairId, new PairClassification(pair.path("duplicate").asBoolean(), confidence));
+			Map<String, PairClassification> batchResult;
+			try {
+				batchResult = classifyPairResponse(prompt, job, batchIds);
+				requestCount++;
+			} catch (Exception invalidResponse) {
+				if (!(invalidResponse instanceof com.fasterxml.jackson.core.JsonProcessingException)
+						&& (invalidResponse.getMessage() == null
+								|| !invalidResponse.getMessage().startsWith("Batched semantic classification")))
+					throw invalidResponse;
+				requestCount++;
+				batchResult = classifyPairResponse(prompt
+						+ " REPAIR: Return exactly the supplied pair IDs once each, with boolean duplicate and confidence from 0 to 1.",
+						job, batchIds);
+				requestCount++;
 			}
-			if (!batchResult.keySet().equals(batchIds))
-				throw new IllegalStateException("Batched semantic classification omitted one or more pairs");
 			savePairClassificationCheckpoint(job, start / PAIR_BATCH_SIZE, batchResult);
 			result.putAll(batchResult);
-			requestCount++;
 		}
 		events.emit(job.getJobId(), "MULTI_SOURCE", job.getClientSource(), "SEMANTIC_COMPARISON_COVERAGE", List.of(11),
 				"initial",
@@ -775,6 +774,26 @@ public class SemanticEvidenceService {
 		if (!result.keySet().equals(expectedPairIds))
 			throw new IllegalStateException("Batched semantic classification omitted one or more pairs");
 		return result;
+	}
+
+	private Map<String, PairClassification> classifyPairResponse(String prompt, MultiSourceJob job,
+			Set<String> batchIds) throws Exception {
+		JsonNode root = parse(gemini.callSimpleTextAPI(prompt, job.getJobId(),
+				"multi-source.semantic-pair-batch.generateContent", PAIR_SCHEMA));
+		if (root.has("error") || !root.path("pairs").isArray())
+			throw new IllegalStateException("Batched semantic classification returned invalid JSON");
+		Map<String, PairClassification> batchResult = new HashMap<>();
+		for (JsonNode pair : root.path("pairs")) {
+			String pairId = pair.path("pairId").asText("").trim();
+			double confidence = pair.path("confidence").asDouble(-1);
+			if (pairId.isBlank() || !batchIds.contains(pairId) || !pair.path("duplicate").isBoolean() || confidence < 0
+					|| confidence > 1 || batchResult.containsKey(pairId))
+				throw new IllegalStateException("Batched semantic classification returned an invalid pair entry");
+			batchResult.put(pairId, new PairClassification(pair.path("duplicate").asBoolean(), confidence));
+		}
+		if (!batchResult.keySet().equals(batchIds))
+			throw new IllegalStateException("Batched semantic classification omitted one or more pairs");
+		return batchResult;
 	}
 
 	private void savePairClassificationCheckpoint(MultiSourceJob job, int batchIndex,
@@ -814,6 +833,12 @@ public class SemanticEvidenceService {
 		Map<String, PairClassification> result = new HashMap<>();
 		if (row != null && row.get("pairs") instanceof List<?> legacyPairs)
 			readPairCheckpoint(result, legacyPairs);
+		for (int start = 0; start < candidates.size(); start += 100) {
+			Map<String, Object> previousBatch = firebase.getData("multiSourceStageCheckpoints",
+					ValidationEventService.digest(job.getJobId() + ":semantic-pair-batch-v3:" + start / 100));
+			if (previousBatch != null && previousBatch.get("pairs") instanceof List<?> pairs)
+				readPairCheckpoint(result, pairs);
+		}
 		for (int start = 0; start < candidates.size(); start += PAIR_BATCH_SIZE) {
 			Map<String, Object> batch = firebase.getData("multiSourceStageCheckpoints",
 					pairBatchCheckpointId(job.getJobId(), start / PAIR_BATCH_SIZE));
@@ -839,7 +864,7 @@ public class SemanticEvidenceService {
 	}
 
 	private String pairBatchCheckpointId(String jobId, int batchIndex) {
-		return ValidationEventService.digest(jobId + ":semantic-pair-batch-v3:" + batchIndex);
+		return ValidationEventService.digest(jobId + ":semantic-pair-batch-v4:" + batchIndex);
 	}
 
 	private String sourceKeyPointCheckpointId(String jobId) {

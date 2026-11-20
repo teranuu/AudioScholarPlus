@@ -470,7 +470,6 @@ public class GeminiBudgetService {
 	private boolean isBoundedMultiSourceStage(String operation) {
 		return "transcript-summary.generateContent".equals(operation)
 				|| "multi-source.key-point-batch.generateContent".equals(operation)
-				|| "multi-source.semantic-pair-batch.generateContent".equals(operation)
 				|| operation != null && operation.startsWith("multi-source.grounded-claims-")
 				|| "multi-source.grounded-groups.generateContent".equals(operation);
 	}

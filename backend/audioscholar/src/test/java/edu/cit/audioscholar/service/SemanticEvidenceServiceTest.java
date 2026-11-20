@@ -33,6 +33,36 @@ import edu.cit.audioscholar.model.Summary;
 
 class SemanticEvidenceServiceTest {
 	@Test
+	void reusesPreviousHundredPairCheckpointAfterBatchSizeChange() throws Exception {
+		GeminiService gemini = mock(GeminiService.class);
+		FirebaseService firebase = mock(FirebaseService.class);
+		SemanticEvidenceService service = new SemanticEvidenceService(gemini, firebase, new ObjectMapper(),
+				mock(ValidationEventService.class), .80, "app", "summary", "semantic");
+		MultiSourceJob job = new MultiSourceJob();
+		job.setJobId("old-checkpoint");
+		job.setOutputType("NOTES");
+		job.setSourceFiles(List.of(source("a", "A"), source("b", "B")));
+		when(firebase.getData("multiSourceStageCheckpoints",
+				ValidationEventService.digest("old-checkpoint:source-key-point-checkpoint-v2")))
+				.thenReturn(Map.of("pointsBySource", Map.of("a", List.of("claim A"), "b", List.of("claim B"))));
+		String leftId = ValidationEventService.digest("old-checkpoint:a:0");
+		String rightId = ValidationEventService.digest("old-checkpoint:b:0");
+		String pairId = ValidationEventService.digest(leftId + ":" + rightId);
+		when(firebase.getData("multiSourceStageCheckpoints",
+				ValidationEventService.digest("old-checkpoint:semantic-pair-batch-v3:0")))
+				.thenReturn(Map.of("pairs", List.of(Map.of("pairId", pairId, "duplicate", false, "confidence", 1.0))));
+		when(firebase.queryCollection("transcriptSegments", "sourceFileId", "a")).thenReturn(List
+				.of(Map.of("segmentId", "a0", "sourceFileId", "a", "text", "claim A", "startMs", 0L, "endMs", 1000L)));
+		when(firebase.queryCollection("transcriptSegments", "sourceFileId", "b")).thenReturn(List
+				.of(Map.of("segmentId", "b0", "sourceFileId", "b", "text", "claim B", "startMs", 0L, "endMs", 1000L)));
+
+		service.evaluate(job, new Summary("summary", "old-checkpoint", "merged"));
+
+		verify(gemini, never()).callSimpleTextAPI(anyString(), eq("old-checkpoint"),
+				eq("multi-source.semantic-pair-batch.generateContent"), anyMap());
+		assertFalse(job.isMeasurementIncomplete());
+	}
+	@Test
 	void classifiesAll636PairsAndResumesAfterTwoBatches() throws Exception {
 		ObjectMapper json = new ObjectMapper();
 		GeminiService gemini = mock(GeminiService.class);
@@ -72,7 +102,9 @@ class SemanticEvidenceServiceTest {
 		when(gemini.callSimpleTextAPI(anyString(), eq("many-pairs"),
 				eq("multi-source.semantic-pair-batch.generateContent"), anyMap())).thenAnswer(call -> {
 					requests[0]++;
-					if (requests[0] == 3)
+					if (requests[0] == 1)
+						return "{\"pairs\":[]}";
+					if (requests[0] == 4)
 						throw new IllegalStateException("Interrupted after two batches");
 					String prompt = call.getArgument(0);
 					String input = prompt.substring(prompt.indexOf("INPUT_PAIRS=") + "INPUT_PAIRS=".length()).trim();
@@ -84,7 +116,7 @@ class SemanticEvidenceServiceTest {
 				});
 		assertThrows(IllegalStateException.class,
 				() -> service.evaluate(job, new Summary("summary", "many-pairs", "merged")));
-		requests[0] = 3;
+		requests[0] = 4;
 		Summary summary = new Summary("summary", "many-pairs", "merged");
 		List<SourceAttribution> attributions = service.evaluate(job, summary);
 		assertEquals(636, checkpoints.entrySet().stream()
@@ -97,7 +129,7 @@ class SemanticEvidenceServiceTest {
 						.map(pair -> ((Map<?, ?>) pair).get("pairId")).distinct().count());
 		assertEquals(44, attributions.size());
 		assertFalse(job.isMeasurementIncomplete());
-		verify(gemini, times(8)).callSimpleTextAPI(anyString(), eq("many-pairs"),
+		verify(gemini, times(15)).callSimpleTextAPI(anyString(), eq("many-pairs"),
 				eq("multi-source.semantic-pair-batch.generateContent"), anyMap());
 	}
 	@Test

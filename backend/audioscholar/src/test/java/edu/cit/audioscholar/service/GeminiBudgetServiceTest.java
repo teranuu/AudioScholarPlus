@@ -100,6 +100,18 @@ class GeminiBudgetServiceTest {
 	}
 
 	@Test
+	void semanticComparisonBatchesCanExceedTheTwoRequestStageLimit() {
+		GeminiBudgetService service = service(30);
+		service.requireDailyCapacity("multi-source.job-admission", 5, "job-1");
+		for (int attempt = 0; attempt < 14; attempt++) {
+			service.reserve("multi-source.semantic-pair-batch.generateContent", 100, null, "job-1");
+			service.reserveModel("gemini-a", "multi-source.semantic-pair-batch.generateContent", 100, "job-1");
+		}
+		assertThat(document("project-admission-")).containsEntry("actualRequests", 14L).containsEntry("topUpRequests",
+				9L);
+	}
+
+	@Test
 	void refusesTopUpWhenProjectDayHasNoCapacity() {
 		GeminiBudgetService service = service(5);
 		service.requireDailyCapacity("multi-source.job-admission", 5, "job-1");

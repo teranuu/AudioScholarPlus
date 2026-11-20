@@ -275,6 +275,20 @@ class MultiSourceJobServiceTest {
 	}
 
 	@Test
+	void retryCanCompleteAfterEarlierComparisonFailure() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.repository.findById("job-1")).thenReturn(Map.of("jobId", "job-1", "userId", "user-1", "title",
+				"Title", "outputType", "NOTES", "status", "PROCESSING_QUEUED", "clientSource", "WEB", "sourceCount", 2,
+				"processingAttempts", 1, "measurementIncomplete", true));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository).transitionTerminal(
+				argThat(job -> "COMPLETE".equals(job.getStatus()) && !job.isMeasurementIncomplete()),
+				eq("JOB_COMPLETED"), eq("initial"), anyList(), anyMap());
+	}
+
+	@Test
 	void incompleteJobDetailsIncludePersistedSourceAttributions() throws Exception {
 		ProcessingHarness harness = processingHarness(true);
 		Map<String, Object> citation = Map.of("keyPointId", "point-a", "sourceFileId", "source-a", "attributionStatus",
