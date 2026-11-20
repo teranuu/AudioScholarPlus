@@ -566,7 +566,7 @@ public class FirebaseService {
 	}
 
 	private boolean isTerminalStatus(String status) {
-		return "COMPLETE".equals(status) || "FAILED".equals(status);
+		return "COMPLETE".equals(status) || "INCOMPLETE".equals(status) || "FAILED".equals(status);
 	}
 
 	public boolean failJobIfNonterminalAndStale(String collection, String document, Date cutoff) {
@@ -577,7 +577,7 @@ public class FirebaseService {
 				if (!snapshot.exists())
 					return false;
 				String status = snapshot.getString("status");
-				if ("COMPLETE".equals(status) || "FAILED".equals(status))
+				if (isTerminalStatus(status))
 					return false;
 				Timestamp quotaRetryAt = snapshot.getTimestamp("quotaRetryAt");
 				if ("PROCESSING_QUEUED".equals(status) && quotaRetryAt != null

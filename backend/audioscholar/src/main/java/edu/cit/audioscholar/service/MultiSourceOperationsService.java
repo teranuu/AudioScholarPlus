@@ -132,7 +132,7 @@ public class MultiSourceOperationsService {
 		int published = 0;
 		for (Map<String, Object> job : pendingJobs) {
 			String status = string(job.get("status"));
-			if (!"COMPLETE".equals(status) && !"FAILED".equals(status)) {
+			if (!"COMPLETE".equals(status) && !"INCOMPLETE".equals(status) && !"FAILED".equals(status)) {
 				log.warn("Ignoring terminal-event marker on nonterminal multi-source job jobId={} status={}",
 						job.get("jobId"), status);
 				continue;
@@ -143,7 +143,9 @@ public class MultiSourceOperationsService {
 			}
 			String type = job.get("terminalEventType") instanceof String value
 					? value
-					: "COMPLETE".equals(status) ? "JOB_COMPLETED" : "JOB_FAILED";
+					: "COMPLETE".equals(status)
+							? "JOB_COMPLETED"
+							: "INCOMPLETE".equals(status) ? "JOB_INCOMPLETE" : "JOB_FAILED";
 			String occurrenceKey = job.get("terminalEventOccurrenceKey") instanceof String value ? value : "initial";
 			List<Integer> objectives = integerList(job.get("terminalEventObjectives"));
 			Map<String, Object> payload = map(job.get("terminalEventPayload"));

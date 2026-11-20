@@ -24,6 +24,7 @@ public enum ProcessingStatus {
 	RECOMMENDATIONS_QUEUED, // Message sent to recommendations queue
 	GENERATING_RECOMMENDATIONS, // Generating learning recommendations
 	COMPLETE, // Process finished successfully, all steps done
+	INCOMPLETE, // Multi-source content exists, but required evidence or processing is missing
 	COMPLETED_WITH_WARNINGS, // Process finished, but with non-critical failures (e.g. recommendations
 								// skipped)
 	FAILED // An error occurred at some stage

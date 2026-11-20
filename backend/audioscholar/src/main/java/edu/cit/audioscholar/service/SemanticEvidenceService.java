@@ -79,7 +79,7 @@ public class SemanticEvidenceService {
 		Map<String, List<String>> extractedBySource = extractSourceKeyPoints(job);
 		for (SourceFile source : job.getSourceFiles()) {
 			List<String> extracted = extractedBySource.get(source.getSourceFileId());
-			if (extracted == null) {
+			if (extracted == null || extracted.isEmpty()) {
 				incomplete = true;
 				continue;
 			}
@@ -374,6 +374,11 @@ public class SemanticEvidenceService {
 		}
 		if (claims.isEmpty())
 			throw new IllegalStateException("Grounded extraction returned no claims");
+		Set<String> representedSources = new HashSet<>();
+		for (Map<String, Object> claim : claims.values())
+			representedSources.add((String) claim.get("sourceFileId"));
+		if (!representedSources.containsAll(sourceLabels.keySet()))
+			job.setMeasurementIncomplete(true);
 		firebase.createEvidenceBatch("sourceKeyPoints", claims);
 		long extractionMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
 		long groupingStarted = System.nanoTime();

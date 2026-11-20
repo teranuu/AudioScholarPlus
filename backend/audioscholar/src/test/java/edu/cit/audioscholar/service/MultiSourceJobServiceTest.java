@@ -22,9 +22,11 @@ import edu.cit.audioscholar.dto.MultiSourceJobMessage;
 import edu.cit.audioscholar.exception.GeminiBudgetExceededException;
 import edu.cit.audioscholar.exception.GeminiStageRequestLimitException;
 import edu.cit.audioscholar.model.MultiSourceJob;
+import edu.cit.audioscholar.model.SourceAttribution;
 import edu.cit.audioscholar.model.SourceFile;
 import edu.cit.audioscholar.model.SourceKind;
 import edu.cit.audioscholar.model.Summary;
+import edu.cit.audioscholar.model.SummaryKeyPoint;
 
 class MultiSourceJobServiceTest {
 
@@ -237,6 +239,55 @@ class MultiSourceJobServiceTest {
 	}
 
 	@Test
+	void unresolvedSourceAttributionPublishesIncompletePartialResult() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		SourceAttribution attribution = new SourceAttribution();
+		attribution.setKeyPointId("point-a");
+		attribution.setSourceFileId("source-a");
+		attribution.setAttributionStatus("UNRESOLVED");
+		when(harness.semantic.evaluate(any(), any())).thenReturn(List.of(attribution));
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository).transitionTerminal(
+				argThat(job -> "INCOMPLETE".equals(job.getStatus()) && job.isMeasurementIncomplete()
+						&& "INCOMPLETE".equals(job.getMergedSummary().getStatus())
+						&& "ATTRIBUTION".equals(job.getFailureStage())),
+				eq("JOB_INCOMPLETE"), eq("initial"), anyList(), anyMap());
+		verify(harness.repository, never()).transitionTerminal(any(), eq("JOB_COMPLETED"), anyString(), anyList(),
+				anyMap());
+	}
+
+	@Test
+	void incompleteJobDetailsIncludePersistedSourceAttributions() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		Map<String, Object> citation = Map.of("keyPointId", "point-a", "sourceFileId", "source-a", "attributionStatus",
+				"UNRESOLVED");
+		when(harness.repository.findById("job-1")).thenReturn(Map.of("jobId", "job-1", "status", "INCOMPLETE"));
+		when(harness.mergedSummaries.getByJobId("job-1")).thenReturn(Map.of("sourceAttributions", List.of(citation)));
+
+		assertEquals(List.of(citation), harness.service.getJobMapForClient("job-1").get("sourceAttributions"));
+	}
+
+	@Test
+	void keyPointWithoutAttributionCannotPublishComplete() throws Exception {
+		ProcessingHarness harness = processingHarness(true);
+		when(harness.semantic.evaluate(any(), any())).thenAnswer(invocation -> {
+			Summary summary = invocation.getArgument(1);
+			SummaryKeyPoint point = new SummaryKeyPoint();
+			point.setKeyPointId("point-without-citation");
+			point.setText("Unverified claim");
+			summary.setSummaryKeyPoints(List.of(point));
+			return List.of();
+		});
+
+		harness.service.processQueuedJob("job-1");
+
+		verify(harness.repository).transitionTerminal(argThat(job -> "INCOMPLETE".equals(job.getStatus())),
+				eq("JOB_INCOMPLETE"), eq("initial"), anyList(), anyMap());
+	}
+
+	@Test
 	void terminalStateAndPendingEventArePersistedBeforePublishingCompletion() throws Exception {
 		ProcessingHarness harness = processingHarness(true);
 
@@ -356,6 +407,7 @@ class MultiSourceJobServiceTest {
 		MultiSourceJobRepository repository = mock(MultiSourceJobRepository.class);
 		ValidationEventService events = mock(ValidationEventService.class);
 		SemanticEvidenceService semantic = mock(SemanticEvidenceService.class);
+		MergedSummaryRepository mergedSummaries = mock(MergedSummaryRepository.class);
 		SourceTranscriptService transcripts = mock(SourceTranscriptService.class);
 		TimedTranscriptSegmentService segments = mock(TimedTranscriptSegmentService.class);
 		GeminiRequestGovernor governor = governor();
@@ -379,16 +431,16 @@ class MultiSourceJobServiceTest {
 				anyString())).thenReturn(true);
 		MultiSourceJobService service = new MultiSourceJobService(gemini, mock(QualityReportService.class),
 				mock(SummaryService.class), deduplication, mock(SourceAttributionService.class), sourceFiles,
-				transcripts, mock(DocumentTextExtractionService.class), mock(MergedSummaryRepository.class), repository,
+				transcripts, mock(DocumentTextExtractionService.class), mergedSummaries, repository,
 				mock(AudioProcessingGuardrailService.class), tempDir.toString(), "500MB", publisher, events, segments,
 				semantic, governor, java.time.Duration.ofMinutes(35), java.time.Duration.ofSeconds(15), "test-worker");
-		return new ProcessingHarness(service, repository, events, sourceFiles, gemini, publisher, transcripts, segments,
-				semantic);
+		return new ProcessingHarness(service, repository, mergedSummaries, events, sourceFiles, gemini, publisher,
+				transcripts, segments, semantic);
 	}
 
 	private record ProcessingHarness(MultiSourceJobService service, MultiSourceJobRepository repository,
-			ValidationEventService events, SourceFileService sourceFiles, GeminiService gemini,
-			ConfirmedRabbitPublisher publisher, SourceTranscriptService transcripts,
+			MergedSummaryRepository mergedSummaries, ValidationEventService events, SourceFileService sourceFiles,
+			GeminiService gemini, ConfirmedRabbitPublisher publisher, SourceTranscriptService transcripts,
 			TimedTranscriptSegmentService segments, SemanticEvidenceService semantic) {
 	}
 

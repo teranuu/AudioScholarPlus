@@ -88,6 +88,18 @@ class MultiSourceOperationsServiceTest {
 	}
 
 	@Test
+	void incompleteTerminalEventIsRepublished() {
+		when(jobs.findPendingTerminalEvents(25)).thenReturn(List.of(Map.of("jobId", "job-partial", "status",
+				"INCOMPLETE", "clientSource", "ANDROID", "terminalEventPending", true)));
+		when(events.emit(eq("job-partial"), eq("MULTI_SOURCE"), eq("ANDROID"), eq("JOB_INCOMPLETE"), anyList(),
+				eq("initial"), anyMap(), eq("multiSourceJobs"))).thenReturn(true);
+
+		service.reconcile();
+
+		verify(jobs).markTerminalEventPublished("job-partial");
+	}
+
+	@Test
 	void leaseOwnedByAnotherInstanceSkipsAllFirestoreQueries() {
 		when(jobs.tryAcquireReconciliationLease(eq("test-worker"), any())).thenReturn(false);
 

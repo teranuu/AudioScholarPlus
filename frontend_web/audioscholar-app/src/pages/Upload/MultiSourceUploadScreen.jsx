@@ -35,7 +35,7 @@ const JOB_POLL_MAX_DELAY_MS = 15000;
 const JOB_POLL_MAX_DURATION_MS = 30 * 60 * 1000;
 const ACTIVE_JOB_STORAGE_KEY = 'AudioScholar.activeMultiSourceJobId';
 const SUBMISSION_KEY_STORAGE_KEY = 'AudioScholar.multiSourceSubmissionKey';
-const TERMINAL_JOB_STATUSES = new Set(['COMPLETE', 'FAILED']);
+const TERMINAL_JOB_STATUSES = new Set(['COMPLETE', 'INCOMPLETE', 'FAILED']);
 
 const sourceLabel = (index) => `Source ${String.fromCharCode(65 + index)}`;
 const extensionOf = (file) => file.name.split('.').pop().toLowerCase();
@@ -116,12 +116,12 @@ const SourceAttributionChip = ({ source }) => (
 );
 
 const MergeStatusIndicator = ({ job }) => {
-  if (!job || job.status !== 'COMPLETE' || !job.mergedSummary) return null;
-  const degraded = job.measurementIncomplete || ['DEGRADED', 'INCOMPLETE'].includes(job.semanticEnrichmentStatus);
+  if (!job || !['COMPLETE', 'INCOMPLETE'].includes(job.status) || !job.mergedSummary) return null;
+  const degraded = job.status === 'INCOMPLETE' || job.measurementIncomplete || ['DEGRADED', 'INCOMPLETE'].includes(job.semanticEnrichmentStatus);
   return (
     <div className="text-center">
-      <p className="text-sm text-green-600 dark:text-green-400 flex items-center justify-center gap-1"><FiCheckCircle /> Merged summary generated.</p>
-      {degraded && <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">Source attribution is incomplete, but the merged summary is available.</p>}
+      <p className={`text-sm flex items-center justify-center gap-1 ${degraded ? 'text-amber-700 dark:text-amber-300' : 'text-green-600 dark:text-green-400'}`}><FiCheckCircle /> {degraded ? 'Partial merged summary available.' : 'Merged summary generated.'}</p>
+      {degraded && <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">Required source evidence or validation is incomplete. Treat unresolved citations as unverified.</p>}
     </div>
   );
 };
@@ -139,7 +139,7 @@ const DeferredStatusIndicator = ({ job }) => {
 const MergedSummaryScreen = ({ job }) => {
   const [cardIndex, setCardIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
-  if (!job || job.status !== 'COMPLETE' || !job.mergedSummary) return null;
+  if (!job || !['COMPLETE', 'INCOMPLETE'].includes(job.status) || !job.mergedSummary) return null;
   const summary = job.mergedSummary;
   const sources = job.sourceFiles || [];
   const cards = summary.flashcards || [];
@@ -172,7 +172,7 @@ const MergedSummaryScreen = ({ job }) => {
             {showAnswer ? 'Hide answer' : 'Flip to answer'}
           </button>
           {showAnswer && <p className="mt-3 text-gray-800 dark:text-gray-100">{card.back}</p>}
-          <p className="mt-4 text-xs text-gray-600 dark:text-gray-300">{sourceName(card.sourceFileId)}
+          <p className="mt-4 text-xs text-gray-600 dark:text-gray-300">{card.sourceSegmentId ? sourceName(card.sourceFileId) : 'Supporting evidence unresolved'}
             {card.sourceStartTime && card.sourceEndTime ? ` · ${card.sourceStartTime}–${card.sourceEndTime}` : ' · Supporting interval unavailable'}
           </p>
           <div className="flex gap-3 mt-5">
@@ -193,7 +193,7 @@ const MergedSummaryScreen = ({ job }) => {
               const attributions = (job.sourceAttributions || []).filter((item) => item.keyPointId === point.keyPointId);
               const labels = attributions.length > 0
                 ? attributions.map((item) => `${sourceName(item.sourceFileId)}${item.attributionStatus === 'UNRESOLVED' ? ' (evidence unresolved)' : ''}`)
-                : [sourceName(point.sourceFileId)];
+                : ['Supporting evidence unresolved'];
               return (
                 <div key={point.keyPointId} className="rounded-lg border border-gray-200 dark:border-gray-700 p-3">
                   <p className="text-sm text-gray-900 dark:text-white">{point.text}</p>

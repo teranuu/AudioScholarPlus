@@ -58,6 +58,7 @@ data class MultiSourceFlashcardDto(
     val front: String? = null,
     val back: String? = null,
     val sourceFileId: String? = null,
+    val sourceSegmentId: String? = null,
     val sourceStartTime: String? = null,
     val sourceEndTime: String? = null
 )
