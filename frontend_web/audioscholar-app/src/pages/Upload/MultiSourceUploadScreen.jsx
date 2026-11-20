@@ -122,7 +122,6 @@ const MergeStatusIndicator = ({ job }) => {
     <div className="text-center">
       <p className="text-sm text-green-600 dark:text-green-400 flex items-center justify-center gap-1"><FiCheckCircle /> Merged summary generated.</p>
       {degraded && <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">Source attribution is incomplete, but the merged summary is available.</p>}
-      {job.deliveryWithinTarget === false && <p className="text-xs text-amber-700 dark:text-amber-300 mt-1">Delivery took {Math.round((job.mergeLatencyMs || 0) / 1000)} seconds, exceeding the 120-second target.</p>}
     </div>
   );
 };

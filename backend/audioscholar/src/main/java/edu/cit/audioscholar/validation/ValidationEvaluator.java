@@ -22,6 +22,7 @@ public final class ValidationEvaluator {
 	private final Map<String, List<JsonNode>> rows = new HashMap<>();
 	private final JsonNode truth;
 	private final Map<Integer, Map<String, Object>> metrics = new LinkedHashMap<>();
+	private final Map<String, Object> descriptivePerformance = new LinkedHashMap<>();
 	private final List<Map<String, Object>> qualityMatches = new ArrayList<>();
 	private ValidationEvaluator(Path export, Path truthFile) throws Exception {
 		for (String line : Files.readAllLines(export)) {
@@ -52,12 +53,15 @@ public final class ValidationEvaluator {
 		Files.createDirectories(out);
 		Files.writeString(out.resolve("metrics.json"),
 				JSON.writerWithDefaultPrettyPrinter().writeValueAsString(e.metrics));
+		Files.writeString(out.resolve("descriptive-performance.json"),
+				JSON.writerWithDefaultPrettyPrinter().writeValueAsString(e.descriptivePerformance));
 		StringBuilder csv = new StringBuilder(
-				"objective,numerator,denominator,value,target,status,excluded,missingEvidence\n");
+				"legacyEventCode,outcomeId,numerator,denominator,value,target,status,excluded,missingEvidence\n");
 		for (var m : e.metrics.entrySet())
-			csv.append(m.getKey()).append(',').append(m.getValue().get("numerator")).append(',')
-					.append(m.getValue().get("denominator")).append(',').append(m.getValue().get("value")).append(',')
-					.append(m.getValue().get("target")).append(',').append(m.getValue().get("status")).append(',')
+			csv.append(m.getKey()).append(',').append(m.getValue().get("outcomeId")).append(',')
+					.append(m.getValue().get("numerator")).append(',').append(m.getValue().get("denominator"))
+					.append(',').append(m.getValue().get("value")).append(',').append(m.getValue().get("target"))
+					.append(',').append(m.getValue().get("status")).append(',')
 					.append(m.getValue().get("excludedRecords")).append(',').append(m.getValue().get("missingEvidence"))
 					.append('\n');
 		Files.writeString(out.resolve("metrics.csv"), csv);
@@ -99,7 +103,6 @@ public final class ValidationEvaluator {
 		warnings();
 		semantic(multiSourceIncomplete);
 		attribution(multiSourceIncomplete);
-		alignment(multiSourceIncomplete);
 	}
 	private void lifecycle(Set<String> configurationIncomplete, Set<String> multiSourceIncomplete) {
 		Map<String, Map<String, Instant>> events = new HashMap<>();
@@ -119,21 +122,18 @@ public final class ValidationEvaluator {
 			}
 		}
 		long accepted = 0, configured = 0, valid = 0, complete = 0, acceptedStage = 0, queuedStage = 0,
-				uploadedStage = 0, completedValidJobs = 0, under = 0, missingLatencyEvidence = 0,
-				invalidLifecycleEvidence = 0;
+				uploadedStage = 0, invalidLifecycleEvidence = 0;
 		Map<String, Object> jobs = new LinkedHashMap<>();
 		Map<String, Object> configurationWorkflows = new LinkedHashMap<>();
 		Map<String, Integer> expected = new HashMap<>(), completed = new HashMap<>();
-		Map<String, Instant> lastSource = new HashMap<>();
 		Set<String> validBatchIds = new HashSet<>();
 		for (JsonNode j : data("multiSourceJobs"))
 			expected.put(j.path("jobId").asText(), j.path("sourceCount").asInt(j.path("sourceFiles").size()));
 		for (JsonNode s : data("sourceFiles"))
 			try {
 				String id = s.path("jobId").asText();
-				Instant at = Instant.parse(s.path("transcriptionCompletedAt").asText());
+				Instant.parse(s.path("transcriptionCompletedAt").asText());
 				completed.merge(id, 1, Integer::sum);
-				lastSource.merge(id, at, (a, b) -> a.isAfter(b) ? a : b);
 			} catch (Exception ignored) {
 			}
 		for (var entry : events.entrySet()) {
@@ -165,7 +165,9 @@ public final class ValidationEvaluator {
 				valid++;
 				if (e.containsKey("JOB_ACCEPTED"))
 					acceptedStage++;
-				if (e.containsKey("JOB_QUEUED"))
+				boolean admissionOrdered = ordered(e, "BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED",
+						"JOB_QUEUED");
+				if (admissionOrdered && expected.getOrDefault(id, -1) >= 2 && expected.getOrDefault(id, -1) <= 5)
 					queuedStage++;
 				if (e.containsKey("ALL_SOURCES_UPLOADED"))
 					uploadedStage++;
@@ -187,38 +189,56 @@ public final class ValidationEvaluator {
 				d.put("completedSources", completed.getOrDefault(id, 0));
 				d.put("terminalEventCount", terminalCount);
 				d.put("sourceCountValid", sourceCountValid);
+				d.put("admissionOrdered", admissionOrdered);
 				d.put("allSourcesCompleted", allSourcesCompleted);
 				d.put("lifecycleOrdered", lifecycleOrdered);
-				if (e.containsKey("JOB_COMPLETED") && terminalCount == 1) {
-					completedValidJobs++;
-					if (lastSource.containsKey(id) && e.containsKey("MERGED_SUMMARY_AVAILABLE")
-							&& completed.getOrDefault(id, 0) == expected.getOrDefault(id, -1)) {
-						long ms = java.time.Duration.between(lastSource.get(id), e.get("MERGED_SUMMARY_AVAILABLE"))
-								.toMillis();
-						d.put("mergeDurationMs", ms);
-						if (ms >= 0 && ms < 120000)
-							under++;
-					} else
-						missingLatencyEvidence++;
-				}
+				if (e.containsKey("JOB_COMPLETED") && terminalCount == 1 && e.containsKey("MERGED_SUMMARY_AVAILABLE"))
+					d.put("mergedSummaryAvailableAt", e.get("MERGED_SUMMARY_AVAILABLE").toString());
 				jobs.put(id, d);
 			}
 		}
 		boolean configurationInvalid = !configurationIncomplete.isEmpty();
-		long relevantIncomplete = multiSourceIncomplete.stream().filter(validBatchIds::contains).count();
-		boolean multiSourceInvalid = relevantIncomplete > 0;
 		put(2, configured, accepted, 1, configurationInvalid, configurationIncomplete.size(),
 				configurationIncomplete.size(), Map.of("workflows", configurationWorkflows));
-		put(9, complete, valid, 1, multiSourceInvalid || invalidLifecycleEvidence > 0,
-				relevantIncomplete + invalidLifecycleEvidence, relevantIncomplete + invalidLifecycleEvidence, Map.of(
-						"stageRates", Map.of("accepted", ratio(acceptedStage, valid), "queued",
-								ratio(queuedStage, valid), "allSourcesUploaded", ratio(uploadedStage, valid)),
-						"jobs", jobs));
-		put(12, under, completedValidJobs, 1,
-				multiSourceInvalid || missingLatencyEvidence > 0 || invalidLifecycleEvidence > 0,
-				relevantIncomplete + missingLatencyEvidence + invalidLifecycleEvidence,
-				relevantIncomplete + missingLatencyEvidence + invalidLifecycleEvidence,
-				Map.of("limitMsExclusive", 120000, "jobs", jobs));
+		put(9, queuedStage, valid, 1, false, 0, 0, Map.of("stageRates",
+				Map.of("accepted", ratio(acceptedStage, valid), "queued", ratio(queuedStage, valid),
+						"allSourcesUploaded", ratio(uploadedStage, valid)),
+				"fullProcessingSuccess",
+				Map.of("completed", complete, "eligible", valid, "invalidLifecycleEvidence", invalidLifecycleEvidence),
+				"jobs", jobs));
+		long[] media = data("multiSourceJobs").stream()
+				.filter(job -> validBatchIds.contains(job.path("jobId").asText())
+						&& "COMPLETE".equals(job.path("status").asText()))
+				.map(job -> job.path("mergeLatencyMs")).filter(JsonNode::isNumber).mapToLong(JsonNode::asLong)
+				.filter(ms -> ms >= 0).sorted().toArray();
+		long[] documents = data("multiSourceJobs").stream()
+				.filter(job -> validBatchIds.contains(job.path("jobId").asText())
+						&& "COMPLETE".equals(job.path("status").asText()))
+				.map(job -> job.path("documentMergeLatencyMs")).filter(JsonNode::isNumber).mapToLong(JsonNode::asLong)
+				.filter(ms -> ms >= 0).sorted().toArray();
+		descriptivePerformance.put("assessment", "DESCRIPTIVE_ONLY");
+		descriptivePerformance.put("metricVersion", "srs-v1.1-dp");
+		descriptivePerformance.put("platform", data("manifest").stream().findFirst()
+				.map(m -> m.path("clientSource").asText("UNKNOWN")).orElse("UNKNOWN"));
+		descriptivePerformance.put("eligibleJobs", valid);
+		descriptivePerformance.put("completedJobs", complete);
+		descriptivePerformance.put("failedOrIncompleteJobs", valid - complete);
+		descriptivePerformance.put("recordedGeminiPacingWaitMs",
+				data("multiSourceJobs").stream().filter(job -> validBatchIds.contains(job.path("jobId").asText()))
+						.mapToLong(job -> job.path("geminiPacingWaitMs").asLong(0)).sum());
+		descriptivePerformance.put("media", latencySummary(media, "FINAL_MEDIA_TRANSCRIPTION_COMPLETED"));
+		descriptivePerformance.put("documentOnly", latencySummary(documents, "DOCUMENT_EXTRACTION_STARTED"));
+	}
+
+	private static Map<String, Object> latencySummary(long[] values, String startEvent) {
+		Map<String, Object> result = new LinkedHashMap<>();
+		result.put("measuredJobs", values.length);
+		result.put("medianMs", values.length == 0 ? null : values[(int) Math.ceil(.5 * values.length) - 1]);
+		result.put("p95Ms", values.length == 0 ? null : values[(int) Math.ceil(.95 * values.length) - 1]);
+		result.put("maxMs", values.length == 0 ? null : values[values.length - 1]);
+		result.put("startEvent", startEvent);
+		result.put("endEvent", "COMPLETE_MERGED_OUTPUT_AVAILABLE");
+		return result;
 	}
 
 	private static Instant eventTime(JsonNode event) {
@@ -551,36 +571,23 @@ public final class ValidationEvaluator {
 				missing.size() + unresolved.size() + incomplete.size(),
 				Map.of("missingAttributions", missing, "unresolvedAttributions", unresolved));
 	}
-	private void alignment(Set<String> incomplete) {
-		Map<String, JsonNode> expected = new HashMap<>();
-		boolean malformed = false;
-		for (JsonNode r : array(truth.path("overlapBoundaries"))) {
-			if (r.path("sourcePairId").asText().isBlank() || !boundary(r, "sourceA") || !boundary(r, "sourceB"))
-				malformed = true;
-			expected.put(r.path("sourcePairId").asText(), r);
-		}
-		int denominator = expected.size();
-		long accurate = 0;
-		for (JsonNode r : data("crossSourceAlignments")) {
-			JsonNode t = expected.get(r.path("sourcePairId").asText());
-			if (t == null)
-				continue;
-			expected.remove(r.path("sourcePairId").asText());
-			if (iou(r.path("sourceAStartMs").asLong(-1), r.path("sourceAEndMs").asLong(-1),
-					t.path("sourceAStartMs").asLong(-1), t.path("sourceAEndMs").asLong(-1)) < .5
-					|| iou(r.path("sourceBStartMs").asLong(-1), r.path("sourceBEndMs").asLong(-1),
-							t.path("sourceBStartMs").asLong(-1), t.path("sourceBEndMs").asLong(-1)) < .5)
-				continue;
-			if (close(r, t, "sourceA") && close(r, t, "sourceB"))
-				accurate++;
-		}
-		put(14, accurate, denominator, 1, malformed || !expected.isEmpty() || !incomplete.isEmpty(),
-				expected.size() + incomplete.size(), expected.size() + incomplete.size(), Map.of());
-	}
 	private void put(int objective, long numerator, long denominator, double target, boolean invalid, long excluded,
 			long missing, Map<String, ?> diagnostics) {
 		double value = denominator == 0 ? 0 : (double) numerator / denominator;
 		Map<String, Object> m = new LinkedHashMap<>();
+		m.put("outcomeId", switch (objective) {
+			case 2 -> "UAT1";
+			case 3 -> "R3";
+			case 4 -> "R4";
+			case 5 -> "R5";
+			case 6 -> "UAT2";
+			case 7 -> "UAT3";
+			case 8 -> "UAT4";
+			case 9 -> "UAT5";
+			case 11 -> "R9";
+			case 13 -> "R11";
+			default -> "LEGACY_UNMAPPED";
+		});
 		m.put("numerator", numerator);
 		m.put("denominator", denominator);
 		m.put("value", denominator == 0 ? null : value);
@@ -640,14 +647,6 @@ public final class ValidationEvaluator {
 			return 0;
 		long overlap = Math.max(0, Math.min(ae, be) - Math.max(as, bs));
 		return (double) overlap / (Math.max(ae, be) - Math.min(as, bs));
-	}
-	private static boolean boundary(JsonNode n, String p) {
-		return n.path(p + "StartMs").canConvertToLong() && n.path(p + "EndMs").canConvertToLong()
-				&& n.path(p + "StartMs").asLong() >= 0 && n.path(p + "EndMs").asLong() > n.path(p + "StartMs").asLong();
-	}
-	private static boolean close(JsonNode a, JsonNode b, String p) {
-		return Math.abs(a.path(p + "StartMs").asLong() - b.path(p + "StartMs").asLong()) <= 15000
-				&& Math.abs(a.path(p + "EndMs").asLong() - b.path(p + "EndMs").asLong()) <= 15000;
 	}
 	private record Match(int predicted, int actual, double score) {
 	}

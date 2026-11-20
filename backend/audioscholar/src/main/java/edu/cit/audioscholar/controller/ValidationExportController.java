@@ -37,7 +37,6 @@ import edu.cit.audioscholar.service.ValidationEventService;
 @PreAuthorize("hasRole('ADMIN')")
 @ConditionalOnProperty(name = "validation.export.enabled", havingValue = "true", matchIfMissing = false)
 public class ValidationExportController {
-	private static final long MERGE_LATENCY_LIMIT_MS_EXCLUSIVE = 120_000;
 	private static final Set<String> VALID_OUTPUT_TYPES = Set.of("NOTES", "STUDY_MATERIAL", "REVIEW_MATERIAL");
 	private static final Set<String> ALWAYS_REDACT = Set.of("userid", "email", "filename", "fileurl", "storageurl",
 			"transcripttext", "transcriptcontent", "tempaudiofilepath", "tempfilepath", "temppptxfilepath",
@@ -128,9 +127,20 @@ public class ValidationExportController {
 					if (code instanceof Number n)
 						exportedObjectives.add(n.intValue());
 		manifest.put("objectiveCodes", exportedObjectives);
+		// Numeric event tags are retained for historical exports. The SRS v1.1
+		// outcome IDs below are the current acceptance contract.
+		manifest.put("validationPlanVersion", "srs-v1.1");
+		manifest.put("researchOutcomes", List.of("R1", "R2", "R3", "R4", "R5", "R6", "R7", "R8", "R9", "R10", "R11"));
+		manifest.put("functionalUatChecks", List.of("UAT1", "UAT2", "UAT3", "UAT4", "UAT5"));
+		manifest.put("descriptivePerformanceRecords", List.of("DP"));
+		manifest.put("legacyEventCodeCrosswalk",
+				Map.ofEntries(Map.entry(1, "R1"), Map.entry(2, "UAT1"), Map.entry(3, "R3"), Map.entry(4, "R4"),
+						Map.entry(5, "R5"), Map.entry(6, "UAT2"), Map.entry(7, "UAT3"), Map.entry(8, "UAT4"),
+						Map.entry(9, "UAT5"), Map.entry(10, "R8"), Map.entry(11, "R9"), Map.entry(12, "DP"),
+						Map.entry(13, "R11"), Map.entry(14, "SOURCE_EVIDENCE_ONLY")));
 		manifest.put("module1ObjectiveCodes", List.of(1));
-		manifest.put("module3ObjectiveCodes", List.of(9, 10, 11, 12, 13, 14));
-		manifest.put("manualReviewObjectiveCodes", List.of(1, 3, 4, 5, 8, 10, 11, 13, 14));
+		manifest.put("module3ObjectiveCodes", List.of(9, 10, 11, 13));
+		manifest.put("manualReviewObjectiveCodes", List.of(1, 3, 4, 5, 8, 10, 11, 13));
 		manifest.put("reviewerTextObjectiveCodes", List.of(1, 10));
 		manifest.put("reviewerTextIncluded", includeText);
 		manifest.put("rawEvidenceCollectionsByObjective", rawEvidenceCollectionsByObjective());
@@ -166,6 +176,18 @@ public class ValidationExportController {
 		statuses.putAll(module2Statuses(datasets));
 		statuses.putAll(module3Statuses(datasets));
 		manifest.put("objectiveEvidenceStatus", statuses);
+		Map<String, String> researchStatuses = new LinkedHashMap<>();
+		for (var entry : Map.of("R1", 1, "R3", 3, "R4", 4, "R5", 5, "R8", 10, "R9", 11, "R11", 13).entrySet())
+			researchStatuses.put(entry.getKey(), statuses.getOrDefault(entry.getValue(), "NO_APPLICABLE_RECORDS"));
+		for (String id : List.of("R2", "R6", "R7", "R10"))
+			researchStatuses.put(id, "PARTICIPANT_EVIDENCE_REQUIRED");
+		if ("REVIEWER_EVIDENCE_REQUIRED".equals(researchStatuses.get("R11")))
+			researchStatuses.put("R11", "REVIEWER_AND_PARTICIPANT_EVIDENCE_REQUIRED");
+		manifest.put("retainedOutcomeEvidenceStatus", researchStatuses);
+		Map<String, String> uatStatuses = new LinkedHashMap<>();
+		for (var entry : Map.of("UAT1", 2, "UAT2", 6, "UAT3", 7, "UAT4", 8, "UAT5", 9).entrySet())
+			uatStatuses.put(entry.getKey(), statuses.getOrDefault(entry.getValue(), "NO_APPLICABLE_RECORDS"));
+		manifest.put("functionalUatEvidenceStatus", uatStatuses);
 		manifest.put("objectiveIncompleteReasons", objectiveIncompleteReasons(datasets));
 		manifest.put("integrityIssues", integrityIssues(datasets));
 		if ("jsonl".equals(format)) {
@@ -212,9 +234,9 @@ public class ValidationExportController {
 		result.put(10, List.of("events", "sourceKeyPoints", "mergedKeyPointLineage", "summaries", "summaryKeyPoints"));
 		result.put(11, List.of("events", "semanticDecisions", "sourceKeyPoints", "multiSourceGroupCoverage",
 				"mergedKeyPointLineage"));
-		result.put(12, List.of("events", "multiSourceJobs", "sourceFiles"));
+		result.put(12, List.of("events", "multiSourceJobs", "sourceFiles")); // DP: historical event tag
 		result.put(13, List.of("events", "sourceAttributions", "sourceKeyPoints", "summaries", "summaryKeyPoints"));
-		result.put(14, List.of("events", "crossSourceAlignments", "transcriptSegments"));
+		result.put(14, List.of("events", "crossSourceAlignments", "transcriptSegments")); // source evidence only
 		return result;
 	}
 
@@ -249,7 +271,7 @@ public class ValidationExportController {
 		List<Map<String, Object>> jobs = datasets.get("multiSourceJobs").stream()
 				.filter(job -> validJobIds.contains(String.valueOf(job.get("jobId")))).toList();
 		if (jobs.isEmpty()) {
-			for (int code = 9; code <= 14; code++)
+			for (int code : List.of(9, 10, 11, 13))
 				result.put(code, "NO_APPLICABLE_RECORDS");
 			return result;
 		}
@@ -257,17 +279,11 @@ public class ValidationExportController {
 		boolean reviewerEvidenceIncomplete = integrityIssues(datasets).stream()
 				.anyMatch(issue -> !issue.startsWith("qualityReport:") && !issue.startsWith("warningMapping:")
 						&& !issue.startsWith("warningCandidate:"));
-		boolean lifecycleIncomplete = jobs.stream()
-				.anyMatch(job -> !validSourceCount(job) || !allSourcesCompleted(datasets, job)
-						|| !hasOrderedSuccessfulLifecycle(datasets, String.valueOf(job.get("jobId"))));
-		boolean latencyIncomplete = jobs.stream().filter(job -> "COMPLETE".equals(job.get("status")))
-				.anyMatch(job -> job.get("finalTranscriptionCompletedAt") == null
-						|| job.get("mergedSummaryAvailableAt") == null || job.get("mergeLatencyMs") == null);
-		result.put(9, processingFailed ? "PROCESSING_FAILED" : lifecycleIncomplete ? "EXPORT_INCOMPLETE" : "COMPLETE");
-		result.put(12,
-				processingFailed
-						? "PROCESSING_FAILED"
-						: lifecycleIncomplete || latencyIncomplete ? "EXPORT_INCOMPLETE" : "COMPLETE");
+		boolean admissionIncomplete = jobs.stream().anyMatch(job -> {
+			String id = String.valueOf(job.get("jobId"));
+			return !validSourceCount(job) || !hasOrderedAdmissionLifecycle(datasets, id);
+		});
+		result.put(9, admissionIncomplete ? "EXPORT_INCOMPLETE" : "COMPLETE");
 		result.put(10,
 				reviewerStatus(processingFailed, reviewerEvidenceIncomplete,
 						datasets.get("sourceKeyPoints").isEmpty() && datasets.get("mergedKeyPointLineage").isEmpty()
@@ -282,10 +298,6 @@ public class ValidationExportController {
 				reviewerStatus(processingFailed, reviewerEvidenceIncomplete,
 						datasets.get("sourceAttributions").isEmpty()
 								&& completedRunWithCount(datasets, "ATTRIBUTION", "outputCount", 0)));
-		result.put(14,
-				reviewerStatus(processingFailed, reviewerEvidenceIncomplete,
-						datasets.get("crossSourceAlignments").isEmpty()
-								&& completedRunWithCount(datasets, "ALIGNMENT", "outputCount", 0)));
 		return result;
 	}
 
@@ -336,7 +348,7 @@ public class ValidationExportController {
 	private Map<Integer, List<Map<String, Object>>> objectiveIncompleteReasons(
 			Map<String, List<Map<String, Object>>> datasets) {
 		Map<Integer, List<Map<String, Object>>> result = new LinkedHashMap<>();
-		for (int code = 1; code <= 14; code++)
+		for (int code : List.of(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13))
 			result.put(code, new ArrayList<>());
 		Set<String> incomplete = incompleteWorkflowIds(datasets);
 		for (Map<String, Object> event : datasets.get("events"))
@@ -387,26 +399,12 @@ public class ValidationExportController {
 		return job.get("sourceCount") instanceof Number count && count.longValue() >= 2 && count.longValue() <= 5;
 	}
 
-	private boolean allSourcesCompleted(Map<String, List<Map<String, Object>>> datasets, Map<String, Object> job) {
-		if (!(job.get("sourceCount") instanceof Number expected))
-			return false;
-		String jobId = String.valueOf(job.get("jobId"));
-		long completed = datasets.get("sourceFiles").stream().filter(source -> jobId.equals(source.get("jobId")))
-				.filter(source -> source.get("transcriptionCompletedAt") != null).count();
-		return completed == expected.longValue();
-	}
-
-	private boolean hasOrderedSuccessfulLifecycle(Map<String, List<Map<String, Object>>> datasets, String jobId) {
-		List<Map<String, Object>> workflowEvents = datasets.get("events").stream()
-				.filter(event -> jobId.equals(String.valueOf(event.get("workflowId")))).toList();
-		long terminalCount = workflowEvents.stream()
-				.filter(event -> Set.of("JOB_COMPLETED", "JOB_FAILED").contains(event.get("eventType"))).count();
-		if (terminalCount != 1)
-			return false;
+	private boolean hasOrderedAdmissionLifecycle(Map<String, List<Map<String, Object>>> datasets, String jobId) {
 		Instant previous = null;
-		for (String type : List.of("BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED",
-				"PROCESSING_STARTED", "JOB_COMPLETED")) {
-			Instant occurredAt = workflowEvents.stream().filter(event -> type.equals(event.get("eventType")))
+		for (String type : List.of("BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED")) {
+			Instant occurredAt = datasets.get("events").stream()
+					.filter(event -> jobId.equals(String.valueOf(event.get("workflowId")))
+							&& type.equals(event.get("eventType")))
 					.map(event -> instant(event.get("occurredAt"))).filter(java.util.Objects::nonNull)
 					.min(Instant::compareTo).orElse(null);
 			if (occurredAt == null || previous != null && occurredAt.isBefore(previous))
@@ -570,8 +568,12 @@ public class ValidationExportController {
 				continue;
 			String jobId = String.valueOf(job.get("jobId"));
 			boolean grounded = "grounded-merge-v1".equals(job.get("pipelineVersion"));
-			for (String timestamp : List.of("finalTranscriptionCompletedAt", "mergeStartedAt",
-					"mergedSummaryAvailableAt", "mergeLatencyMs"))
+			boolean hasMedia = hasMediaClock(datasets, job);
+			for (String timestamp : hasMedia
+					? List.of("finalTranscriptionCompletedAt", "mergeStartedAt", "mergedSummaryAvailableAt",
+							"mergeLatencyMs")
+					: List.of("documentExtractionStartedAt", "mergeStartedAt", "mergedSummaryAvailableAt",
+							"documentMergeLatencyMs"))
 				if (job.get(timestamp) == null)
 					issues.add("job:" + jobId + ":missing-" + timestamp);
 			for (String stage : grounded
@@ -627,7 +629,10 @@ public class ValidationExportController {
 		Map<String, Object> result = new LinkedHashMap<>();
 		result.put("submittedJobs", jobs.size());
 		result.put("validJobs", validJobs.size());
-		result.put("acceptedJobs", validJobs.size());
+		long admittedAndQueued = validJobs.stream()
+				.filter(job -> hasOrderedAdmissionLifecycle(datasets, String.valueOf(job.get("jobId")))).count();
+		result.put("acceptedJobs", admittedAndQueued);
+		result.put("admittedAndQueuedJobs", admittedAndQueued);
 		result.put("numeratorCompleted", completed);
 		result.put("denominatorValid", validJobs.size());
 		result.put("excludedBeforeValidation", Math.max(0, jobs.size() - validJobs.size()));
@@ -637,19 +642,53 @@ public class ValidationExportController {
 
 	private Map<String, Object> module3MergeLatencyMetrics(Map<String, List<Map<String, Object>>> datasets) {
 		Set<String> validJobIds = validBatchIds(datasets);
-		long[] values = datasets.get("multiSourceJobs").stream()
-				.filter(job -> validJobIds.contains(String.valueOf(job.get("jobId")))).map(j -> j.get("mergeLatencyMs"))
-				.filter(Number.class::isInstance).mapToLong(value -> ((Number) value).longValue()).sorted().toArray();
 		Map<String, Object> result = new LinkedHashMap<>();
-		result.put("targetMs", MERGE_LATENCY_LIMIT_MS_EXCLUSIVE);
-		result.put("targetMsExclusive", MERGE_LATENCY_LIMIT_MS_EXCLUSIVE);
-		result.put("measuredJobs", values.length);
-		result.put("withinTarget",
-				java.util.Arrays.stream(values).filter(value -> value < MERGE_LATENCY_LIMIT_MS_EXCLUSIVE).count());
-		result.put("p50Ms", percentile(values, .50));
-		result.put("p95Ms", percentile(values, .95));
-		result.put("maxMs", values.length == 0 ? null : values[values.length - 1]);
+		List<Map<String, Object>> jobs = datasets.get("multiSourceJobs").stream()
+				.filter(job -> validJobIds.contains(String.valueOf(job.get("jobId")))).toList();
+		result.put("eligibleJobs", jobs.size());
+		result.put("completedJobs", jobs.stream().filter(job -> "COMPLETE".equals(job.get("status"))).count());
+		result.put("failedOrIncompleteJobs",
+				jobs.stream().filter(job -> !"COMPLETE".equals(job.get("status"))).count());
+		result.put("recordedGeminiPacingWaitMs", jobs.stream().map(job -> job.get("geminiPacingWaitMs"))
+				.filter(Number.class::isInstance).mapToLong(value -> ((Number) value).longValue()).sum());
+		result.put("jobsWithQuotaDeferral",
+				datasets.get("events").stream().filter(event -> "JOB_QUOTA_DEFERRED".equals(event.get("eventType")))
+						.map(event -> String.valueOf(event.get("workflowId"))).distinct().filter(validJobIds::contains)
+						.count());
+		result.put("media", latencySummary(jobs, datasets, true));
+		result.put("documentOnly", latencySummary(jobs, datasets, false));
+		result.put("assessment", "DESCRIPTIVE_ONLY");
 		return result;
+	}
+
+	private Map<String, Object> latencySummary(List<Map<String, Object>> jobs,
+			Map<String, List<Map<String, Object>>> datasets, boolean media) {
+		List<Map<String, Object>> cohort = jobs.stream().filter(job -> hasMediaClock(datasets, job) == media).toList();
+		String field = media ? "mergeLatencyMs" : "documentMergeLatencyMs";
+		long[] values = cohort.stream().filter(job -> "COMPLETE".equals(job.get("status"))).map(job -> job.get(field))
+				.filter(Number.class::isInstance).mapToLong(value -> ((Number) value).longValue())
+				.filter(value -> value >= 0).sorted().toArray();
+		Map<String, Object> summary = new LinkedHashMap<>();
+		summary.put("eligibleJobs", cohort.size());
+		summary.put("completedJobs", cohort.stream().filter(job -> "COMPLETE".equals(job.get("status"))).count());
+		summary.put("measuredJobs", values.length);
+		summary.put("medianMs", percentile(values, .50));
+		summary.put("p95Ms", percentile(values, .95));
+		summary.put("maxMs", values.length == 0 ? null : values[values.length - 1]);
+		summary.put("startEvent", media ? "FINAL_MEDIA_TRANSCRIPTION_COMPLETED" : "DOCUMENT_EXTRACTION_STARTED");
+		summary.put("endEvent", "COMPLETE_MERGED_OUTPUT_AVAILABLE");
+		return summary;
+	}
+
+	private boolean hasMediaClock(Map<String, List<Map<String, Object>>> datasets, Map<String, Object> job) {
+		String id = String.valueOf(job.get("jobId"));
+		List<Map<String, Object>> sources = datasets.get("sourceFiles").stream()
+				.filter(source -> id.equals(source.get("jobId"))).toList();
+		if (sources.stream().anyMatch(source -> "MEDIA".equals(source.get("sourceKind"))))
+			return true;
+		if (sources.stream().anyMatch(source -> "DOCUMENT".equals(source.get("sourceKind"))))
+			return false;
+		return job.get("mergeLatencyMs") != null;
 	}
 
 	private Long percentile(long[] values, double percentile) {

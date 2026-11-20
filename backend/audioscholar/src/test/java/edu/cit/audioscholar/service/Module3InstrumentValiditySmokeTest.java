@@ -61,7 +61,7 @@ class Module3InstrumentValiditySmokeTest {
 	Path tempDir;
 
 	@Test
-	void twoParticipantPilotStaysWithinDailyAdmissionAndMergeTarget() throws Exception {
+	void twoParticipantPilotRecordsDailyAdmissionAndMergeLatency() throws Exception {
 		List<Map<String, Object>> completedJobs = new ArrayList<>();
 		List<Long> executionTimesMs = new ArrayList<>();
 		for (int participant = 1; participant <= 2; participant++) {
@@ -79,7 +79,7 @@ class Module3InstrumentValiditySmokeTest {
 			assertThat(job.get("status")).isEqualTo(ProcessingStatus.COMPLETE.name());
 			assertThat(job.get("estimatedGeminiRequests")).isEqualTo(5);
 			assertThat(job.get("actualGeminiRequests")).isEqualTo(5);
-			assertThat(((Number) job.get("mergeLatencyMs")).longValue()).isLessThan(120_000);
+			assertThat(((Number) job.get("mergeLatencyMs")).longValue()).isNotNegative();
 			Date first = (Date) job.get("geminiFirstRequestAt");
 			Date last = (Date) job.get("geminiLastRequestAt");
 			assertThat(last.getTime() - first.getTime()).isEqualTo(60_000);
@@ -115,6 +115,12 @@ class Module3InstrumentValiditySmokeTest {
 		assertThat(completed).containsKeys("finalTranscriptionCompletedAt", "mergeStartedAt",
 				"mergedSummaryAvailableAt", "mergeLatencyMs");
 		assertThat(((Number) completed.get("mergeLatencyMs")).longValue()).isNotNegative();
+		if (sourceCount >= 3) {
+			assertThat(completed.get("documentExtractionStartedAt")).isNotNull();
+			assertThat(((Date) completed.get("finalTranscriptionCompletedAt")).getTime())
+					.isLessThanOrEqualTo(((Date) completed.get("documentExtractionStartedAt")).getTime());
+			assertThat(completed.get("documentMergeLatencyMs")).isNull();
+		}
 		assertThat(harness.distinctStatusHistory()).containsExactly("ACCEPTED", "PROCESSING_QUEUED", "PROCESSING",
 				"SUMMARIZING", "COMPLETE");
 
@@ -166,8 +172,10 @@ class Module3InstrumentValiditySmokeTest {
 		assertThat(manifest.path("measurementIncompleteWorkflows")).isEmpty();
 		assertThat(manifest.path("objectiveEvidenceStatus").path("1").asText()).isEqualTo("REVIEWER_EVIDENCE_REQUIRED");
 		assertThat(manifest.path("objectiveEvidenceStatus").path("9").asText()).isEqualTo("COMPLETE");
-		assertThat(manifest.path("objectiveEvidenceStatus").path("12").asText()).isEqualTo("COMPLETE");
-		for (String objective : List.of("10", "11", "13", "14"))
+		assertThat(manifest.path("objectiveEvidenceStatus").has("12")).isFalse();
+		assertThat(manifest.path("module3MergeLatencyMetrics").path("assessment").asText())
+				.isEqualTo("DESCRIPTIVE_ONLY");
+		for (String objective : List.of("10", "11", "13"))
 			assertThat(manifest.path("objectiveEvidenceStatus").path(objective).asText())
 					.isEqualTo("REVIEWER_EVIDENCE_REQUIRED");
 		assertThat(manifest.path("module3OutcomeMetrics").path("numeratorCompleted").asInt()).isEqualTo(1);

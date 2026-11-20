@@ -10,8 +10,8 @@ data class MultiSourceJobDto(
     val quotaRetryAt: String? = null,
     val semanticEnrichmentStatus: String? = null,
     val measurementIncomplete: Boolean? = null,
-    val deliveryWithinTarget: Boolean? = null,
     val mergeLatencyMs: Long? = null,
+    val documentMergeLatencyMs: Long? = null,
     val sourceFiles: List<MultiSourceFileDto>? = null,
     val sourceAttributions: List<MultiSourceAttributionDto>? = null,
     val mergedSummary: MultiSourceSummaryDto? = null

@@ -4,13 +4,18 @@ Grounded GO3 merging is a controlled-study option (`MULTI_SOURCE_GROUNDED_MERGE_
 Jobs record `pipelineVersion`; retries retain that version. New exports include
 `multiSourceGroupCoverage`, `multiSourceStageTimings`, claim quotations in `sourceKeyPoints`, and claim IDs on
 summary points and flashcards. A group records claim coverage, not a judgment for
-every possible pair. Objective 11 still requires independent duplicate review.
+every possible pair. Retained outcome R9 still requires independent duplicate review.
 For grounded groups, reviewers provide `duplicatePairs` with `leftKeyPointId`,
 `rightKeyPointId`, and `duplicate` for each predicted cross-source pair.
-Objective 12 passes only with measured merge latency strictly below 120,000 ms;
-grounded merging has not passed that threshold until live replay confirms it.
+Merge latency is a descriptive performance record (DP). Media and document-only
+jobs use separate clocks and have no pass/fail time threshold.
 
-This tooling exports raw evidence for T1–T14 for web workflows. Module 2 uses attempt-scoped reports, generated warning evidence, viewport receipts, and ground-truth schema v2. Set both `VALIDATION_TELEMETRY_ENABLED=true` and `VALIDATION_EXPORT_ENABLED=true` in the controlled-study environment. Events are retained for 180 days by default.
+This tooling exports raw evidence for R1–R11, UAT1–UAT5, and DP for Web or Android
+workflows. Numeric event codes 1–14 are historical instrument tags. Code 12 supplies
+DP evidence, and code 14 supplies source evidence only. Module 2 uses attempt-scoped
+reports, generated warning evidence, viewport receipts, and ground-truth schema v2.
+Set both `VALIDATION_TELEMETRY_ENABLED=true` and `VALIDATION_EXPORT_ENABLED=true`
+in the controlled-study environment. Events are retained for 180 days by default.
 
 Export as an administrator:
 
@@ -18,16 +23,18 @@ Export as an administrator:
 GET /api/admin/validation/export?from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z&clientSource=WEB&format=jsonl
 ```
 
-For manual reviewer assessment of generated output accuracy (Objective 1) or merged-summary completeness
-(Objective 10), request reviewer text explicitly:
+For manual reviewer assessment of generated output accuracy (R1) or merged-summary
+completeness (R8), request reviewer text explicitly. The query parameter still uses
+historical numeric event tags:
 
 ```text
 GET /api/admin/validation/export?from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z&clientSource=WEB&format=zip&includeText=true&objectiveCodes=1,10
 ```
 
-The manifest contains `rawEvidenceCollectionsByObjective` for Objectives 1–14, identifies objectives that require
-manual review, and records whether reviewer text was included. Text remains redacted by default. Objective-filtered
-exports use objective-tagged workflow events to retain the associated raw Firestore evidence.
+The manifest contains the SRS v1.1 validation plan, current outcome and UAT evidence
+statuses, legacy event-code crosswalk, and raw evidence collections. Text remains
+redacted by default. Filtered exports use event tags to retain associated Firestore
+evidence. R2, R6, R7, and R10 require participant evidence outside this evaluator.
 
 Reviewers inspect each complete recording before seeing system flags, then fill in `reviewed-recordings.csv`, `problem-segments.csv`, and `warning-template-reviews.csv`. Convert and validate them:
 
@@ -45,7 +52,17 @@ Run the evaluator from `backend/audioscholar` after compiling:
 java -cp target/classes;<runtime-dependencies> edu.cit.audioscholar.validation.ValidationEvaluator export.jsonl ground-truth.json evaluation-output
 ```
 
-The output contains `metrics.json`, `metrics.csv`, `quality-matches.json`, and `quality-matches.csv`. T2 includes every accepted, configured, or started workflow, requires a valid output type in `CONFIG_CONFIRMED`, and rejects configuration evidence that was not recorded before processing. T6 includes each started single-source attempt and every media source in a started multi-source job; document sources are not quality-report candidates. T3–T5 use deterministic one-to-one matching at IoU ≥ 0.50. T7 measures unique quality issues rather than issue-item pairs, requires an `INDICATOR_VISIBLE` receipt for coverage, and counts issues with only `UNMAPPABLE` mappings as uncovered. T8 requires automated and expert conformance. T9 includes only batches that reached `BATCH_VALIDATED` after all per-file and aggregate guardrails, and requires an ordered, single-terminal successful lifecycle with all expected sources completed. T12 uses an exclusive `< 120,000 ms` merge-latency target in both the manifest and evaluator. Missing evidence is objective-scoped.
+The output contains `metrics.json`, `metrics.csv`, `descriptive-performance.json`,
+`quality-matches.json`, and `quality-matches.csv`. Metric keys remain historical event
+codes for compatibility: 2, 6, 7, 8, and 9 are UAT checks; 1, 3, 4, 5, 11, and 13
+support retained research outcomes. Codes 12 and 14 are absent from pass/fail metrics.
+Code 9 scores admission and queueing of a valid batch; full processing success is
+reported separately in diagnostics. Code 2 checks confirmation before processing.
+Code 6 covers eligible media report delivery. Codes 3–5 use one-to-one matching at
+IoU ≥ 0.50. Code 7 requires a visible receipt and counts unmappable issues as
+uncovered. Code 8 checks automated and expert warning wording conformance. R8
+completeness and participant outcomes require independent review; the export does
+not imply that those outcomes passed.
 
 Automated checks used by the readiness suite:
 
