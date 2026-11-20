@@ -439,6 +439,24 @@ public class MultiSourceJobService {
 				job.setSemanticEnrichmentFailure(sanitizeFailure(enrichmentFailure.getMessage()));
 				throw enrichmentFailure;
 			}
+			Set<String> admittedSourceIds = job.getSourceFiles().stream().map(SourceFile::getSourceFileId)
+					.collect(java.util.stream.Collectors.toSet());
+			Set<String> attributedPointIds = attributions.stream().map(SourceAttribution::getKeyPointId)
+					.collect(java.util.stream.Collectors.toSet());
+			boolean attributionIncomplete = attributions.stream()
+					.anyMatch(a -> !("RESOLVED".equals(a.getAttributionStatus())
+							|| "MULTI_SOURCE".equals(a.getAttributionStatus()))
+							|| !admittedSourceIds.contains(a.getSourceFileId()))
+					|| summary.getSummaryKeyPoints().stream()
+							.anyMatch(point -> !attributedPointIds.contains(point.getKeyPointId()));
+			boolean incomplete = job.isMeasurementIncomplete() || attributionIncomplete;
+			if (incomplete) {
+				job.setMeasurementIncomplete(true);
+				job.setSemanticEnrichmentStatus("INCOMPLETE");
+				summary.setStatus(ProcessingStatus.INCOMPLETE.name());
+				job.setFailureStage("ATTRIBUTION");
+				job.setFailureReason("Required source evidence or validation records are incomplete.");
+			}
 			summaryService.createSummary(summary);
 			event(job, "OUTPUT_GENERATED", List.of(1), summary.getSummaryId(),
 					Map.of("jobId", jobId, "summaryId", summary.getSummaryId(), "outputType", summary.getOutputType(),
@@ -457,12 +475,23 @@ public class MultiSourceJobService {
 						job.getMergedSummaryAvailableAt().getTime() - job.getDocumentExtractionStartedAt().getTime());
 			event(job, "MERGED_SUMMARY_AVAILABLE", List.of(12), summary.getSummaryId(),
 					Map.of("jobId", jobId, "summaryId", summary.getSummaryId()));
-			job.setStatus(ProcessingStatus.COMPLETE.name());
+			applyGeminiUsage(job, true);
+			if (!incomplete && job.isMeasurementIncomplete()) {
+				incomplete = true;
+				job.setSemanticEnrichmentStatus("INCOMPLETE");
+				summary.setStatus(ProcessingStatus.INCOMPLETE.name());
+				merged.setStatus(ProcessingStatus.INCOMPLETE.name());
+				job.setFailureStage("VALIDATION");
+				job.setFailureReason("Required validation records are incomplete.");
+				summaryService.createSummary(summary);
+				mergedSummaryRepository.save(merged);
+			}
+			job.setStatus(incomplete ? ProcessingStatus.INCOMPLETE.name() : ProcessingStatus.COMPLETE.name());
 			job.setFinalAttemptCount(job.getProcessingAttempts());
 			job.setUpdatedAt(new Date());
-			applyGeminiUsage(job, true);
 			releaseDailyAdmission(job.getJobId());
-			terminalEvent(job, "JOB_COMPLETED", List.of(9), "initial", Map.of("jobId", jobId, "outcome", "COMPLETE"));
+			terminalEvent(job, incomplete ? "JOB_INCOMPLETE" : "JOB_COMPLETED", List.of(9, 12), "initial",
+					Map.of("jobId", jobId, "outcome", job.getStatus()));
 		} catch (Exception e) {
 			log.error("Multi-source processing failed jobId={} stage={} attempt={}", jobId, stage,
 					job.getProcessingAttempts(), e);
@@ -563,7 +592,8 @@ public class MultiSourceJobService {
 
 	public Map<String, Object> getJobMapForClient(String jobId) {
 		Map<String, Object> result = clientView(multiSourceJobRepository.findById(jobId));
-		if (result != null && ProcessingStatus.COMPLETE.name().equals(result.get("status"))) {
+		if (result != null && (ProcessingStatus.COMPLETE.name().equals(result.get("status"))
+				|| ProcessingStatus.INCOMPLETE.name().equals(result.get("status")))) {
 			Map<String, Object> merged = mergedSummaryRepository.getByJobId(jobId);
 			if (merged != null && merged.get("sourceAttributions") instanceof List<?> attributions)
 				result.put("sourceAttributions", attributions);
@@ -760,7 +790,7 @@ public class MultiSourceJobService {
 		merged.setUserId(job.getUserId());
 		merged.setContent(summary.getFormattedSummaryText());
 		merged.setFlashcards(summary.getFlashcards());
-		merged.setStatus(ProcessingStatus.COMPLETE.name());
+		merged.setStatus(summary.getStatus());
 		for (SourceAttribution attribution : attributions)
 			sourceAttributionService.save(merged.getMergedSummaryId(), attribution);
 		merged.setSourceAttributions(attributions);

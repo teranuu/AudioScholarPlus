@@ -184,7 +184,7 @@ class MultiSourceViewModel @Inject constructor(
                     if (!response.isSuccessful) error("Could not load job status (${response.code()}).")
                     val job = response.body() ?: error("Job status is unavailable.")
                     _state.value = _state.value.copy(job = job, error = null)
-                    if (job.status == "COMPLETE" || job.status == "FAILED") {
+                    if (job.status == "COMPLETE" || job.status == "INCOMPLETE" || job.status == "FAILED") {
                         preferences.edit().remove("active_job_id").apply()
                         refreshJobs()
                         return@launch

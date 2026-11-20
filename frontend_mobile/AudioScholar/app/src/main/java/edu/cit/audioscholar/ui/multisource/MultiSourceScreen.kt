@@ -112,12 +112,10 @@ fun MultiSourceScreen(navController: NavHostController, viewModel: MultiSourceVi
                         if (job.status == "FAILED") Text(job.failureReason ?: "Processing failed. Select the sources again to retry.",
                             color = MaterialTheme.colorScheme.error)
                         if (job.status == "COMPLETE" && job.mergedSummary != null) {
-                            if (job.measurementIncomplete == true || job.semanticEnrichmentStatus == "INCOMPLETE")
-                                Text("Source attribution is incomplete; review linked sources before relying on this result.",
-                                    color = MaterialTheme.colorScheme.error)
                             MergedContent(job)
-                        } else if (job.mergedSummary != null) {
-                            Text("Incomplete result: ${job.failureStage ?: "required processing"} remains unfinished.")
+                        } else if (job.status == "INCOMPLETE" && job.mergedSummary != null) {
+                            Text("Partial result: required source evidence or validation is incomplete. Treat unresolved citations as unverified.",
+                                color = MaterialTheme.colorScheme.error)
                             MergedContent(job)
                         }
                     }
@@ -151,7 +149,8 @@ private fun MergedContent(job: MultiSourceJobDto) {
         Text(card.front.orEmpty())
         OutlinedButton(onClick = { flipped = !flipped }) { Text(if (flipped) "Hide answer" else "Flip to answer") }
         if (flipped) Text(card.back.orEmpty())
-        Text(sourceName(card.sourceFileId), style = MaterialTheme.typography.bodySmall)
+        Text(if (card.sourceSegmentId.isNullOrBlank()) "Supporting evidence unresolved" else sourceName(card.sourceFileId),
+            style = MaterialTheme.typography.bodySmall)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = { index-- }, enabled = index > 0) { Text("Previous") }
             OutlinedButton(onClick = { index++ }, enabled = index < cards.lastIndex) { Text("Next") }
@@ -162,7 +161,7 @@ private fun MergedContent(job: MultiSourceJobDto) {
     }
     summary.summaryKeyPoints.orEmpty().forEach { point ->
         val contributors = job.sourceAttributions.orEmpty().filter { it.keyPointId == point.keyPointId }
-        val labels = if (contributors.isEmpty()) listOf(sourceName(point.sourceFileId)) else contributors.map {
+        val labels = if (contributors.isEmpty()) listOf("Supporting evidence unresolved") else contributors.map {
             sourceName(it.sourceFileId) + if (it.attributionStatus == "UNRESOLVED") " (evidence unresolved)" else ""
         }
         Card(Modifier.fillMaxWidth()) {

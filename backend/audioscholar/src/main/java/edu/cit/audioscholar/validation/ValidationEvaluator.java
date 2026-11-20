@@ -171,8 +171,8 @@ public final class ValidationEvaluator {
 					queuedStage++;
 				if (e.containsKey("ALL_SOURCES_UPLOADED"))
 					uploadedStage++;
-				long terminalCount = workflowEvents.getOrDefault(id, List.of()).stream().filter(
-						event -> Set.of("JOB_COMPLETED", "JOB_FAILED").contains(event.path("eventType").asText()))
+				long terminalCount = workflowEvents.getOrDefault(id, List.of()).stream().filter(event -> Set
+						.of("JOB_COMPLETED", "JOB_INCOMPLETE", "JOB_FAILED").contains(event.path("eventType").asText()))
 						.count();
 				boolean sourceCountValid = expected.getOrDefault(id, -1) >= 2 && expected.getOrDefault(id, -1) <= 5;
 				boolean allSourcesCompleted = completed.getOrDefault(id, 0) == expected.getOrDefault(id, -1);
