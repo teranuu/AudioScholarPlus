@@ -28,9 +28,11 @@ public class MultiSourceJob {
 	private Date queuedAt;
 	private Date processingStartedAt;
 	private Date finalTranscriptionCompletedAt;
+	private Date documentExtractionStartedAt;
 	private Date mergeStartedAt;
 	private Date mergedSummaryAvailableAt;
 	private Long mergeLatencyMs;
+	private Long documentMergeLatencyMs;
 	private boolean measurementIncomplete;
 	private String clientSource = "UNKNOWN";
 	private int processingAttempts;
@@ -176,6 +178,12 @@ public class MultiSourceJob {
 	public void setFinalTranscriptionCompletedAt(Date value) {
 		finalTranscriptionCompletedAt = value;
 	}
+	public Date getDocumentExtractionStartedAt() {
+		return documentExtractionStartedAt;
+	}
+	public void setDocumentExtractionStartedAt(Date value) {
+		documentExtractionStartedAt = value;
+	}
 	public Date getMergeStartedAt() {
 		return mergeStartedAt;
 	}
@@ -193,6 +201,12 @@ public class MultiSourceJob {
 	}
 	public void setMergeLatencyMs(Long value) {
 		mergeLatencyMs = value;
+	}
+	public Long getDocumentMergeLatencyMs() {
+		return documentMergeLatencyMs;
+	}
+	public void setDocumentMergeLatencyMs(Long value) {
+		documentMergeLatencyMs = value;
 	}
 	public boolean isMeasurementIncomplete() {
 		return measurementIncomplete;
@@ -307,10 +321,11 @@ public class MultiSourceJob {
 		map.put("queuedAt", queuedAt);
 		map.put("processingStartedAt", processingStartedAt);
 		map.put("finalTranscriptionCompletedAt", finalTranscriptionCompletedAt);
+		map.put("documentExtractionStartedAt", documentExtractionStartedAt);
 		map.put("mergeStartedAt", mergeStartedAt);
 		map.put("mergedSummaryAvailableAt", mergedSummaryAvailableAt);
 		map.put("mergeLatencyMs", mergeLatencyMs);
-		map.put("deliveryWithinTarget", mergeLatencyMs == null ? null : mergeLatencyMs < 120_000);
+		map.put("documentMergeLatencyMs", documentMergeLatencyMs);
 		map.put("measurementIncomplete", measurementIncomplete);
 		map.put("clientSource", clientSource);
 		map.put("processingAttempts", processingAttempts);

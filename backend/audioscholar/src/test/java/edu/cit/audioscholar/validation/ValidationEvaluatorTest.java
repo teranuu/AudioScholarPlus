@@ -36,12 +36,11 @@ class ValidationEvaluatorTest {
 	}
 
 	@Test
-	void inaccurateAlignmentCountsAsFailure() throws Exception {
+	void crossSourceAlignmentIsNoLongerScoredAsAnObjective() throws Exception {
 		String export = "{\"dataset\":\"crossSourceAlignments\",\"data\":{\"sourcePairId\":\"a:b\",\"sourceAStartMs\":9000,\"sourceAEndMs\":19000,\"sourceBStartMs\":9000,\"sourceBEndMs\":19000}}";
 		JsonNode metrics = evaluate(export,
 				"{\"schemaVersion\":1,\"overlapBoundaries\":[{\"sourcePairId\":\"a:b\",\"sourceAStartMs\":0,\"sourceAEndMs\":10000,\"sourceBStartMs\":0,\"sourceBEndMs\":10000}]}");
-		assertThat(metrics.path("14").path("denominator").asInt()).isEqualTo(1);
-		assertThat(metrics.path("14").path("status").asText()).isEqualTo("FAIL");
+		assertThat(metrics.has("14")).isFalse();
 	}
 
 	@Test
@@ -193,7 +192,7 @@ class ValidationEvaluatorTest {
 	}
 
 	@Test
-	void t12TreatsExactlyTwoMinutesAsOutsideTheExclusiveTarget() throws Exception {
+	void latencyIsNotScoredAsAnObjective() throws Exception {
 		StringBuilder export = new StringBuilder(manifest("latency-boundary"));
 		String[] lifecycle = {"BATCH_VALIDATED", "JOB_ACCEPTED", "ALL_SOURCES_UPLOADED", "JOB_QUEUED",
 				"PROCESSING_STARTED"};
@@ -214,13 +213,12 @@ class ValidationEvaluatorTest {
 		JsonNode metrics = evaluate(export.toString(),
 				"{\"schemaVersion\":2,\"exportManifestHash\":\"latency-boundary\"}");
 
-		assertThat(metrics.path("12").path("numerator").asInt()).isZero();
-		assertThat(metrics.path("12").path("denominator").asInt()).isEqualTo(1);
-		assertThat(metrics.path("12").path("status").asText()).isEqualTo("FAIL");
+		assertThat(metrics.has("12")).isFalse();
+		assertThat(metrics.has("14")).isFalse();
 	}
 
 	@Test
-	void t9ExcludesPreValidationFailuresAndRequiresOrderedLifecycle() throws Exception {
+	void t9ExcludesPreValidationFailuresAndRequiresOrderedAdmission() throws Exception {
 		StringBuilder export = new StringBuilder(manifest("ordered-lifecycle"));
 		export.append(row("events",
 				"{\"workflowId\":\"rejected\",\"occurredAt\":\"2026-01-01T00:00:00Z\",\"eventType\":\"BATCH_SUBMITTED\",\"workflowType\":\"MULTI_SOURCE\",\"clientSource\":\"WEB\"}"));
@@ -249,7 +247,7 @@ class ValidationEvaluatorTest {
 	}
 
 	@Test
-	void t9RejectsOutOfOrderCompletionEvidence() throws Exception {
+	void t9RejectsOutOfOrderAdmissionEvidence() throws Exception {
 		String export = manifest("out-of-order")
 				+ row("events", multiEvent("job-1", "BATCH_VALIDATED", "2026-01-01T00:00:00Z"))
 				+ row("events", multiEvent("job-1", "JOB_ACCEPTED", "2026-01-01T00:00:01Z"))
@@ -263,10 +261,26 @@ class ValidationEvaluatorTest {
 
 		assertThat(metrics.path("9").path("numerator").asInt()).isZero();
 		assertThat(metrics.path("9").path("denominator").asInt()).isEqualTo(1);
-		assertThat(metrics.path("9").path("status").asText()).isEqualTo("NOT_EVALUABLE");
+		assertThat(metrics.path("9").path("status").asText()).isEqualTo("FAIL");
 		assertThat(
 				metrics.path("9").path("diagnostics").path("jobs").path("job-1").path("lifecycleOrdered").asBoolean())
 				.isFalse();
+	}
+
+	@Test
+	void uat5DoesNotRequireSuccessfulProcessingAfterAdmission() throws Exception {
+		String export = manifest("queued-then-failed")
+				+ row("events", multiEvent("job-1", "BATCH_VALIDATED", "2026-01-01T00:00:00Z"))
+				+ row("events", multiEvent("job-1", "JOB_ACCEPTED", "2026-01-01T00:00:01Z"))
+				+ row("events", multiEvent("job-1", "ALL_SOURCES_UPLOADED", "2026-01-01T00:00:02Z"))
+				+ row("events", multiEvent("job-1", "JOB_QUEUED", "2026-01-01T00:00:03Z"))
+				+ row("events", multiEvent("job-1", "PROCESSING_STARTED", "2026-01-01T00:00:04Z"))
+				+ row("events", multiEvent("job-1", "JOB_FAILED", "2026-01-01T00:00:05Z")) + row("multiSourceJobs",
+						"{\"jobId\":\"job-1\",\"sourceCount\":2,\"status\":\"FAILED\",\"measurementIncomplete\":true}");
+		JsonNode metrics = evaluate(export, "{\"schemaVersion\":2,\"exportManifestHash\":\"queued-then-failed\"}");
+		assertThat(metrics.path("9").path("status").asText()).isEqualTo("PASS");
+		assertThat(metrics.path("9").path("diagnostics").path("fullProcessingSuccess").path("completed").asInt())
+				.isZero();
 	}
 
 	@Test

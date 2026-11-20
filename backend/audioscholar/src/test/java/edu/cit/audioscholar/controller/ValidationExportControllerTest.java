@@ -168,14 +168,15 @@ class ValidationExportControllerTest {
 		assertThat(manifest.path("objectiveEvidenceStatus").path("10").asText()).isEqualTo("NO_APPLICABLE_RECORDS");
 		assertThat(manifest.path("objectiveEvidenceStatus").path("11").asText()).isEqualTo("NO_APPLICABLE_RECORDS");
 		assertThat(manifest.path("objectiveEvidenceStatus").path("13").asText()).isEqualTo("NO_APPLICABLE_RECORDS");
-		assertThat(manifest.path("objectiveEvidenceStatus").path("14").asText()).isEqualTo("NO_APPLICABLE_RECORDS");
+		assertThat(manifest.path("objectiveEvidenceStatus").has("14")).isFalse();
 		assertThat(manifest.path("module3OutcomeMetrics").path("numeratorCompleted").asInt()).isEqualTo(1);
 		assertThat(manifest.path("module3OutcomeMetrics").path("denominatorValid").asInt()).isEqualTo(1);
-		assertThat(manifest.path("module3MergeLatencyMetrics").path("targetMs").asLong()).isEqualTo(120_000);
+		assertThat(manifest.path("module3MergeLatencyMetrics").path("assessment").asText())
+				.isEqualTo("DESCRIPTIVE_ONLY");
 	}
 
 	@Test
-	void objective9And12StatusesIgnoreUnrelatedReviewerEvidenceGaps() throws Exception {
+	void admissionStatusIgnoresUnrelatedReviewerEvidenceGaps() throws Exception {
 		FirebaseService firebase = mock(FirebaseService.class);
 		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
 		when(firebase.getAllData("validationEvents")).thenReturn(lifecycleEvents("job-1", occurredAt));
@@ -194,7 +195,7 @@ class ValidationExportControllerTest {
 
 		assertThat(manifest.path("integrityIssues").toString()).contains("missing-stage-run");
 		assertThat(manifest.path("objectiveEvidenceStatus").path("9").asText()).isEqualTo("COMPLETE");
-		assertThat(manifest.path("objectiveEvidenceStatus").path("12").asText()).isEqualTo("COMPLETE");
+		assertThat(manifest.path("objectiveEvidenceStatus").has("12")).isFalse();
 	}
 
 	@Test
@@ -229,7 +230,7 @@ class ValidationExportControllerTest {
 	}
 
 	@Test
-	void mergeLatencyTargetIsExclusiveAtExactlyTwoMinutes() throws Exception {
+	void mergeLatencyIsDescriptiveAtExactlyTwoMinutes() throws Exception {
 		FirebaseService firebase = mock(FirebaseService.class);
 		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
 		when(firebase.getAllData("validationEvents"))
@@ -238,6 +239,9 @@ class ValidationExportControllerTest {
 		when(firebase.getAllData("multiSourceJobs")).thenReturn(List.of(Map.of("jobId", "job-1", "status", "COMPLETE",
 				"sourceCount", 2, "finalTranscriptionCompletedAt", occurredAt, "mergeStartedAt", occurredAt,
 				"mergedSummaryAvailableAt", occurredAt, "mergeLatencyMs", 120_000)));
+		when(firebase.getAllData("sourceFiles"))
+				.thenReturn(List.of(Map.of("jobId", "job-1", "sourceFileId", "media-1", "sourceKind", "MEDIA"),
+						Map.of("jobId", "job-1", "sourceFileId", "media-2", "sourceKind", "MEDIA")));
 		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
 
 		String body = new String(controller
@@ -246,8 +250,36 @@ class ValidationExportControllerTest {
 		var latency = new ObjectMapper().readTree(body.lines().findFirst().orElseThrow()).path("data")
 				.path("module3MergeLatencyMetrics");
 
-		assertThat(latency.path("targetMsExclusive").asLong()).isEqualTo(120_000);
-		assertThat(latency.path("withinTarget").asInt()).isZero();
+		assertThat(latency.path("media").path("medianMs").asLong()).isEqualTo(120_000);
+		assertThat(latency.path("assessment").asText()).isEqualTo("DESCRIPTIVE_ONLY");
+		assertThat(latency.has("targetMsExclusive")).isFalse();
+	}
+
+	@Test
+	void descriptiveLatencyUsesSeparateMediaAndDocumentClocks() throws Exception {
+		FirebaseService firebase = mock(FirebaseService.class);
+		Date occurredAt = Date.from(Instant.parse("2026-01-01T12:00:00Z"));
+		when(firebase.getAllData("validationEvents")).thenReturn(List.of(
+				Map.of("workflowId", "media", "clientSource", "WEB", "eventType", "BATCH_VALIDATED", "occurredAt",
+						occurredAt),
+				Map.of("workflowId", "docs", "clientSource", "WEB", "eventType", "BATCH_VALIDATED", "occurredAt",
+						occurredAt)));
+		when(firebase.getAllData("multiSourceJobs")).thenReturn(List.of(
+				Map.of("jobId", "media", "status", "COMPLETE", "sourceCount", 2, "mergeLatencyMs", 180_000),
+				Map.of("jobId", "docs", "status", "COMPLETE", "sourceCount", 2, "documentMergeLatencyMs", 45_000)));
+		when(firebase.getAllData("sourceFiles"))
+				.thenReturn(List.of(Map.of("jobId", "media", "sourceFileId", "media-1", "sourceKind", "MEDIA"),
+						Map.of("jobId", "docs", "sourceFileId", "doc-1", "sourceKind", "DOCUMENT")));
+		ValidationExportController controller = new ValidationExportController(firebase, new ObjectMapper());
+		String body = new String(controller
+				.export("2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", null, "WEB", "jsonl", false).getBody(),
+				StandardCharsets.UTF_8);
+		var latency = new ObjectMapper().readTree(body.lines().findFirst().orElseThrow()).path("data")
+				.path("module3MergeLatencyMetrics");
+		assertThat(latency.path("media").path("medianMs").asLong()).isEqualTo(180_000);
+		assertThat(latency.path("documentOnly").path("medianMs").asLong()).isEqualTo(45_000);
+		assertThat(latency.path("media").path("startEvent").asText()).isEqualTo("FINAL_MEDIA_TRANSCRIPTION_COMPLETED");
+		assertThat(latency.path("documentOnly").path("startEvent").asText()).isEqualTo("DOCUMENT_EXTRACTION_STARTED");
 	}
 
 	@Test

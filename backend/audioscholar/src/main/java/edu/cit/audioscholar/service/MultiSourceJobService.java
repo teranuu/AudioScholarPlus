@@ -353,6 +353,11 @@ public class MultiSourceJobService {
 				if (kind == SourceKind.MEDIA)
 					source.setQualityReport(qualityReportService.analyzeAndSave(source.getSourceFileId(), local, jobId,
 							"MULTI_SOURCE", job.getClientSource(), "multiSourceJobs"));
+				if (kind == SourceKind.DOCUMENT && job.getDocumentExtractionStartedAt() == null) {
+					job.setDocumentExtractionStartedAt(new Date());
+					if (!saveWorkerProgress(job))
+						return;
+				}
 				String transcript = kind == SourceKind.MEDIA
 						? geminiService.callGeminiTranscriptionAPIWithFallback(local, source.getFileName(), jobId)
 						: extractDocumentText(local, source);
@@ -364,6 +369,9 @@ public class MultiSourceJobService {
 				// completedAt is the durable checkpoint: all derived transcript records must
 				// exist before a later attempt is allowed to skip this source.
 				source.setTranscriptionCompletedAt(new Date());
+				if (kind == SourceKind.MEDIA && (job.getFinalTranscriptionCompletedAt() == null
+						|| source.getTranscriptionCompletedAt().after(job.getFinalTranscriptionCompletedAt())))
+					job.setFinalTranscriptionCompletedAt(source.getTranscriptionCompletedAt());
 				sourceFileService.save(source);
 				sources.add(source);
 				job.setUpdatedAt(new Date());
@@ -373,8 +381,15 @@ public class MultiSourceJobService {
 						Map.of("jobId", jobId, "sourceFileId", source.getSourceFileId()));
 			}
 			job.setSourceFiles(sources);
-			if (job.getFinalTranscriptionCompletedAt() == null)
-				job.setFinalTranscriptionCompletedAt(new Date());
+			// Recompute from durable media checkpoints. Older jobs may have stored
+			// the time of the last PDF extraction under this media-only field.
+			job.setFinalTranscriptionCompletedAt(null);
+			for (SourceFile source : sources)
+				if (SourceKind.MEDIA.name().equals(source.getSourceKind())
+						&& source.getTranscriptionCompletedAt() != null
+						&& (job.getFinalTranscriptionCompletedAt() == null
+								|| source.getTranscriptionCompletedAt().after(job.getFinalTranscriptionCompletedAt())))
+					job.setFinalTranscriptionCompletedAt(source.getTranscriptionCompletedAt());
 			event(job, "ALL_TRANSCRIPTIONS_COMPLETED", List.of(9, 12), "initial",
 					Map.of("jobId", jobId, "sourceCount", sources.size()));
 			job.setStatus(ProcessingStatus.SUMMARIZING.name());
@@ -434,8 +449,12 @@ public class MultiSourceJobService {
 			mergedSummaryRepository.save(merged);
 			job.setMergedSummary(summary);
 			job.setMergedSummaryAvailableAt(new Date());
-			job.setMergeLatencyMs(
-					job.getMergedSummaryAvailableAt().getTime() - job.getFinalTranscriptionCompletedAt().getTime());
+			if (job.getFinalTranscriptionCompletedAt() != null)
+				job.setMergeLatencyMs(
+						job.getMergedSummaryAvailableAt().getTime() - job.getFinalTranscriptionCompletedAt().getTime());
+			else if (job.getDocumentExtractionStartedAt() != null)
+				job.setDocumentMergeLatencyMs(
+						job.getMergedSummaryAvailableAt().getTime() - job.getDocumentExtractionStartedAt().getTime());
 			event(job, "MERGED_SUMMARY_AVAILABLE", List.of(12), summary.getSummaryId(),
 					Map.of("jobId", jobId, "summaryId", summary.getSummaryId()));
 			job.setStatus(ProcessingStatus.COMPLETE.name());
@@ -831,11 +850,14 @@ public class MultiSourceJobService {
 		job.setQueuedAt(date(row.get("queuedAt")));
 		job.setProcessingStartedAt(date(row.get("processingStartedAt")));
 		job.setFinalTranscriptionCompletedAt(date(row.get("finalTranscriptionCompletedAt")));
+		job.setDocumentExtractionStartedAt(date(row.get("documentExtractionStartedAt")));
 		job.setMergeStartedAt(date(row.get("mergeStartedAt")));
 		job.setMergedSummaryAvailableAt(date(row.get("mergedSummaryAvailableAt")));
 		job.setFailedAt(date(row.get("failedAt")));
 		if (row.get("mergeLatencyMs") instanceof Number n)
 			job.setMergeLatencyMs(n.longValue());
+		if (row.get("documentMergeLatencyMs") instanceof Number n)
+			job.setDocumentMergeLatencyMs(n.longValue());
 		return job;
 	}
 
